@@ -86,6 +86,7 @@ We use jujutsu (jj) for version control; prefer jj over git when possible.
 The main branch/bookmark is `main`.
 
 - Create individual jj changes with good descriptions; one logical change per commit.
+- Prefix change description titles with the subsystem, e.g. `cli: implement CLI parsing` or `zfs: add pool operations`.
 - Verify `cargo build` passes before finalizing a change.
 - After `jj describe`, normally run `jj new` to create a fresh change for unrelated or follow-up work.
 
