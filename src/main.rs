@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match &cli.command {
-        Command::Init(args) => cli::init::run(args),
+        Command::Init(args) => cli::init::run(args, &cli.state_dir),
         Command::Vm(cmd) => cli::vm::run(cmd),
         Command::Image(cmd) => cli::image::run(cmd),
         Command::Snapshot(cmd) => cli::snapshot::run(cmd),

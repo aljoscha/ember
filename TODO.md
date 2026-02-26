@@ -14,7 +14,7 @@
 - [x] Implement ZFS pool operations: create, status check (`src/zfs/pool.rs`)
 - [x] Implement ZFS dataset operations: create, destroy, list (`src/zfs/dataset.rs`)
 - [x] Implement file-based JSON state store with flock (`src/state/store.rs`)
-- [ ] Implement `crackling init`: create/verify pool, create datasets, download kernel, write config
+- [x] Implement `crackling init`: create/verify pool, create datasets, download kernel, write config
 - [ ] Test: `crackling init` with both new pool and existing pool
 
 ## Phase 2: Image Pull + ZFS Rootfs
