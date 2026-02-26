@@ -24,7 +24,7 @@ http-body-util = "0.1"
 hyperlocal = "0.9"
 
 # System (TAP ioctl, signals, process management)
-nix = { version = "0.29", features = ["ioctl", "net", "signal", "process"] }
+nix = { version = "0.29", features = ["ioctl", "net", "signal", "process", "user"] }
 
 # SSH
 russh = "0.46"
