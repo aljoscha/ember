@@ -23,7 +23,7 @@
 - [x] Implement ext4 rootfs creation: mkfs, loop mount, copy content (`src/image/ext4.rs`)
 - [x] Inject SSH authorized_keys and `/etc/resolv.conf` into rootfs
 - [x] Implement ZFS zvol operations: create, destroy (`src/zfs/volume.rs`)
-- [ ] Implement image-to-zvol pipeline: dd ext4 image to zvol, create @base snapshot
+- [x] Implement image-to-zvol pipeline: dd ext4 image to zvol, create @base snapshot
 - [ ] Implement local image registry tracking (`src/image/registry.rs`)
 - [ ] Implement `crackling image pull`, `image list`, `image delete`
 - [ ] Test: pull an image, verify ZFS snapshot exists, list shows it
