@@ -40,5 +40,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Progress display
 indicatif = "0.17"
 
-[dev-dependencies]
+# Temporary directories
 tempfile = "3"
