@@ -1,4 +1,5 @@
 mod cli;
+pub mod error;
 
 use clap::Parser;
 use cli::{Cli, Command};
