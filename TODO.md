@@ -34,7 +34,7 @@
 - [ ] Implement Firecracker process management: spawn, wait, kill (`src/firecracker/process.rs`)
 - [ ] Implement VM config builder: translate user config to API calls (`src/firecracker/config.rs`)
 - [ ] Implement VM metadata types and state tracking (`src/state/vm.rs`)
-- [ ] Implement `crackling vm create`: ZFS clone from image snapshot, write metadata
+- [ ] Implement `crackling vm create`: ZFS clone from image snapshot, loop-mount zvol to inject per-VM SSH key, write metadata
 - [ ] Implement `crackling vm start`: spawn firecracker, configure, boot (no networking yet)
 - [ ] Implement `crackling vm stop`: graceful shutdown + SIGKILL fallback
 - [ ] Implement `crackling vm delete`: cleanup everything

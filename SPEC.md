@@ -173,13 +173,15 @@ ZFS zvol: <pool>/images/<name>-<tag>
 ZFS snapshot: <pool>/images/<name>-<tag>@base
 ```
 
-### VM Create (Instant Clone)
+### VM Create (Instant Clone + Per-VM SSH Key)
 
 ```
 zfs clone <pool>/images/<name>-<tag>@base <pool>/vms/<vm-name>
 ```
 
 This is instant regardless of image size (copy-on-write). The zvol appears as `/dev/zvol/<pool>/vms/<vm-name>` — passed directly to Firecracker as the root drive block device.
+
+After cloning, the VM's zvol is loop-mounted and the invoking user's SSH public key is injected into `/root/.ssh/authorized_keys`. This keeps the `@base` snapshot pristine (shared across all VMs) while giving each VM its own key. If the user specifies `--ssh-key`, that key is used instead of the default.
 
 ### User Snapshots
 
