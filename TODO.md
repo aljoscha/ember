@@ -2,7 +2,7 @@
 
 ## Phase 0: Repo Setup
 
-- [ ] Update `.gitignore` for Rust
+- [x] Update `.gitignore` for Rust
 - [ ] Create `Cargo.toml` with all dependencies
 - [ ] Create `src/main.rs` with placeholder
 

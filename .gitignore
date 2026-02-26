@@ -1,1 +1,12 @@
+# Rust build artifacts
 /target
+
+# Backup files
+**/*.rs.bk
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
