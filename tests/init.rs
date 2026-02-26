@@ -4,7 +4,7 @@
 //! They are marked `#[ignore]` so `cargo test` skips them by default.
 //!
 //! To run:
-//!   sudo cargo test --test init -- --ignored
+//!   ./run-integration-tests.sh init
 //!
 //! The tests create and destroy temporary ZFS pools backed by loopback
 //! devices, so they are safe to run on a system with ZFS installed.

@@ -26,7 +26,7 @@
 - [x] Implement image-to-zvol pipeline: dd ext4 image to zvol, create @base snapshot
 - [x] Implement local image registry tracking (`src/image/registry.rs`)
 - [x] Implement `crackling image pull`, `image list`, `image delete`
-- [ ] Test: pull an image, verify ZFS snapshot exists, list shows it
+- [x] Test: pull an image, verify ZFS snapshot exists, list shows it
 
 ## Phase 3: Basic VM Lifecycle
 
