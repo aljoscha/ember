@@ -11,7 +11,7 @@
 - [x] Implement CLI parsing with clap derive (all commands defined, unimplemented ones return errors)
 - [x] Implement unified error types
 - [x] Implement root privilege check with helpful error message
-- [ ] Implement ZFS pool operations: create, status check (`src/zfs/pool.rs`)
+- [x] Implement ZFS pool operations: create, status check (`src/zfs/pool.rs`)
 - [ ] Implement ZFS dataset operations: create, destroy, list (`src/zfs/dataset.rs`)
 - [ ] Implement file-based JSON state store with flock (`src/state/store.rs`)
 - [ ] Implement `crackling init`: create/verify pool, create datasets, download kernel, write config
