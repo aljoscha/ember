@@ -28,7 +28,7 @@ pub struct InitArgs {
 }
 
 /// Global configuration written by `crackling init`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
     pub pool: String,
     pub dataset: String,
@@ -117,4 +117,106 @@ fn download_file(url: &str, dest: &Path) -> crate::error::Result<()> {
 
     Error::check_command("curl", output)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_config_round_trip_with_kernel() {
+        let config = GlobalConfig {
+            pool: "testpool".to_string(),
+            dataset: "crackling".to_string(),
+            kernel_path: Some(PathBuf::from("/var/lib/crackling/kernels/vmlinux")),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let loaded: GlobalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn global_config_round_trip_without_kernel() {
+        let config = GlobalConfig {
+            pool: "mypool".to_string(),
+            dataset: "mydata".to_string(),
+            kernel_path: None,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let loaded: GlobalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn global_config_json_format() {
+        let config = GlobalConfig {
+            pool: "tank".to_string(),
+            dataset: "crackling".to_string(),
+            kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["pool"], "tank");
+        assert_eq!(json["dataset"], "crackling");
+        assert_eq!(json["kernel_path"], "/kernels/vmlinux");
+    }
+
+    #[test]
+    fn global_config_null_kernel_in_json() {
+        let config = GlobalConfig {
+            pool: "tank".to_string(),
+            dataset: "crackling".to_string(),
+            kernel_path: None,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&config).unwrap();
+        assert!(json["kernel_path"].is_null());
+    }
+
+    #[test]
+    fn global_config_written_to_state_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        store.init().unwrap();
+
+        let config = GlobalConfig {
+            pool: "testpool".to_string(),
+            dataset: "crackling".to_string(),
+            kernel_path: None,
+        };
+        store.write(&store.config_path(), &config).unwrap();
+
+        let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
+        assert_eq!(loaded.pool, "testpool");
+        assert_eq!(loaded.dataset, "crackling");
+        assert_eq!(loaded.kernel_path, None);
+    }
+
+    #[test]
+    fn global_config_overwritten_on_reinit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        store.init().unwrap();
+
+        // First write.
+        let config1 = GlobalConfig {
+            pool: "pool1".to_string(),
+            dataset: "ds1".to_string(),
+            kernel_path: None,
+        };
+        store.write(&store.config_path(), &config1).unwrap();
+
+        // Second write (simulates re-running init).
+        let config2 = GlobalConfig {
+            pool: "pool2".to_string(),
+            dataset: "ds2".to_string(),
+            kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
+        };
+        store.write(&store.config_path(), &config2).unwrap();
+
+        let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
+        assert_eq!(loaded, config2);
+    }
 }
