@@ -24,7 +24,7 @@
 - [x] Inject SSH authorized_keys and `/etc/resolv.conf` into rootfs
 - [x] Implement ZFS zvol operations: create, destroy (`src/zfs/volume.rs`)
 - [x] Implement image-to-zvol pipeline: dd ext4 image to zvol, create @base snapshot
-- [ ] Implement local image registry tracking (`src/image/registry.rs`)
+- [x] Implement local image registry tracking (`src/image/registry.rs`)
 - [ ] Implement `crackling image pull`, `image list`, `image delete`
 - [ ] Test: pull an image, verify ZFS snapshot exists, list shows it
 
