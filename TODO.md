@@ -19,7 +19,7 @@
 
 ## Phase 2: Image Pull + ZFS Rootfs
 
-- [ ] Implement OCI image pull (oci-unpack with skopeo fallback) (`src/image/pull.rs`)
+- [x] Implement OCI image pull (oci-unpack with skopeo fallback) (`src/image/pull.rs`)
 - [ ] Implement ext4 rootfs creation: mkfs, loop mount, copy content (`src/image/ext4.rs`)
 - [ ] Inject SSH authorized_keys and `/etc/resolv.conf` into rootfs
 - [ ] Implement ZFS zvol operations: create, destroy (`src/zfs/volume.rs`)
