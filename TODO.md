@@ -3,8 +3,8 @@
 ## Phase 0: Repo Setup
 
 - [x] Update `.gitignore` for Rust
-- [ ] Create `Cargo.toml` with all dependencies
-- [ ] Create `src/main.rs` with placeholder
+- [x] Create `Cargo.toml` with all dependencies
+- [x] Create `src/main.rs` with placeholder
 
 ## Phase 1: Project Scaffold + `crackling init`
 
