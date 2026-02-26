@@ -87,6 +87,7 @@ The main branch/bookmark is `main`.
 
 - Create individual jj changes with good descriptions; one logical change per commit.
 - Verify `cargo build` passes before finalizing a change.
+- After `jj describe`, normally run `jj new` to create a fresh change for unrelated or follow-up work.
 
 ### jj Operations
 
