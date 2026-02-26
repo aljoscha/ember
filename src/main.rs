@@ -1,5 +1,6 @@
 mod cli;
 pub mod error;
+pub mod state;
 pub mod zfs;
 
 use clap::Parser;
