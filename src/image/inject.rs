@@ -12,11 +12,25 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// Return the default SSH public key path (`~/.ssh/id_ed25519.pub`).
+/// Common SSH public key filenames, in preference order.
+const SSH_PUBKEY_NAMES: &[&str] = &[
+    "id_ed25519.pub",
+    "id_ecdsa.pub",
+    "id_rsa.pub",
+];
+
+/// Return the default SSH public key path.
 ///
-/// Returns `None` if the home directory cannot be determined.
+/// Looks in the invoking user's `~/.ssh/` directory for common key types.
+/// When running under `sudo`, uses `SUDO_USER` to resolve the real user's
+/// home directory instead of root's.
 pub fn default_ssh_pubkey_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".ssh/id_ed25519.pub"))
+    let home = invoking_user_home()?;
+    let ssh_dir = home.join(".ssh");
+    SSH_PUBKEY_NAMES
+        .iter()
+        .map(|name| ssh_dir.join(name))
+        .find(|p| p.exists())
 }
 
 /// Inject an SSH `authorized_keys` file into the rootfs.
@@ -103,9 +117,34 @@ nameserver 8.8.8.8
     Ok(())
 }
 
-/// Resolve the user's home directory.
-fn home_dir() -> Option<PathBuf> {
+/// Resolve the invoking (non-root) user's home directory.
+///
+/// Under `sudo`, `HOME` is typically `/root`. We check `SUDO_USER` first
+/// and look up that user's home via `getpwnam`. Falls back to `HOME`.
+fn invoking_user_home() -> Option<PathBuf> {
+    // Try SUDO_USER first (set by sudo to the original user).
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        if let Some(home) = home_for_user(&sudo_user) {
+            return Some(home);
+        }
+    }
+
+    // Fall back to HOME.
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Look up a user's home directory via getpwnam.
+fn home_for_user(username: &str) -> Option<PathBuf> {
+    use std::ffi::CString;
+    let name = CString::new(username).ok()?;
+    // SAFETY: getpwnam is passed a valid C string. The returned pointer
+    // is to a static buffer — we copy the home_dir field immediately.
+    let pw = unsafe { nix::libc::getpwnam(name.as_ptr()) };
+    if pw.is_null() {
+        return None;
+    }
+    let home_dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+    Some(PathBuf::from(home_dir.to_string_lossy().into_owned()))
 }
 
 #[cfg(test)]
@@ -232,11 +271,87 @@ mod tests {
     }
 
     #[test]
-    fn default_ssh_pubkey_path_returns_some() {
+    fn invoking_user_home_returns_some() {
         // Should succeed unless HOME is unset.
         if std::env::var_os("HOME").is_some() {
-            let path = default_ssh_pubkey_path().unwrap();
-            assert!(path.to_string_lossy().ends_with(".ssh/id_ed25519.pub"));
+            let home = invoking_user_home().unwrap();
+            assert!(home.is_absolute());
+        }
+    }
+
+    #[test]
+    fn default_ssh_pubkey_finds_existing_key() {
+        // Create a fake home with an ed25519 key.
+        let fake_home = tempfile::tempdir().unwrap();
+        let ssh_dir = fake_home.path().join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        fs::write(ssh_dir.join("id_ed25519.pub"), "ssh-ed25519 AAAA...\n").unwrap();
+
+        // Temporarily override HOME (no SUDO_USER in test).
+        let orig = std::env::var_os("HOME");
+        std::env::set_var("HOME", fake_home.path());
+        // Remove SUDO_USER so we test the HOME fallback.
+        let orig_sudo = std::env::var_os("SUDO_USER");
+        std::env::remove_var("SUDO_USER");
+
+        let path = default_ssh_pubkey_path();
+        assert!(path.is_some());
+        assert!(path.unwrap().to_string_lossy().ends_with("id_ed25519.pub"));
+
+        // Restore.
+        if let Some(h) = orig {
+            std::env::set_var("HOME", h);
+        }
+        if let Some(s) = orig_sudo {
+            std::env::set_var("SUDO_USER", s);
+        }
+    }
+
+    #[test]
+    fn default_ssh_pubkey_tries_rsa_fallback() {
+        let fake_home = tempfile::tempdir().unwrap();
+        let ssh_dir = fake_home.path().join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        // Only RSA key exists.
+        fs::write(ssh_dir.join("id_rsa.pub"), "ssh-rsa AAAA...\n").unwrap();
+
+        let orig = std::env::var_os("HOME");
+        std::env::set_var("HOME", fake_home.path());
+        let orig_sudo = std::env::var_os("SUDO_USER");
+        std::env::remove_var("SUDO_USER");
+
+        let path = default_ssh_pubkey_path();
+        assert!(path.is_some());
+        assert!(path.unwrap().to_string_lossy().ends_with("id_rsa.pub"));
+
+        if let Some(h) = orig {
+            std::env::set_var("HOME", h);
+        }
+        if let Some(s) = orig_sudo {
+            std::env::set_var("SUDO_USER", s);
+        }
+    }
+
+    #[test]
+    fn default_ssh_pubkey_returns_none_when_no_keys() {
+        let fake_home = tempfile::tempdir().unwrap();
+        let ssh_dir = fake_home.path().join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        // No key files.
+
+        let orig = std::env::var_os("HOME");
+        std::env::set_var("HOME", fake_home.path());
+        let orig_sudo = std::env::var_os("SUDO_USER");
+        std::env::remove_var("SUDO_USER");
+
+        let path = default_ssh_pubkey_path();
+        assert!(path.is_none());
+
+        if let Some(h) = orig {
+            std::env::set_var("HOME", h);
+        }
+        if let Some(s) = orig_sudo {
+            std::env::set_var("SUDO_USER", s);
         }
     }
 }
