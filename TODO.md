@@ -37,7 +37,7 @@
 - [x] Implement `ember vm create`: ZFS clone from image snapshot, loop-mount zvol to inject per-VM SSH key, write metadata
 - [x] Implement `ember vm start`: spawn firecracker, configure, boot (no networking yet)
 - [x] Implement `ember vm stop`: graceful shutdown + SIGKILL fallback
-- [ ] Implement `ember vm delete`: cleanup everything
+- [x] Implement `ember vm delete`: cleanup everything
 - [ ] Implement `ember vm list` and `ember vm inspect`
 - [ ] Test: create VM, start it, verify firecracker process running, stop, delete
 

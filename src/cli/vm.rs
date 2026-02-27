@@ -159,7 +159,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Stop(args) => stop(args, state_dir),
         VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
-        VmCommand::Delete(_) => anyhow::bail!("ember vm delete is not yet implemented"),
+        VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(_) => anyhow::bail!("ember vm list is not yet implemented"),
         VmCommand::Inspect(_) => anyhow::bail!("ember vm inspect is not yet implemented"),
         VmCommand::Ssh(_) => anyhow::bail!("ember vm ssh is not yet implemented"),
@@ -480,6 +480,66 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::save(&store, &metadata)?;
 
     println!("VM '{}' stopped.", args.name);
+    Ok(())
+}
+
+/// Delete a VM and all its resources.
+///
+/// Workflow: force-stop if running (requires --force) → destroy ZFS zvol
+/// (recursively, including user snapshots) → remove state directory.
+///
+/// Each cleanup step is idempotent — continues if the resource is already gone.
+/// Network cleanup (TAP, iptables, IP release) is not yet implemented.
+fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Load VM metadata (must exist).
+    let metadata = vm::load(&store, &args.name)?;
+
+    // If the VM is running or paused, require --force.
+    match metadata.status {
+        VmStatus::Running | VmStatus::Paused => {
+            if !args.force {
+                anyhow::bail!(
+                    "vm '{}' is {} — stop it first or use --force",
+                    args.name,
+                    metadata.status
+                );
+            }
+
+            // Force-kill the Firecracker process.
+            if let Some(pid) = metadata.pid {
+                if firecracker::process::is_alive(pid) {
+                    println!("Force-killing Firecracker (pid {pid})...");
+                    firecracker::process::kill(pid)?;
+                }
+            }
+
+            // Clean up the API socket.
+            if metadata.api_socket.exists() {
+                let _ = std::fs::remove_file(&metadata.api_socket);
+            }
+        }
+        VmStatus::Created | VmStatus::Stopped => {}
+    }
+
+    // TODO: network cleanup (TAP device, iptables rules, IP release)
+    // once the network module is implemented.
+
+    // Destroy the ZFS zvol and all snapshots under it.
+    println!("Destroying ZFS zvol '{}'...", metadata.zvol_path);
+    match zfs::volume::destroy(&metadata.zvol_path, true) {
+        Ok(()) => {}
+        Err(e) => {
+            // Log but continue — the zvol may already be gone.
+            eprintln!("Warning: failed to destroy zvol '{}': {e}", metadata.zvol_path);
+        }
+    }
+
+    // Remove the VM state directory.
+    vm::delete(&store, &args.name)?;
+
+    println!("VM '{}' deleted.", args.name);
     Ok(())
 }
 
