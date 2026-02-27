@@ -543,9 +543,7 @@ fn start_configure(
 /// Stop a running VM: graceful shutdown via SendCtrlAltDel, then SIGKILL fallback.
 ///
 /// Workflow: validate state → send CtrlAltDel (or skip if --force) → wait for exit
-/// → SIGKILL if still alive → clean up socket → update metadata.
-///
-/// Network cleanup (TAP, iptables, IP release) is not yet implemented.
+/// → SIGKILL if still alive → clean up network + socket → update metadata.
 fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
@@ -613,6 +611,11 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Clean up networking resources (TAP device, iptables rules, IP allocation).
+    if let Some(ref net_info) = metadata.network {
+        cleanup_network(&store, &args.name, net_info);
+    }
+
     // Clean up the API socket.
     let socket_path = &metadata.api_socket;
     if socket_path.exists() {
@@ -622,6 +625,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Update metadata.
     metadata.status = VmStatus::Stopped;
     metadata.pid = None;
+    metadata.network = None;
     vm::save(&store, &metadata)?;
 
     println!("VM '{}' stopped.", args.name);
@@ -630,11 +634,11 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
 /// Delete a VM and all its resources.
 ///
-/// Workflow: force-stop if running (requires --force) → destroy ZFS zvol
-/// (recursively, including user snapshots) → remove state directory.
+/// Workflow: force-stop if running (requires --force) → clean up network →
+/// destroy ZFS zvol (recursively, including user snapshots) → remove state
+/// directory.
 ///
 /// Each cleanup step is idempotent — continues if the resource is already gone.
-/// Network cleanup (TAP, iptables, IP release) is not yet implemented.
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
@@ -670,8 +674,11 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         VmStatus::Created | VmStatus::Stopped => {}
     }
 
-    // TODO: network cleanup (TAP device, iptables rules, IP release)
-    // once the network module is implemented.
+    // Clean up networking resources (TAP device, iptables rules, IP allocation).
+    // Idempotent — safe to call even if resources are already gone.
+    if let Some(ref net_info) = metadata.network {
+        cleanup_network(&store, &metadata.name, net_info);
+    }
 
     // Wait for udev to finish processing device events. After mount/unmount
     // cycles (e.g. SSH key injection during create), the zvol block device may

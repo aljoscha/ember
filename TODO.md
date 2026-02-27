@@ -48,7 +48,7 @@
 - [x] Implement iptables NAT/masquerade rule management (`src/network/nat.rs`)
 - [x] Implement WAN interface detection (`ip route get 8.8.8.8`)
 - [x] Integrate networking into VM start: create TAP, allocate IP, set iptables, configure kernel `ip=` param
-- [ ] Integrate cleanup into VM stop/delete: remove iptables rules, delete TAP, release IP
+- [x] Integrate cleanup into VM stop/delete: remove iptables rules, delete TAP, release IP
 - [ ] Implement state reconciliation: cleanup orphaned TAP devices on startup
 - [ ] Test: start VM, verify SSH reachable from host, verify internet from guest
 
