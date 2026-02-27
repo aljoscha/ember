@@ -26,7 +26,11 @@ const SSH_PUBKEY_NAMES: &[&str] = &[
 /// home directory instead of root's.
 pub fn default_ssh_pubkey_path() -> Option<PathBuf> {
     let home = invoking_user_home()?;
-    let ssh_dir = home.join(".ssh");
+    find_ssh_pubkey_in(&home.join(".ssh"))
+}
+
+/// Find the first matching SSH public key in the given `.ssh` directory.
+fn find_ssh_pubkey_in(ssh_dir: &Path) -> Option<PathBuf> {
     SSH_PUBKEY_NAMES
         .iter()
         .map(|name| ssh_dir.join(name))
@@ -280,78 +284,34 @@ mod tests {
     }
 
     #[test]
-    fn default_ssh_pubkey_finds_existing_key() {
-        // Create a fake home with an ed25519 key.
-        let fake_home = tempfile::tempdir().unwrap();
-        let ssh_dir = fake_home.path().join(".ssh");
-        fs::create_dir_all(&ssh_dir).unwrap();
+    fn find_ssh_pubkey_prefers_ed25519() {
+        let dir = tempfile::tempdir().unwrap();
+        let ssh_dir = dir.path();
         fs::write(ssh_dir.join("id_ed25519.pub"), "ssh-ed25519 AAAA...\n").unwrap();
+        fs::write(ssh_dir.join("id_rsa.pub"), "ssh-rsa AAAA...\n").unwrap();
 
-        // Temporarily override HOME (no SUDO_USER in test).
-        let orig = std::env::var_os("HOME");
-        std::env::set_var("HOME", fake_home.path());
-        // Remove SUDO_USER so we test the HOME fallback.
-        let orig_sudo = std::env::var_os("SUDO_USER");
-        std::env::remove_var("SUDO_USER");
-
-        let path = default_ssh_pubkey_path();
+        let path = find_ssh_pubkey_in(ssh_dir);
         assert!(path.is_some());
         assert!(path.unwrap().to_string_lossy().ends_with("id_ed25519.pub"));
-
-        // Restore.
-        if let Some(h) = orig {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(s) = orig_sudo {
-            std::env::set_var("SUDO_USER", s);
-        }
     }
 
     #[test]
-    fn default_ssh_pubkey_tries_rsa_fallback() {
-        let fake_home = tempfile::tempdir().unwrap();
-        let ssh_dir = fake_home.path().join(".ssh");
-        fs::create_dir_all(&ssh_dir).unwrap();
+    fn find_ssh_pubkey_falls_back_to_rsa() {
+        let dir = tempfile::tempdir().unwrap();
+        let ssh_dir = dir.path();
         // Only RSA key exists.
         fs::write(ssh_dir.join("id_rsa.pub"), "ssh-rsa AAAA...\n").unwrap();
 
-        let orig = std::env::var_os("HOME");
-        std::env::set_var("HOME", fake_home.path());
-        let orig_sudo = std::env::var_os("SUDO_USER");
-        std::env::remove_var("SUDO_USER");
-
-        let path = default_ssh_pubkey_path();
+        let path = find_ssh_pubkey_in(ssh_dir);
         assert!(path.is_some());
         assert!(path.unwrap().to_string_lossy().ends_with("id_rsa.pub"));
-
-        if let Some(h) = orig {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(s) = orig_sudo {
-            std::env::set_var("SUDO_USER", s);
-        }
     }
 
     #[test]
-    fn default_ssh_pubkey_returns_none_when_no_keys() {
-        let fake_home = tempfile::tempdir().unwrap();
-        let ssh_dir = fake_home.path().join(".ssh");
-        fs::create_dir_all(&ssh_dir).unwrap();
-        // No key files.
-
-        let orig = std::env::var_os("HOME");
-        std::env::set_var("HOME", fake_home.path());
-        let orig_sudo = std::env::var_os("SUDO_USER");
-        std::env::remove_var("SUDO_USER");
-
-        let path = default_ssh_pubkey_path();
+    fn find_ssh_pubkey_returns_none_when_no_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty directory, no key files.
+        let path = find_ssh_pubkey_in(dir.path());
         assert!(path.is_none());
-
-        if let Some(h) = orig {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(s) = orig_sudo {
-            std::env::set_var("SUDO_USER", s);
-        }
     }
 }
