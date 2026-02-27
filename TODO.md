@@ -44,7 +44,7 @@
 ## Phase 4: Networking
 
 - [x] Implement TAP device creation via ioctl (`src/network/tap.rs`)
-- [ ] Implement IP allocation from /16 pool in /30 blocks (`src/network/ip.rs`)
+- [x] Implement IP allocation from /16 pool in /30 blocks (`src/network/ip.rs`)
 - [ ] Implement iptables NAT/masquerade rule management (`src/network/nat.rs`)
 - [ ] Implement WAN interface detection (`ip route get 8.8.8.8`)
 - [ ] Integrate networking into VM start: create TAP, allocate IP, set iptables, configure kernel `ip=` param
