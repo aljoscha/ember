@@ -35,7 +35,7 @@
 - [x] Implement VM config builder: translate user config to API calls (`src/firecracker/config.rs`)
 - [x] Implement VM metadata types and state tracking (`src/state/vm.rs`)
 - [x] Implement `ember vm create`: ZFS clone from image snapshot, loop-mount zvol to inject per-VM SSH key, write metadata
-- [ ] Implement `ember vm start`: spawn firecracker, configure, boot (no networking yet)
+- [x] Implement `ember vm start`: spawn firecracker, configure, boot (no networking yet)
 - [ ] Implement `ember vm stop`: graceful shutdown + SIGKILL fallback
 - [ ] Implement `ember vm delete`: cleanup everything
 - [ ] Implement `ember vm list` and `ember vm inspect`

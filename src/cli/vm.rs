@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::init::GlobalConfig;
 use crate::error::Error;
+use crate::firecracker;
 use crate::image;
 use crate::image::registry::ImageRegistry;
 use crate::state::store::StateStore;
@@ -154,7 +155,7 @@ pub enum OutputFormat {
 pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
     match cmd {
         VmCommand::Create(args) => create(args, state_dir),
-        VmCommand::Start(_) => anyhow::bail!("ember vm start is not yet implemented"),
+        VmCommand::Start(args) => start(args, state_dir),
         VmCommand::Stop(_) => anyhow::bail!("ember vm stop is not yet implemented"),
         VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
@@ -309,6 +310,92 @@ fn create_post_clone(
     }
 
     Ok(())
+}
+
+/// Start a VM: spawn Firecracker, configure via API, boot.
+///
+/// Workflow: validate state → clean stale socket → spawn firecracker
+/// → wait for API socket → configure machine (CPU, memory, kernel, rootfs)
+/// → start instance → update metadata.
+///
+/// Networking is not yet integrated — the VM boots without network access.
+fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Load and validate VM state.
+    let mut metadata = vm::load(&store, &args.name)?;
+    match metadata.status {
+        VmStatus::Created | VmStatus::Stopped => {}
+        _ => {
+            return Err(Error::VmWrongState {
+                name: args.name.clone(),
+                actual: metadata.status.to_string(),
+                expected: "created or stopped".to_string(),
+            }
+            .into())
+        }
+    }
+
+    // Build paths.
+    let socket_path = &metadata.api_socket;
+    let log_path = store.vm_dir(&args.name).join("firecracker.log");
+    let rootfs_path = zfs::volume::device_path(&metadata.zvol_path);
+
+    // Clean up stale socket from a previous run.
+    if socket_path.exists() {
+        std::fs::remove_file(socket_path).map_err(|e| Error::Io {
+            path: socket_path.clone(),
+            source: e,
+        })?;
+    }
+
+    // Spawn Firecracker process.
+    println!("Starting Firecracker...");
+    let child = firecracker::process::spawn(socket_path, &log_path)?;
+    let pid = child.id();
+
+    // Everything from here needs cleanup on failure: kill the process.
+    let result = start_configure(&metadata, socket_path, &rootfs_path);
+    if let Err(e) = result {
+        eprintln!("VM start failed, killing Firecracker process (pid {pid})...");
+        let _ = firecracker::process::kill(pid);
+        return Err(e);
+    }
+
+    // Update metadata.
+    metadata.status = VmStatus::Running;
+    metadata.pid = Some(pid);
+    vm::save(&store, &metadata)?;
+
+    println!("VM '{}' started (pid {}).", args.name, pid);
+    Ok(())
+}
+
+/// Configure and start a Firecracker instance via the API.
+///
+/// Runs the async API calls inside a one-shot tokio runtime.
+fn start_configure(
+    metadata: &VmMetadata,
+    socket_path: &Path,
+    rootfs_path: &Path,
+) -> anyhow::Result<()> {
+    // Wait for the API socket to appear.
+    firecracker::process::wait_for_socket(socket_path)?;
+
+    // Build VM configuration (no networking yet).
+    let vm_config = firecracker::config::VmConfig::new(
+        metadata.cpus,
+        metadata.memory_mib,
+        &metadata.kernel_path,
+        rootfs_path,
+    );
+
+    // Run the async API calls.
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let client = firecracker::api::FirecrackerClient::new(socket_path);
+        vm_config.configure_and_start(&client).await
+    })
 }
 
 /// Inject the invoking user's SSH public key into the rootfs.
