@@ -446,6 +446,7 @@ fn start_setup_network(
         gateway_ip: allocation.gateway_ip,
         netmask: allocation.netmask,
         guest_mac: None,
+        wan_iface: Some(wan_iface),
     })
 }
 
@@ -497,8 +498,13 @@ fn start_after_network(
 /// Best-effort: logs warnings but does not propagate errors, since we're
 /// already handling a failure.
 fn cleanup_network(store: &StateStore, vm_name: &str, net_info: &NetworkInfo) {
-    // Detect WAN interface for iptables cleanup (best-effort).
-    if let Ok(wan_iface) = network::wan::detect() {
+    // Use the stored WAN interface (matches what was used to create the rules),
+    // falling back to re-detection for backwards compatibility with older metadata.
+    let wan_iface = net_info
+        .wan_iface
+        .clone()
+        .or_else(|| network::wan::detect().ok());
+    if let Some(wan_iface) = wan_iface {
         let _ = network::nat::remove_rules(&net_info.tap_device, &net_info.guest_ip, &wan_iface);
     }
     let _ = network::tap::delete(&net_info.tap_device);

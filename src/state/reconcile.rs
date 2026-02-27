@@ -114,7 +114,13 @@ fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
 
 /// Best-effort network cleanup for a dead VM.
 fn cleanup_network(store: &StateStore, vm_name: &str, net_info: &vm::NetworkInfo) {
-    if let Ok(wan_iface) = network::wan::detect() {
+    // Use the stored WAN interface (matches what was used to create the rules),
+    // falling back to re-detection for backwards compatibility with older metadata.
+    let wan_iface = net_info
+        .wan_iface
+        .clone()
+        .or_else(|| network::wan::detect().ok());
+    if let Some(wan_iface) = wan_iface {
         let _ = network::nat::remove_rules(&net_info.tap_device, &net_info.guest_ip, &wan_iface);
     }
     let _ = network::tap::delete(&net_info.tap_device);

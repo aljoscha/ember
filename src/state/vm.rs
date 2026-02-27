@@ -57,6 +57,12 @@ pub struct NetworkInfo {
     pub netmask: String,
     /// Guest MAC address, if assigned.
     pub guest_mac: Option<String>,
+    /// WAN interface used for iptables rules (e.g., "eth0", "wg0-mullvad").
+    ///
+    /// Stored so cleanup can remove the exact rules that were added,
+    /// even if the default route changes between start and stop.
+    #[serde(default)]
+    pub wan_iface: Option<String>,
 }
 
 /// SSH connection configuration for a VM.
@@ -346,6 +352,7 @@ mod tests {
             gateway_ip: "10.100.0.1".to_string(),
             netmask: "255.255.255.252".to_string(),
             guest_mac: Some("AA:FC:00:00:00:01".to_string()),
+            wan_iface: Some("eth0".to_string()),
         });
         vm.status = VmStatus::Running;
         vm.pid = Some(42);
