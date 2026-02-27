@@ -185,8 +185,11 @@ fn create_dummy_kernel(dir: &std::path::Path) -> PathBuf {
 }
 
 const KERNEL_CACHE_PATH: &str = "/tmp/ember-test-vmlinux";
+/// Use the same Firecracker CI kernel that `ember vm create` downloads by
+/// default.  The old quickstart kernel lacks cgroups and other features
+/// required by systemd, so Ubuntu-based VMs would fail to boot properly.
 const KERNEL_URL: &str =
-    "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin";
+    "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102";
 
 /// Check that Docker is available for building images.
 fn docker_available() -> bool {
@@ -872,9 +875,14 @@ fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
             delays_ms.len()
         );
 
-        if ssh_exec(guest_ip, key_path, "true").is_ok() {
-            eprintln!("  SSH connected on attempt {}", i + 1);
-            return true;
+        match ssh_exec(guest_ip, key_path, "true") {
+            Ok(_) => {
+                eprintln!("  SSH connected on attempt {}", i + 1);
+                return true;
+            }
+            Err(e) => {
+                eprintln!("  SSH attempt {} failed: {e}", i + 1);
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(*delay));
