@@ -436,6 +436,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         // --force: skip graceful shutdown, go straight to SIGKILL.
         println!("Force-killing Firecracker (pid {pid})...");
         firecracker::process::kill(pid)?;
+        firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
     } else {
         // Graceful shutdown: send CtrlAltDel via the API, then wait.
         println!("Sending shutdown signal to VM '{}'...", args.name);
@@ -456,6 +457,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         if let Err(e) = send_result {
             eprintln!("Graceful shutdown failed ({e}), sending SIGKILL...");
             firecracker::process::kill(pid)?;
+            firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
         } else {
             // Wait up to 10 seconds for the process to exit.
             println!("Waiting for VM to shut down (up to 10s)...");
@@ -464,6 +466,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
             if !exited {
                 println!("VM did not exit in time, sending SIGKILL...");
                 firecracker::process::kill(pid)?;
+                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
             }
         }
     }
@@ -507,11 +510,13 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
                 );
             }
 
-            // Force-kill the Firecracker process.
+            // Force-kill the Firecracker process and wait for it to die
+            // so it releases the zvol block device before we destroy it.
             if let Some(pid) = metadata.pid {
                 if firecracker::process::is_alive(pid) {
                     println!("Force-killing Firecracker (pid {pid})...");
                     firecracker::process::kill(pid)?;
+                    firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
                 }
             }
 
@@ -525,6 +530,14 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // TODO: network cleanup (TAP device, iptables rules, IP release)
     // once the network module is implemented.
+
+    // Wait for udev to finish processing device events. After mount/unmount
+    // cycles (e.g. SSH key injection during create), the zvol block device may
+    // still be briefly held by the kernel. Without this, `zfs destroy` can
+    // fail with "device busy".
+    let _ = ProcessCommand::new("udevadm")
+        .arg("settle")
+        .status();
 
     // Destroy the ZFS zvol and all snapshots under it.
     println!("Destroying ZFS zvol '{}'...", metadata.zvol_path);

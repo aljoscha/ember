@@ -76,20 +76,20 @@ fn ember(args: &[&str]) -> std::process::Output {
 
 /// Assert that a ZFS pool exists.
 fn assert_pool_exists(pool: &str) {
-    let status = Command::new("zpool")
+    let output = Command::new("zpool")
         .args(["list", "-H", pool])
-        .status()
+        .output()
         .expect("failed to run zpool");
-    assert!(status.success(), "expected pool '{pool}' to exist");
+    assert!(output.status.success(), "expected pool '{pool}' to exist");
 }
 
 /// Assert that a ZFS dataset exists.
 fn assert_dataset_exists(dataset: &str) {
-    let status = Command::new("zfs")
+    let output = Command::new("zfs")
         .args(["list", "-H", dataset])
-        .status()
+        .output()
         .expect("failed to run zfs");
-    assert!(status.success(), "expected dataset '{dataset}' to exist");
+    assert!(output.status.success(), "expected dataset '{dataset}' to exist");
 }
 
 #[test]

@@ -96,33 +96,33 @@ impl Drop for PoolCleanup {
 
 /// Assert that a ZFS dataset (zvol, filesystem, etc.) exists.
 fn assert_dataset_exists(dataset: &str) {
-    let status = Command::new("zfs")
+    let output = Command::new("zfs")
         .args(["list", "-H", dataset])
-        .status()
+        .output()
         .expect("failed to run zfs");
-    assert!(status.success(), "expected dataset '{dataset}' to exist");
+    assert!(output.status.success(), "expected dataset '{dataset}' to exist");
 }
 
 /// Assert that a ZFS snapshot exists.
 fn assert_snapshot_exists(snapshot: &str) {
-    let status = Command::new("zfs")
+    let output = Command::new("zfs")
         .args(["list", "-t", "snapshot", "-H", snapshot])
-        .status()
+        .output()
         .expect("failed to run zfs");
     assert!(
-        status.success(),
+        output.status.success(),
         "expected snapshot '{snapshot}' to exist"
     );
 }
 
 /// Assert that a ZFS dataset does NOT exist.
 fn assert_dataset_absent(dataset: &str) {
-    let status = Command::new("zfs")
+    let output = Command::new("zfs")
         .args(["list", "-H", dataset])
-        .status()
+        .output()
         .expect("failed to run zfs");
     assert!(
-        !status.success(),
+        !output.status.success(),
         "expected dataset '{dataset}' to NOT exist"
     );
 }
