@@ -25,6 +25,10 @@ pub struct InitArgs {
     /// URL to download the kernel from
     #[arg(long)]
     pub kernel_url: Option<String>,
+
+    /// WAN interface for NAT (auto-detected if not specified)
+    #[arg(long)]
+    pub wan_iface: Option<String>,
 }
 
 /// Global configuration written by `ember init`.
@@ -33,6 +37,10 @@ pub struct GlobalConfig {
     pub pool: String,
     pub dataset: String,
     pub kernel_path: Option<PathBuf>,
+    /// Default WAN interface for iptables NAT rules.
+    /// Auto-detected during `ember init`, overridable via `--wan-iface`.
+    #[serde(default)]
+    pub wan_iface: Option<String>,
 }
 
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
@@ -90,11 +98,30 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         None
     };
 
-    // 5. Write config.
+    // 5. Detect or use provided WAN interface.
+    let wan_iface = if let Some(iface) = &args.wan_iface {
+        println!("Using WAN interface '{iface}' (from --wan-iface).");
+        Some(iface.clone())
+    } else {
+        match crate::network::wan::detect() {
+            Ok(iface) => {
+                println!("Detected WAN interface: {iface}");
+                Some(iface)
+            }
+            Err(e) => {
+                println!("Warning: could not detect WAN interface: {e}");
+                println!("Networking will require --wan-iface at init time.");
+                None
+            }
+        }
+    };
+
+    // 6. Write config.
     let config = GlobalConfig {
         pool: pool.clone(),
         dataset: args.dataset.clone(),
         kernel_path,
+        wan_iface,
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
@@ -129,6 +156,7 @@ mod tests {
             pool: "testpool".to_string(),
             dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/var/lib/ember/kernels/vmlinux")),
+            wan_iface: Some("eth0".to_string()),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -142,6 +170,7 @@ mod tests {
             pool: "mypool".to_string(),
             dataset: "mydata".to_string(),
             kernel_path: None,
+            wan_iface: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -155,12 +184,14 @@ mod tests {
             pool: "tank".to_string(),
             dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
+            wan_iface: Some("wlp2s0".to_string()),
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
         assert_eq!(json["pool"], "tank");
         assert_eq!(json["dataset"], "ember");
         assert_eq!(json["kernel_path"], "/kernels/vmlinux");
+        assert_eq!(json["wan_iface"], "wlp2s0");
     }
 
     #[test]
@@ -169,6 +200,7 @@ mod tests {
             pool: "tank".to_string(),
             dataset: "ember".to_string(),
             kernel_path: None,
+            wan_iface: None,
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
@@ -185,6 +217,7 @@ mod tests {
             pool: "testpool".to_string(),
             dataset: "ember".to_string(),
             kernel_path: None,
+            wan_iface: Some("eth0".to_string()),
         };
         store.write(&store.config_path(), &config).unwrap();
 
@@ -192,6 +225,7 @@ mod tests {
         assert_eq!(loaded.pool, "testpool");
         assert_eq!(loaded.dataset, "ember");
         assert_eq!(loaded.kernel_path, None);
+        assert_eq!(loaded.wan_iface, Some("eth0".to_string()));
     }
 
     #[test]
@@ -205,6 +239,7 @@ mod tests {
             pool: "pool1".to_string(),
             dataset: "ds1".to_string(),
             kernel_path: None,
+            wan_iface: Some("eth0".to_string()),
         };
         store.write(&store.config_path(), &config1).unwrap();
 
@@ -213,10 +248,20 @@ mod tests {
             pool: "pool2".to_string(),
             dataset: "ds2".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
+            wan_iface: Some("wlp2s0".to_string()),
         };
         store.write(&store.config_path(), &config2).unwrap();
 
         let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
         assert_eq!(loaded, config2);
+    }
+
+    #[test]
+    fn global_config_backwards_compatible_without_wan_iface() {
+        // Older config.json files won't have wan_iface — serde(default) handles this.
+        let json = r#"{"pool":"tank","dataset":"ember","kernel_path":null}"#;
+        let loaded: GlobalConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(loaded.pool, "tank");
+        assert_eq!(loaded.wan_iface, None);
     }
 }
