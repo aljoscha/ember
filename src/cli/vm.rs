@@ -9,8 +9,9 @@ use crate::error::Error;
 use crate::firecracker;
 use crate::image;
 use crate::image::registry::ImageRegistry;
+use crate::network;
 use crate::state::store::StateStore;
-use crate::state::vm::{self, SshConfig, VmMetadata, VmStatus};
+use crate::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
 use crate::zfs;
 
 #[derive(Subcommand)]
@@ -347,15 +348,18 @@ fn create_post_clone(
     Ok(())
 }
 
-/// Start a VM: spawn Firecracker, configure via API, boot.
+/// Start a VM: set up networking, spawn Firecracker, configure via API, boot.
 ///
-/// Workflow: validate state → clean stale socket → spawn firecracker
-/// → wait for API socket → configure machine (CPU, memory, kernel, rootfs)
-/// → start instance → update metadata.
+/// Workflow: validate state → allocate IP → create TAP device → set iptables
+/// → clean stale socket → spawn firecracker → wait for API socket
+/// → configure machine (CPU, memory, kernel, rootfs, network) → start instance
+/// → update metadata.
 ///
-/// Networking is not yet integrated — the VM boots without network access.
+/// On failure, all networking resources (TAP, iptables, IP allocation) are
+/// cleaned up before returning the error.
 fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
+    let config: GlobalConfig = store.read(&store.config_path())?;
 
     // Load and validate VM state.
     let mut metadata = vm::load(&store, &args.name)?;
@@ -371,6 +375,87 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // ── Networking setup ───────────────────────────────────────────
+    let net_info = start_setup_network(&store, &config, &metadata)?;
+
+    // Everything from here needs network cleanup on failure.
+    let result = start_after_network(args, &store, &mut metadata, &net_info);
+    if let Err(e) = result {
+        cleanup_network(&store, &args.name, &net_info);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Set up networking for a VM start: allocate IP, create TAP, enable NAT.
+///
+/// Returns the [`NetworkInfo`] to persist in metadata and use for Firecracker
+/// configuration. The caller is responsible for cleanup on failure.
+fn start_setup_network(
+    store: &StateStore,
+    config: &GlobalConfig,
+    metadata: &VmMetadata,
+) -> anyhow::Result<NetworkInfo> {
+    // Determine WAN interface (from config or auto-detect).
+    let wan_iface = match &config.wan_iface {
+        Some(iface) => iface.clone(),
+        None => {
+            println!("No WAN interface in config, detecting...");
+            network::wan::detect()?
+        }
+    };
+
+    // Allocate a /30 IP block for this VM.
+    let subnet = network::ip::DEFAULT_SUBNET;
+    println!("Allocating network address...");
+    let allocation = network::ip::allocate(store, subnet, &metadata.name)?;
+    println!(
+        "  Guest IP: {}, Host IP: {}",
+        allocation.guest_ip, allocation.host_ip
+    );
+
+    // Create TAP device.
+    let tap_name = network::tap::device_name(&metadata.id);
+    let host_ip_cidr = format!("{}/30", allocation.host_ip);
+    println!("Creating TAP device {tap_name}...");
+    if let Err(e) = network::tap::create(&tap_name, &host_ip_cidr) {
+        // Clean up IP allocation before returning.
+        let _ = network::ip::release(store, &metadata.name);
+        return Err(e.into());
+    }
+
+    // Enable IP forwarding (idempotent).
+    if let Err(e) = network::nat::enable_ip_forwarding() {
+        let _ = network::tap::delete(&tap_name);
+        let _ = network::ip::release(store, &metadata.name);
+        return Err(e.into());
+    }
+
+    // Add iptables NAT/forwarding rules.
+    if let Err(e) = network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface) {
+        let _ = network::tap::delete(&tap_name);
+        let _ = network::ip::release(store, &metadata.name);
+        return Err(e.into());
+    }
+
+    Ok(NetworkInfo {
+        tap_device: tap_name,
+        host_ip: allocation.host_ip,
+        guest_ip: allocation.guest_ip,
+        gateway_ip: allocation.gateway_ip,
+        netmask: allocation.netmask,
+        guest_mac: None,
+    })
+}
+
+/// Continue VM start after networking is set up: spawn Firecracker, configure, boot.
+fn start_after_network(
+    args: &StartArgs,
+    store: &StateStore,
+    metadata: &mut VmMetadata,
+    net_info: &NetworkInfo,
+) -> anyhow::Result<()> {
     // Build paths.
     let socket_path = &metadata.api_socket;
     let log_path = store.vm_dir(&args.name).join("firecracker.log");
@@ -389,21 +474,35 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     let child = firecracker::process::spawn(socket_path, &log_path)?;
     let pid = child.id();
 
-    // Everything from here needs cleanup on failure: kill the process.
-    let result = start_configure(&metadata, socket_path, &rootfs_path);
+    // Everything from here needs process cleanup on failure.
+    let result = start_configure(metadata, socket_path, &rootfs_path, net_info);
     if let Err(e) = result {
         eprintln!("VM start failed, killing Firecracker process (pid {pid})...");
         let _ = firecracker::process::kill(pid);
         return Err(e);
     }
 
-    // Update metadata.
+    // Update metadata with network info, status, and PID.
+    metadata.network = Some(net_info.clone());
     metadata.status = VmStatus::Running;
     metadata.pid = Some(pid);
-    vm::save(&store, &metadata)?;
+    vm::save(store, metadata)?;
 
     println!("VM '{}' started (pid {}).", args.name, pid);
     Ok(())
+}
+
+/// Clean up networking resources on failure.
+///
+/// Best-effort: logs warnings but does not propagate errors, since we're
+/// already handling a failure.
+fn cleanup_network(store: &StateStore, vm_name: &str, net_info: &NetworkInfo) {
+    // Detect WAN interface for iptables cleanup (best-effort).
+    if let Ok(wan_iface) = network::wan::detect() {
+        let _ = network::nat::remove_rules(&net_info.tap_device, &net_info.guest_ip, &wan_iface);
+    }
+    let _ = network::tap::delete(&net_info.tap_device);
+    let _ = network::ip::release(store, vm_name);
 }
 
 /// Configure and start a Firecracker instance via the API.
@@ -413,17 +512,25 @@ fn start_configure(
     metadata: &VmMetadata,
     socket_path: &Path,
     rootfs_path: &Path,
+    net_info: &NetworkInfo,
 ) -> anyhow::Result<()> {
     // Wait for the API socket to appear.
     firecracker::process::wait_for_socket(socket_path)?;
 
-    // Build VM configuration (no networking yet).
+    // Build VM configuration with networking.
     let vm_config = firecracker::config::VmConfig::new(
         metadata.cpus,
         metadata.memory_mib,
         &metadata.kernel_path,
         rootfs_path,
-    );
+    )
+    .with_network(firecracker::config::VmNetworkConfig {
+        tap_device: net_info.tap_device.clone(),
+        guest_ip: net_info.guest_ip.clone(),
+        gateway_ip: net_info.gateway_ip.clone(),
+        netmask: net_info.netmask.clone(),
+        guest_mac: net_info.guest_mac.clone(),
+    });
 
     // Run the async API calls.
     let rt = tokio::runtime::Runtime::new()?;
