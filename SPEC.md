@@ -22,6 +22,7 @@ crackling
 │   ├── stop <name> [--force]
 │   ├── pause <name>
 │   ├── resume <name>
+│   ├── resize <name> --disk-size <GiB>
 │   ├── delete <name> [--force]
 │   ├── list [--format table|json]
 │   ├── inspect <name> [--format json]
@@ -182,6 +183,19 @@ zfs clone <pool>/images/<name>-<tag>@base <pool>/vms/<vm-name>
 This is instant regardless of image size (copy-on-write). The zvol appears as `/dev/zvol/<pool>/vms/<vm-name>` — passed directly to Firecracker as the root drive block device.
 
 After cloning, the VM's zvol is loop-mounted and the invoking user's SSH public key is injected into `/root/.ssh/authorized_keys`. This keeps the `@base` snapshot pristine (shared across all VMs) while giving each VM its own key. If the user specifies `--ssh-key`, that key is used instead of the default.
+
+### VM Resize
+
+```
+crackling vm resize myvm --disk-size 8
+```
+
+1. VM must be stopped
+2. `zfs set volsize=<size>G <pool>/vms/<vm-name>` — grows the zvol
+3. Loop-mount the zvol, run `resize2fs` to expand ext4 to fill the new space
+4. Update `disk_size_gib` in VM metadata
+
+Shrinking is not supported — only growing. The command errors if the new size is smaller than or equal to the current size.
 
 ### User Snapshots
 

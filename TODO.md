@@ -69,7 +69,13 @@
 - [ ] Implement `crackling snapshot delete`
 - [ ] Test: snapshot, modify VM, restore, verify original state
 
-## Phase 7: Pause/Resume + YAML Config + Polish
+## Phase 7: VM Resize
+
+- [ ] Implement `crackling vm resize`: grow zvol + resize2fs (enforce VM stopped, grow-only)
+- [ ] Add `--disk-size` flag to `vm resize` CLI command
+- [ ] Test: resize a stopped VM, start it, verify new disk size visible in guest
+
+## Phase 8: Pause/Resume + YAML Config + Polish
 
 - [ ] Implement `crackling vm pause` via Firecracker `PATCH /vm`
 - [ ] Implement `crackling vm resume` via Firecracker `PATCH /vm`
