@@ -30,11 +30,15 @@ fn test_pool(name: &str) -> String {
 
 /// Create a loopback file and attach it to a loop device.
 fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
+    create_loop_device_sized(dir, "512M")
+}
+
+/// Create a loopback file of the given size and attach it to a loop device.
+fn create_loop_device_sized(dir: &std::path::Path, size: &str) -> (String, PathBuf) {
     let file = dir.join("pool.img");
 
-    // 512 MB sparse file — images need space for the zvol + ext4 overhead.
     let status = Command::new("truncate")
-        .args(["-s", "512M"])
+        .args(["-s", size])
         .arg(&file)
         .status()
         .expect("failed to run truncate");
@@ -183,6 +187,70 @@ fn create_dummy_kernel(dir: &std::path::Path) -> PathBuf {
 const KERNEL_CACHE_PATH: &str = "/tmp/ember-test-vmlinux";
 const KERNEL_URL: &str =
     "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin";
+
+/// Check that Docker is available for building images.
+fn docker_available() -> bool {
+    Command::new("docker")
+        .arg("info")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Set up a ZFS pool, run `ember init`, and build the ubuntu-vm image.
+///
+/// The ubuntu-vm image includes systemd, sshd, and networking tools —
+/// everything needed for SSH and internet connectivity tests.
+/// Requires Docker for the image build step.
+///
+/// Uses a 4 GB sparse file for the ZFS pool (ubuntu-vm is ~1-2 GB).
+fn setup_pool_init_and_build_ubuntu(
+    test_name: &str,
+    tmp: &tempfile::TempDir,
+) -> (String, PathBuf, PoolCleanup) {
+    let pool = test_pool(test_name);
+    let state_dir = tmp.path().join("state");
+    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "4G");
+
+    let cleanup = PoolCleanup {
+        pool: pool.clone(),
+        dev: loop_dev.clone(),
+    };
+
+    // Init pool.
+    let output = ember(&[
+        "--state-dir",
+        state_dir.to_str().unwrap(),
+        "init",
+        "--pool",
+        &pool,
+        "--device",
+        &loop_dev,
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // Build ubuntu-vm image (includes systemd + sshd).
+    let output = ember(&[
+        "--state-dir",
+        state_dir.to_str().unwrap(),
+        "image",
+        "build",
+        "ubuntu-vm",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "image build ubuntu-vm failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    (pool, state_dir, cleanup)
+}
 
 /// Check that Firecracker prerequisites are met: binary in PATH and /dev/kvm available.
 /// Returns false (with a message) if anything is missing.
@@ -818,11 +886,15 @@ fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
 /// Full networking test: start VM → verify TAP + iptables + host-to-guest ping
 /// → SSH into guest → verify internet from guest → stop → delete.
 ///
+/// Uses the `ubuntu-vm` image (built via Docker) which includes systemd,
+/// openssh-server, and networking tools — everything needed for proper SSH
+/// and internet connectivity testing.
+///
 /// Requires:
 /// - `firecracker` in PATH, `/dev/kvm` available
+/// - `docker` for building the ubuntu-vm image
 /// - Bootable kernel (auto-downloaded or `EMBER_TEST_KERNEL`)
-/// - Alpine image with `openssh` installed (the base `alpine:latest` may not
-///   have sshd — if SSH fails, the test reports which checks passed/failed)
+/// - SSH key pair for the invoking user
 /// - Network access (host must be able to reach the internet)
 ///
 /// Skips if prerequisites are missing.
@@ -830,6 +902,11 @@ fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
 #[ignore]
 fn networking_ssh_and_internet() {
     if !firecracker_available() {
+        return;
+    }
+
+    if !docker_available() {
+        eprintln!("Skipping: docker not available (needed to build ubuntu-vm image)");
         return;
     }
 
@@ -847,11 +924,12 @@ fn networking_ssh_and_internet() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmnetwork", &tmp);
+    let (pool, state_dir, _cleanup) = setup_pool_init_and_build_ubuntu("vmnetwork", &tmp);
     let state = state_dir.to_str().unwrap();
     let kernel = kernel_path.to_str().unwrap();
 
     // -- Create VM --
+    // Ubuntu with systemd needs more memory than Alpine with busybox init.
     let create_output = ember(&[
         "--state-dir",
         state,
@@ -859,11 +937,11 @@ fn networking_ssh_and_internet() {
         "create",
         "netvm",
         "--image",
-        "alpine:latest",
+        "ubuntu-vm",
         "--cpus",
         "1",
         "--memory",
-        "128",
+        "512",
         "--kernel",
         kernel,
         "--no-start",
@@ -988,55 +1066,49 @@ fn networking_ssh_and_internet() {
     );
 
     // -- SSH into guest --
+    // Ubuntu with systemd + sshd needs more time to boot than Alpine.
     eprintln!("Waiting for SSH to become available...");
-    let ssh_ok = wait_for_ssh(guest_ip, &ssh_key);
+    assert!(
+        wait_for_ssh(guest_ip, &ssh_key),
+        "SSH not reachable at {guest_ip}:22 after timeout"
+    );
 
-    if ssh_ok {
-        // Run a simple command to verify SSH exec works.
-        let hostname_result = ssh_exec(guest_ip, &ssh_key, "hostname");
-        assert!(
-            hostname_result.is_ok(),
-            "SSH command 'hostname' failed: {:?}",
-            hostname_result.err()
-        );
-        let hostname = hostname_result.unwrap();
-        eprintln!("Guest hostname: {hostname}");
+    // Run a simple command to verify SSH exec works.
+    let hostname_result = ssh_exec(guest_ip, &ssh_key, "hostname");
+    assert!(
+        hostname_result.is_ok(),
+        "SSH command 'hostname' failed: {:?}",
+        hostname_result.err()
+    );
+    let hostname = hostname_result.unwrap();
+    eprintln!("Guest hostname: {hostname}");
 
-        // -- Verify internet from guest --
-        // Try wget (available in Alpine by default via busybox).
-        let inet_result = ssh_exec(
-            guest_ip,
-            &ssh_key,
-            "wget -q -O /dev/null -T 5 http://example.com && echo OK",
-        );
-        match &inet_result {
-            Ok(out) => {
-                assert!(
-                    out.contains("OK"),
-                    "expected 'OK' from wget, got: {out}"
-                );
-                eprintln!("Guest internet access verified (wget http://example.com)");
-            }
-            Err(e) => {
-                // wget might not be available; try ping as fallback.
-                eprintln!("wget failed ({e}), trying ping...");
-                let ping_result = ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 8.8.8.8");
-                assert!(
-                    ping_result.is_ok(),
-                    "Guest cannot reach the internet. wget: {e}, ping: {:?}",
-                    ping_result.err()
-                );
-                eprintln!("Guest internet access verified (ping 8.8.8.8)");
-            }
+    // -- Verify internet from guest --
+    // Ubuntu has both wget and ping available.
+    let inet_result = ssh_exec(
+        guest_ip,
+        &ssh_key,
+        "wget -q -O /dev/null -T 5 http://example.com && echo OK",
+    );
+    match &inet_result {
+        Ok(out) => {
+            assert!(
+                out.contains("OK"),
+                "expected 'OK' from wget, got: {out}"
+            );
+            eprintln!("Guest internet access verified (wget http://example.com)");
         }
-    } else {
-        eprintln!(
-            "WARNING: SSH not reachable at {guest_ip}:22 — the guest image may not have sshd.\n\
-             SSH and internet-from-guest checks skipped.\n\
-             To enable full test, use an image with openssh-server installed."
-        );
-        // Don't fail the test — network setup is verified by TAP + iptables + ping.
-        // SSH/internet-from-guest requires sshd in the image (Phase 5 concern).
+        Err(e) => {
+            // wget might fail due to DNS; try ping as fallback.
+            eprintln!("wget failed ({e}), trying ping...");
+            let ping_result = ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 8.8.8.8");
+            assert!(
+                ping_result.is_ok(),
+                "Guest cannot reach the internet. wget: {e}, ping: {:?}",
+                ping_result.err()
+            );
+            eprintln!("Guest internet access verified (ping 8.8.8.8)");
+        }
     }
 
     // -- Stop VM --
