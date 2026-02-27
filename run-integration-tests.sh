@@ -48,6 +48,10 @@ for name in "${tests[@]}"; do
 done
 
 # Run each test binary under sudo.
+# Tests run with --test-threads=1 because they have global side effects
+# (TAP devices, iptables rules, ZFS pools). The crash-recovery reconciliation
+# code scans all em-* TAP devices system-wide, so parallel tests with separate
+# state directories would delete each other's TAP devices as "orphaned".
 echo ""
 echo "Running ${#binaries[@]} integration test(s) as root..."
 echo ""
@@ -57,7 +61,7 @@ for i in "${!tests[@]}"; do
     name="${tests[$i]}"
     bin="${binaries[$i]}"
     echo "=== $name ==="
-    if sudo "$bin" --ignored; then
+    if sudo "$bin" --ignored --test-threads=1; then
         echo "--- $name: PASSED ---"
     else
         echo "--- $name: FAILED ---"
