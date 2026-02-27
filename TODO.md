@@ -38,7 +38,7 @@
 - [x] Implement `ember vm start`: spawn firecracker, configure, boot (no networking yet)
 - [x] Implement `ember vm stop`: graceful shutdown + SIGKILL fallback
 - [x] Implement `ember vm delete`: cleanup everything
-- [ ] Implement `ember vm list` and `ember vm inspect`
+- [x] Implement `ember vm list` and `ember vm inspect`
 - [ ] Test: create VM, start it, verify firecracker process running, stop, delete
 
 ## Phase 4: Networking

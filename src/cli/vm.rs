@@ -160,8 +160,8 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
         VmCommand::Delete(args) => delete(args, state_dir),
-        VmCommand::List(_) => anyhow::bail!("ember vm list is not yet implemented"),
-        VmCommand::Inspect(_) => anyhow::bail!("ember vm inspect is not yet implemented"),
+        VmCommand::List(args) => list(args, state_dir),
+        VmCommand::Inspect(args) => inspect(args, state_dir),
         VmCommand::Ssh(_) => anyhow::bail!("ember vm ssh is not yet implemented"),
     }
 }
@@ -540,6 +540,88 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::delete(&store, &args.name)?;
 
     println!("VM '{}' deleted.", args.name);
+    Ok(())
+}
+
+/// List all VMs with summary information.
+fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let vms = vm::list(&store)?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&vms)?);
+        }
+        OutputFormat::Table => {
+            if vms.is_empty() {
+                println!("No VMs found. Create one with: ember vm create <name> --image <image>");
+                return Ok(());
+            }
+
+            println!(
+                "{:<20} {:<10} {:<40} {:>4} {:>6} {:>5}",
+                "NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"
+            );
+            for vm in &vms {
+                println!(
+                    "{:<20} {:<10} {:<40} {:>4} {:>4}Mi {:>3}Gi",
+                    vm.name,
+                    vm.status,
+                    vm.image,
+                    vm.cpus,
+                    vm.memory_mib,
+                    vm.disk_size_gib,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Show detailed information about a single VM.
+fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let metadata = vm::load(&store, &args.name)?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&metadata)?);
+        }
+        OutputFormat::Table => {
+            println!("Name:        {}", metadata.name);
+            println!("ID:          {}", metadata.id);
+            println!("Status:      {}", metadata.status);
+            println!("Image:       {}", metadata.image);
+            println!("CPUs:        {}", metadata.cpus);
+            println!("Memory:      {} MiB", metadata.memory_mib);
+            println!("Disk:        {} GiB", metadata.disk_size_gib);
+            println!("Kernel:      {}", metadata.kernel_path.display());
+            println!("ZFS zvol:    {}", metadata.zvol_path);
+            println!("API socket:  {}", metadata.api_socket.display());
+            println!("Created:     {}", metadata.created_at);
+
+            if let Some(pid) = metadata.pid {
+                println!("PID:         {}", pid);
+            }
+
+            if let Some(ref net) = metadata.network {
+                println!("Network:");
+                println!("  TAP device:  {}", net.tap_device);
+                println!("  Host IP:     {}", net.host_ip);
+                println!("  Guest IP:    {}", net.guest_ip);
+                println!("  Netmask:     {}", net.netmask);
+                if let Some(ref mac) = net.guest_mac {
+                    println!("  Guest MAC:   {}", mac);
+                }
+            }
+
+            println!("SSH:");
+            println!("  User:        {}", metadata.ssh.user);
+            println!("  Key:         {}", metadata.ssh.key.display());
+        }
+    }
+
     Ok(())
 }
 
