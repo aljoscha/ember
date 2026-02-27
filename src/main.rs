@@ -2,6 +2,7 @@ mod cli;
 pub mod error;
 pub mod firecracker;
 pub mod image;
+pub mod network;
 pub mod state;
 pub mod zfs;
 

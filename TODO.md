@@ -43,7 +43,7 @@
 
 ## Phase 4: Networking
 
-- [ ] Implement TAP device creation via ioctl (`src/network/tap.rs`)
+- [x] Implement TAP device creation via ioctl (`src/network/tap.rs`)
 - [ ] Implement IP allocation from /16 pool in /30 blocks (`src/network/ip.rs`)
 - [ ] Implement iptables NAT/masquerade rule management (`src/network/nat.rs`)
 - [ ] Implement WAN interface detection (`ip route get 8.8.8.8`)
