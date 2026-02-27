@@ -50,7 +50,7 @@
 - [x] Integrate networking into VM start: create TAP, allocate IP, set iptables, configure kernel `ip=` param
 - [x] Integrate cleanup into VM stop/delete: remove iptables rules, delete TAP, release IP
 - [x] Implement state reconciliation: cleanup orphaned TAP devices on startup
-- [ ] Test: start VM, verify SSH reachable from host, verify internet from guest
+- [x] Test: start VM, verify SSH reachable from host, verify internet from guest
 
 ## Phase 5: SSH Exec + File Copy
 

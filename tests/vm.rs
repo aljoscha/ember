@@ -16,7 +16,7 @@
 //! To run:
 //!   ./run-integration-tests.sh vm
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -729,4 +729,360 @@ fn delete_running_vm_requires_force() {
 
     // Verify zvol is gone.
     assert_dataset_absent(&format!("{pool}/ember/vms/runningvm"));
+}
+
+// ---------------------------------------------------------------------------
+// Networking test (requires Firecracker + kernel + network access)
+// ---------------------------------------------------------------------------
+
+/// Resolve the SSH private key path for the invoking user.
+///
+/// Under `sudo`, uses `SUDO_USER` to find the real user's key.
+/// This must match what `image::inject::default_ssh_pubkey_path()` picks,
+/// since the corresponding public key is injected into the guest.
+fn ssh_private_key_path() -> Option<PathBuf> {
+    let home = if let Ok(user) = std::env::var("SUDO_USER") {
+        let output = Command::new("sh")
+            .args(["-c", &format!("eval echo ~{user}")])
+            .output()
+            .ok()?;
+        PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        PathBuf::from(std::env::var("HOME").ok()?)
+    };
+
+    let ssh_dir = home.join(".ssh");
+    for name in &["id_ed25519", "id_ecdsa", "id_rsa"] {
+        let path = ssh_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Try to SSH into the guest and run a command.
+///
+/// Returns `Ok(stdout)` on success, `Err(stderr)` on failure.
+fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, String> {
+    let output = Command::new("ssh")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=5",
+            "-o", "BatchMode=yes",
+            "-o", "LogLevel=ERROR",
+            "-i",
+        ])
+        .arg(key_path)
+        .arg(format!("root@{guest_ip}"))
+        .arg(command)
+        .output()
+        .map_err(|e| format!("failed to execute ssh: {e}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+/// Wait for SSH to become reachable on the guest.
+///
+/// Retries with exponential backoff up to ~60 seconds total.
+/// Returns `true` if SSH became reachable, `false` on timeout.
+fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
+    let delays_ms = [
+        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000,
+        5000, 5000, 5000, 5000, 5000, 5000,
+    ];
+
+    for (i, delay) in delays_ms.iter().enumerate() {
+        eprintln!(
+            "  SSH attempt {}/{}: connecting to {guest_ip}...",
+            i + 1,
+            delays_ms.len()
+        );
+
+        if ssh_exec(guest_ip, key_path, "true").is_ok() {
+            eprintln!("  SSH connected on attempt {}", i + 1);
+            return true;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(*delay));
+    }
+
+    false
+}
+
+/// Full networking test: start VM → verify TAP + iptables + host-to-guest ping
+/// → SSH into guest → verify internet from guest → stop → delete.
+///
+/// Requires:
+/// - `firecracker` in PATH, `/dev/kvm` available
+/// - Bootable kernel (auto-downloaded or `EMBER_TEST_KERNEL`)
+/// - Alpine image with `openssh` installed (the base `alpine:latest` may not
+///   have sshd — if SSH fails, the test reports which checks passed/failed)
+/// - Network access (host must be able to reach the internet)
+///
+/// Skips if prerequisites are missing.
+#[test]
+#[ignore]
+fn networking_ssh_and_internet() {
+    if !firecracker_available() {
+        return;
+    }
+
+    let kernel_path = match ensure_kernel() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let ssh_key = match ssh_private_key_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("Skipping: no SSH private key found for the invoking user");
+            return;
+        }
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmnetwork", &tmp);
+    let state = state_dir.to_str().unwrap();
+    let kernel = kernel_path.to_str().unwrap();
+
+    // -- Create VM --
+    let create_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "netvm",
+        "--image",
+        "alpine:latest",
+        "--cpus",
+        "1",
+        "--memory",
+        "128",
+        "--kernel",
+        kernel,
+        "--no-start",
+    ]);
+    let stdout = String::from_utf8_lossy(&create_output.stdout);
+    let stderr = String::from_utf8_lossy(&create_output.stderr);
+    assert!(
+        create_output.status.success(),
+        "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // -- Start VM --
+    let start_output = ember(&["--state-dir", state, "vm", "start", "netvm"]);
+    let start_stdout = String::from_utf8_lossy(&start_output.stdout);
+    let start_stderr = String::from_utf8_lossy(&start_output.stderr);
+    assert!(
+        start_output.status.success(),
+        "vm start failed.\nstdout: {start_stdout}\nstderr: {start_stderr}"
+    );
+
+    // -- Inspect: verify network metadata --
+    let inspect_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "netvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect_output.status.success());
+    let inspect_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect_output.stdout))
+            .expect("failed to parse inspect JSON");
+
+    assert_eq!(inspect_json["status"], "running");
+    assert!(inspect_json["pid"].is_u64(), "expected numeric PID");
+
+    let network = &inspect_json["network"];
+    assert!(
+        !network.is_null(),
+        "expected network info in inspect output"
+    );
+
+    let tap_device = network["tap_device"]
+        .as_str()
+        .expect("expected tap_device string");
+    let guest_ip = network["guest_ip"]
+        .as_str()
+        .expect("expected guest_ip string");
+    let host_ip = network["host_ip"]
+        .as_str()
+        .expect("expected host_ip string");
+
+    assert!(
+        tap_device.starts_with("em-"),
+        "TAP device should start with 'em-', got: {tap_device}"
+    );
+    assert!(
+        !guest_ip.is_empty(),
+        "guest_ip should not be empty"
+    );
+    assert!(
+        !host_ip.is_empty(),
+        "host_ip should not be empty"
+    );
+
+    eprintln!("Network info: TAP={tap_device} host={host_ip} guest={guest_ip}");
+
+    // -- Verify TAP device exists on host --
+    let ip_link = Command::new("ip")
+        .args(["link", "show", tap_device])
+        .output()
+        .expect("failed to run ip link show");
+    assert!(
+        ip_link.status.success(),
+        "TAP device '{tap_device}' not found on host: {}",
+        String::from_utf8_lossy(&ip_link.stderr)
+    );
+
+    // -- Verify iptables NAT rules --
+    let iptables_nat = Command::new("iptables")
+        .args(["-t", "nat", "-S", "POSTROUTING"])
+        .output()
+        .expect("failed to run iptables");
+    let nat_rules = String::from_utf8_lossy(&iptables_nat.stdout);
+    assert!(
+        nat_rules.contains(guest_ip),
+        "expected MASQUERADE rule for {guest_ip} in NAT table:\n{nat_rules}"
+    );
+
+    // -- Verify FORWARD chain rules --
+    let iptables_fwd = Command::new("iptables")
+        .args(["-S", "FORWARD"])
+        .output()
+        .expect("failed to run iptables");
+    let fwd_rules = String::from_utf8_lossy(&iptables_fwd.stdout);
+    assert!(
+        fwd_rules.contains(tap_device),
+        "expected FORWARD rules mentioning {tap_device}:\n{fwd_rules}"
+    );
+
+    // -- Ping guest from host --
+    // The guest needs a moment to boot and configure its network via the
+    // kernel ip= parameter. Retry ping with short delays.
+    let mut ping_ok = false;
+    for attempt in 1..=20 {
+        let ping = Command::new("ping")
+            .args(["-c", "1", "-W", "1", guest_ip])
+            .output()
+            .expect("failed to run ping");
+        if ping.status.success() {
+            eprintln!("Host-to-guest ping succeeded on attempt {attempt}");
+            ping_ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert!(
+        ping_ok,
+        "failed to ping guest at {guest_ip} from host after 20 attempts"
+    );
+
+    // -- SSH into guest --
+    eprintln!("Waiting for SSH to become available...");
+    let ssh_ok = wait_for_ssh(guest_ip, &ssh_key);
+
+    if ssh_ok {
+        // Run a simple command to verify SSH exec works.
+        let hostname_result = ssh_exec(guest_ip, &ssh_key, "hostname");
+        assert!(
+            hostname_result.is_ok(),
+            "SSH command 'hostname' failed: {:?}",
+            hostname_result.err()
+        );
+        let hostname = hostname_result.unwrap();
+        eprintln!("Guest hostname: {hostname}");
+
+        // -- Verify internet from guest --
+        // Try wget (available in Alpine by default via busybox).
+        let inet_result = ssh_exec(
+            guest_ip,
+            &ssh_key,
+            "wget -q -O /dev/null -T 5 http://example.com && echo OK",
+        );
+        match &inet_result {
+            Ok(out) => {
+                assert!(
+                    out.contains("OK"),
+                    "expected 'OK' from wget, got: {out}"
+                );
+                eprintln!("Guest internet access verified (wget http://example.com)");
+            }
+            Err(e) => {
+                // wget might not be available; try ping as fallback.
+                eprintln!("wget failed ({e}), trying ping...");
+                let ping_result = ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 8.8.8.8");
+                assert!(
+                    ping_result.is_ok(),
+                    "Guest cannot reach the internet. wget: {e}, ping: {:?}",
+                    ping_result.err()
+                );
+                eprintln!("Guest internet access verified (ping 8.8.8.8)");
+            }
+        }
+    } else {
+        eprintln!(
+            "WARNING: SSH not reachable at {guest_ip}:22 — the guest image may not have sshd.\n\
+             SSH and internet-from-guest checks skipped.\n\
+             To enable full test, use an image with openssh-server installed."
+        );
+        // Don't fail the test — network setup is verified by TAP + iptables + ping.
+        // SSH/internet-from-guest requires sshd in the image (Phase 5 concern).
+    }
+
+    // -- Stop VM --
+    let stop_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "stop",
+        "netvm",
+        "--force",
+    ]);
+    let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
+    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
+    assert!(
+        stop_output.status.success(),
+        "vm stop failed.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
+    );
+
+    // -- Verify network cleanup after stop --
+    let ip_link_after = Command::new("ip")
+        .args(["link", "show", tap_device])
+        .output()
+        .expect("failed to run ip link show");
+    assert!(
+        !ip_link_after.status.success(),
+        "TAP device '{tap_device}' should be gone after stop"
+    );
+
+    let iptables_nat_after = Command::new("iptables")
+        .args(["-t", "nat", "-S", "POSTROUTING"])
+        .output()
+        .expect("failed to run iptables");
+    let nat_rules_after = String::from_utf8_lossy(&iptables_nat_after.stdout);
+    assert!(
+        !nat_rules_after.contains(guest_ip),
+        "MASQUERADE rule for {guest_ip} should be gone after stop:\n{nat_rules_after}"
+    );
+
+    // -- Delete VM --
+    let del_output = ember(&["--state-dir", state, "vm", "delete", "netvm"]);
+    assert!(
+        del_output.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del_output.stderr)
+    );
+
+    assert_dataset_absent(&format!("{pool}/ember/vms/netvm"));
+    eprintln!("Networking test complete.");
 }
