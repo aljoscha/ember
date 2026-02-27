@@ -118,6 +118,45 @@ pub fn destroy(zvol: &str, recursive: bool) -> Result<()> {
     Ok(())
 }
 
+/// Clone a ZFS snapshot to create a new zvol.
+///
+/// This is an instant copy-on-write clone — the new zvol shares blocks
+/// with the snapshot and only diverges as writes occur.
+///
+/// `snapshot` is the full snapshot path (e.g. `tank/ember/images/alpine@base`).
+/// `new_zvol` is the destination zvol (e.g. `tank/ember/vms/myvm`).
+pub fn clone(snapshot: &str, new_zvol: &str) -> Result<()> {
+    let output = Command::new("zfs")
+        .args(["clone", snapshot, new_zvol])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "zfs clone".to_string(),
+            source: e,
+        })?;
+
+    Error::check_command("zfs clone", output)?;
+    Ok(())
+}
+
+/// Set the volume size of a zvol.
+///
+/// Used to grow a zvol after cloning from a smaller image. Only growing
+/// is supported — ZFS will error if the new size is smaller.
+pub fn set_volsize(zvol: &str, size_gib: u32) -> Result<()> {
+    let size_arg = format!("volsize={size_gib}G");
+
+    let output = Command::new("zfs")
+        .args(["set", &size_arg, zvol])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "zfs set".to_string(),
+            source: e,
+        })?;
+
+    Error::check_command("zfs set volsize", output)?;
+    Ok(())
+}
+
 /// Return the `/dev/zvol/...` block device path for a zvol.
 ///
 /// The kernel creates this device node automatically when the zvol exists.

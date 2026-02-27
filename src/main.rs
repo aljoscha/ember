@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
 
     match &cli.command {
         Command::Init(args) => cli::init::run(args, &cli.state_dir),
-        Command::Vm(cmd) => cli::vm::run(cmd),
+        Command::Vm(cmd) => cli::vm::run(cmd, &cli.state_dir),
         Command::Image(cmd) => cli::image::run(cmd, &cli.state_dir),
         Command::Snapshot(cmd) => cli::snapshot::run(cmd),
         Command::Exec(args) => cli::exec::run(args),

@@ -53,7 +53,7 @@ pub fn write_to_zvol(image_path: &Path, zvol: &str) -> Result<()> {
 ///
 /// Runs `udevadm settle` first to flush pending udev events, then polls
 /// for up to 5 seconds.
-fn wait_for_device(dev_path: &Path) -> Result<()> {
+pub fn wait_for_device(dev_path: &Path) -> Result<()> {
     // Ask udev to process pending events.
     let _ = Command::new("udevadm")
         .args(["settle", "--timeout=10"])
