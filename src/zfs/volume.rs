@@ -1,6 +1,6 @@
 //! ZFS volume (zvol) operations via the `zfs` CLI.
 //!
-//! Zvols are block devices backed by ZFS. Crackling uses them as root drives
+//! Zvols are block devices backed by ZFS. Ember uses them as root drives
 //! for Firecracker VMs — image zvols under `<pool>/images/` and per-VM clones
 //! under `<pool>/vms/`.
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What is crackling?
+## What is ember?
 
 A lightweight CLI for managing Firecracker microVMs with ZFS-backed storage. Inspired by SlicerVM but CLI-only — no daemon, no REST API. See SPEC.md for the full design and TODO.md for the task list.
 
@@ -38,9 +38,9 @@ cargo clippy
 cargo test
 
 # Manual testing (requires root, ZFS, and firecracker installed)
-sudo ./target/debug/crackling init --pool testpool --device /dev/loop0
-sudo ./target/debug/crackling image pull alpine:latest
-sudo ./target/debug/crackling vm create testvm --image alpine:latest
+sudo ./target/debug/ember init --pool testpool --device /dev/loop0
+sudo ./target/debug/ember image pull alpine:latest
+sudo ./target/debug/ember vm create testvm --image alpine:latest
 ```
 
 ## Rust Compilation

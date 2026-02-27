@@ -114,7 +114,7 @@ pub fn status(pool: &str) -> Result<PoolInfo> {
 /// Create a new ZFS pool on the given device.
 ///
 /// Uses `zpool create -f` with `ashift=12` (4K sectors) and `mountpoint=none`
-/// since crackling uses zvols, not mounted filesystems.
+/// since ember uses zvols, not mounted filesystems.
 pub fn create(pool: &str, device: &str) -> Result<()> {
     let output = Command::new("zpool")
         .args([

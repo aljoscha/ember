@@ -11,8 +11,8 @@ use cli::{Cli, Command};
 fn require_root() -> anyhow::Result<()> {
     if !nix::unistd::geteuid().is_root() {
         anyhow::bail!(
-            "crackling requires root privileges.\n\
-             Hint: run with sudo, e.g.  sudo crackling <command>"
+            "ember requires root privileges.\n\
+             Hint: run with sudo, e.g.  sudo ember <command>"
         );
     }
     Ok(())
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         Command::Exec(args) => cli::exec::run(args),
         Command::Cp(args) => cli::cp::run(args),
         Command::Version => {
-            println!("crackling {}", env!("CARGO_PKG_VERSION"));
+            println!("ember {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
     }

@@ -1,6 +1,6 @@
 //! ZFS snapshot operations via the `zfs` CLI.
 //!
-//! Snapshots are point-in-time copies of datasets or zvols. Crackling
+//! Snapshots are point-in-time copies of datasets or zvols. Ember
 //! uses them for:
 //!   - `@base` snapshots on image zvols (clone source for VMs)
 //!   - User-created snapshots on VM zvols (Phase 6)
@@ -11,9 +11,9 @@ use crate::error::{Error, Result};
 
 /// Create a ZFS snapshot.
 ///
-/// `dataset` is the full dataset/zvol path (e.g. `tank/crackling/images/alpine-latest`)
+/// `dataset` is the full dataset/zvol path (e.g. `tank/ember/images/alpine-latest`)
 /// and `name` is the snapshot name (e.g. `base`), producing
-/// `tank/crackling/images/alpine-latest@base`.
+/// `tank/ember/images/alpine-latest@base`.
 pub fn create(dataset: &str, name: &str) -> Result<()> {
     let snapshot = format!("{dataset}@{name}");
 
@@ -48,12 +48,12 @@ pub fn exists(dataset: &str, name: &str) -> Result<bool> {
 mod tests {
     #[test]
     fn snapshot_name_format() {
-        let dataset = "tank/crackling/images/library-alpine-latest";
+        let dataset = "tank/ember/images/library-alpine-latest";
         let name = "base";
         let snapshot = format!("{dataset}@{name}");
         assert_eq!(
             snapshot,
-            "tank/crackling/images/library-alpine-latest@base"
+            "tank/ember/images/library-alpine-latest@base"
         );
     }
 }

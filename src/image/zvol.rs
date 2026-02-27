@@ -31,7 +31,7 @@ use crate::zfs;
 /// # Arguments
 ///
 /// * `image_path` — Path to the ext4 image file (created by [`crate::image::ext4::create`]).
-/// * `zvol` — Full ZFS zvol name (e.g. `tank/crackling/images/library-alpine-latest`).
+/// * `zvol` — Full ZFS zvol name (e.g. `tank/ember/images/library-alpine-latest`).
 pub fn write_to_zvol(image_path: &Path, zvol: &str) -> Result<()> {
     let dev_path = zfs::volume::device_path(zvol);
 

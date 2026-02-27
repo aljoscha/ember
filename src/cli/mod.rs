@@ -9,11 +9,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "crackling", about = "Lightweight Firecracker VM manager with ZFS-backed storage")]
+#[command(name = "ember", about = "Lightweight Firecracker VM manager with ZFS-backed storage")]
 #[command(version)]
 pub struct Cli {
-    /// Override state directory (default: /var/lib/crackling)
-    #[arg(long, global = true, default_value = "/var/lib/crackling")]
+    /// Override state directory (default: /var/lib/ember)
+    #[arg(long, global = true, default_value = "/var/lib/ember")]
     pub state_dir: PathBuf,
 
     /// Log level: trace, debug, info, warn, error
@@ -30,7 +30,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize crackling: create/verify ZFS pool, datasets, download kernel
+    /// Initialize ember: create/verify ZFS pool, datasets, download kernel
     Init(init::InitArgs),
 
     /// Manage virtual machines

@@ -388,29 +388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crackling"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "http-body-util",
- "hyper",
- "hyper-util",
- "hyperlocal",
- "indicatif",
- "nix",
- "russh",
- "russh-keys",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -591,6 +568,29 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "ember"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "hyperlocal",
+ "indicatif",
+ "nix",
+ "russh",
+ "russh-keys",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

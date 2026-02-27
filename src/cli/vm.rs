@@ -142,14 +142,14 @@ pub enum OutputFormat {
 
 pub fn run(cmd: &VmCommand) -> anyhow::Result<()> {
     match cmd {
-        VmCommand::Create(_) => anyhow::bail!("crackling vm create is not yet implemented"),
-        VmCommand::Start(_) => anyhow::bail!("crackling vm start is not yet implemented"),
-        VmCommand::Stop(_) => anyhow::bail!("crackling vm stop is not yet implemented"),
-        VmCommand::Pause(_) => anyhow::bail!("crackling vm pause is not yet implemented"),
-        VmCommand::Resume(_) => anyhow::bail!("crackling vm resume is not yet implemented"),
-        VmCommand::Delete(_) => anyhow::bail!("crackling vm delete is not yet implemented"),
-        VmCommand::List(_) => anyhow::bail!("crackling vm list is not yet implemented"),
-        VmCommand::Inspect(_) => anyhow::bail!("crackling vm inspect is not yet implemented"),
-        VmCommand::Ssh(_) => anyhow::bail!("crackling vm ssh is not yet implemented"),
+        VmCommand::Create(_) => anyhow::bail!("ember vm create is not yet implemented"),
+        VmCommand::Start(_) => anyhow::bail!("ember vm start is not yet implemented"),
+        VmCommand::Stop(_) => anyhow::bail!("ember vm stop is not yet implemented"),
+        VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
+        VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
+        VmCommand::Delete(_) => anyhow::bail!("ember vm delete is not yet implemented"),
+        VmCommand::List(_) => anyhow::bail!("ember vm list is not yet implemented"),
+        VmCommand::Inspect(_) => anyhow::bail!("ember vm inspect is not yet implemented"),
+        VmCommand::Ssh(_) => anyhow::bail!("ember vm ssh is not yet implemented"),
     }
 }

@@ -17,7 +17,7 @@ pub struct ImageEntry {
     pub reference: String,
     /// Filesystem-safe local name (e.g. `library-alpine-latest`).
     pub local_name: String,
-    /// ZFS zvol name (e.g. `tank/crackling/images/library-alpine-latest`).
+    /// ZFS zvol name (e.g. `tank/ember/images/library-alpine-latest`).
     pub zvol: String,
     /// Disk size of the zvol in MiB.
     pub size_mib: u64,
@@ -146,7 +146,7 @@ mod tests {
         ImageEntry {
             reference: format!("docker.io/library/{name}:latest"),
             local_name: format!("library-{name}-latest"),
-            zvol: format!("tank/crackling/images/library-{name}-latest"),
+            zvol: format!("tank/ember/images/library-{name}-latest"),
             size_mib: 64,
             pulled_at: "2026-01-01T00:00:00Z".to_string(),
         }
@@ -260,11 +260,11 @@ mod tests {
     #[test]
     fn new_entry_builds_correctly() {
         let reference = ImageReference::parse("alpine:3.19").unwrap();
-        let entry = new_entry(&reference, "tank/crackling/images/library-alpine-3.19", 96);
+        let entry = new_entry(&reference, "tank/ember/images/library-alpine-3.19", 96);
 
         assert_eq!(entry.reference, "docker.io/library/alpine:3.19");
         assert_eq!(entry.local_name, "library-alpine-3.19");
-        assert_eq!(entry.zvol, "tank/crackling/images/library-alpine-3.19");
+        assert_eq!(entry.zvol, "tank/ember/images/library-alpine-3.19");
         assert_eq!(entry.size_mib, 96);
         assert!(!entry.pulled_at.is_empty());
     }
@@ -298,7 +298,7 @@ mod tests {
 
         assert_eq!(json["reference"], "docker.io/library/alpine:latest");
         assert_eq!(json["local_name"], "library-alpine-latest");
-        assert_eq!(json["zvol"], "tank/crackling/images/library-alpine-latest");
+        assert_eq!(json["zvol"], "tank/ember/images/library-alpine-latest");
         assert_eq!(json["size_mib"], 64);
         assert_eq!(json["pulled_at"], "2026-01-01T00:00:00Z");
     }

@@ -1,5 +1,5 @@
 [package]
-name = "crackling"
+name = "ember"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight Firecracker VM manager with ZFS-backed storage"

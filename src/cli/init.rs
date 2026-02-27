@@ -11,7 +11,7 @@ use crate::zfs;
 #[derive(Args)]
 pub struct InitArgs {
     /// ZFS pool name
-    #[arg(long, default_value = "crackling")]
+    #[arg(long, default_value = "ember")]
     pub pool: String,
 
     /// Block device for pool creation
@@ -19,7 +19,7 @@ pub struct InitArgs {
     pub device: Option<String>,
 
     /// Dataset name within the pool
-    #[arg(long, default_value = "crackling")]
+    #[arg(long, default_value = "ember")]
     pub dataset: String,
 
     /// URL to download the kernel from
@@ -27,7 +27,7 @@ pub struct InitArgs {
     pub kernel_url: Option<String>,
 }
 
-/// Global configuration written by `crackling init`.
+/// Global configuration written by `ember init`.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
     pub pool: String,
@@ -99,7 +99,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
 
-    println!("\ncrackling initialized successfully.");
+    println!("\nember initialized successfully.");
     Ok(())
 }
 
@@ -127,8 +127,8 @@ mod tests {
     fn global_config_round_trip_with_kernel() {
         let config = GlobalConfig {
             pool: "testpool".to_string(),
-            dataset: "crackling".to_string(),
-            kernel_path: Some(PathBuf::from("/var/lib/crackling/kernels/vmlinux")),
+            dataset: "ember".to_string(),
+            kernel_path: Some(PathBuf::from("/var/lib/ember/kernels/vmlinux")),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -153,13 +153,13 @@ mod tests {
     fn global_config_json_format() {
         let config = GlobalConfig {
             pool: "tank".to_string(),
-            dataset: "crackling".to_string(),
+            dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
         assert_eq!(json["pool"], "tank");
-        assert_eq!(json["dataset"], "crackling");
+        assert_eq!(json["dataset"], "ember");
         assert_eq!(json["kernel_path"], "/kernels/vmlinux");
     }
 
@@ -167,7 +167,7 @@ mod tests {
     fn global_config_null_kernel_in_json() {
         let config = GlobalConfig {
             pool: "tank".to_string(),
-            dataset: "crackling".to_string(),
+            dataset: "ember".to_string(),
             kernel_path: None,
         };
 
@@ -183,14 +183,14 @@ mod tests {
 
         let config = GlobalConfig {
             pool: "testpool".to_string(),
-            dataset: "crackling".to_string(),
+            dataset: "ember".to_string(),
             kernel_path: None,
         };
         store.write(&store.config_path(), &config).unwrap();
 
         let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
         assert_eq!(loaded.pool, "testpool");
-        assert_eq!(loaded.dataset, "crackling");
+        assert_eq!(loaded.dataset, "ember");
         assert_eq!(loaded.kernel_path, None);
     }
 

@@ -1,4 +1,4 @@
-//! Integration tests for `crackling init`.
+//! Integration tests for `ember init`.
 //!
 //! These tests require root privileges and a working ZFS installation.
 //! They are marked `#[ignore]` so `cargo test` skips them by default.
@@ -14,7 +14,7 @@ use std::process::Command;
 
 /// Unique pool name per test to avoid collisions.
 fn test_pool(name: &str) -> String {
-    format!("cracklingtest_{name}_{}", std::process::id())
+    format!("embertest_{name}_{}", std::process::id())
 }
 
 /// Create a loopback file and attach it to a loop device.
@@ -53,25 +53,25 @@ fn destroy_pool(pool: &str) {
         .status();
 }
 
-/// Path to the crackling binary built by cargo.
-fn crackling_bin() -> PathBuf {
+/// Path to the ember binary built by cargo.
+fn ember_bin() -> PathBuf {
     // `cargo test` puts the test binary in target/debug/deps, but the
-    // main binary is at target/debug/crackling.
+    // main binary is at target/debug/ember.
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // remove test binary name
     if path.ends_with("deps") {
         path.pop(); // remove deps/
     }
-    path.push("crackling");
+    path.push("ember");
     path
 }
 
-/// Run crackling with the given args, returning the Output.
-fn crackling(args: &[&str]) -> std::process::Output {
-    Command::new(crackling_bin())
+/// Run ember with the given args, returning the Output.
+fn ember(args: &[&str]) -> std::process::Output {
+    Command::new(ember_bin())
         .args(args)
         .output()
-        .unwrap_or_else(|e| panic!("failed to execute crackling: {e}"))
+        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
 }
 
 /// Assert that a ZFS pool exists.
@@ -116,7 +116,7 @@ fn init_creates_new_pool_and_datasets() {
         dev: loop_dev.clone(),
     };
 
-    let output = crackling(&[
+    let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -135,9 +135,9 @@ fn init_creates_new_pool_and_datasets() {
 
     // Verify ZFS pool and datasets were created.
     assert_pool_exists(&pool);
-    assert_dataset_exists(&format!("{pool}/crackling"));
-    assert_dataset_exists(&format!("{pool}/crackling/images"));
-    assert_dataset_exists(&format!("{pool}/crackling/vms"));
+    assert_dataset_exists(&format!("{pool}/ember"));
+    assert_dataset_exists(&format!("{pool}/ember/images"));
+    assert_dataset_exists(&format!("{pool}/ember/vms"));
 
     // Verify state directory structure.
     assert!(state_dir.join("kernels").is_dir());
@@ -149,10 +149,10 @@ fn init_creates_new_pool_and_datasets() {
     let config_str = std::fs::read_to_string(state_dir.join("config.json")).unwrap();
     let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
     assert_eq!(config["pool"], pool);
-    assert_eq!(config["dataset"], "crackling");
+    assert_eq!(config["dataset"], "ember");
 
     // Stdout should indicate success.
-    assert!(stdout.contains("crackling initialized successfully"));
+    assert!(stdout.contains("ember initialized successfully"));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn init_idempotent_with_existing_pool() {
     };
 
     // First init — creates everything.
-    let output1 = crackling(&[
+    let output1 = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -196,7 +196,7 @@ fn init_idempotent_with_existing_pool() {
 
     // Second init — pool and datasets already exist, should succeed.
     // Note: no --device needed since pool already exists.
-    let output2 = crackling(&[
+    let output2 = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -216,10 +216,10 @@ fn init_idempotent_with_existing_pool() {
 
     // Everything should still be intact.
     assert_pool_exists(&pool);
-    assert_dataset_exists(&format!("{pool}/crackling"));
-    assert_dataset_exists(&format!("{pool}/crackling/images"));
-    assert_dataset_exists(&format!("{pool}/crackling/vms"));
-    assert!(stdout2.contains("crackling initialized successfully"));
+    assert_dataset_exists(&format!("{pool}/ember"));
+    assert_dataset_exists(&format!("{pool}/ember/images"));
+    assert_dataset_exists(&format!("{pool}/ember/vms"));
+    assert!(stdout2.contains("ember initialized successfully"));
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn init_fails_without_device_when_pool_missing() {
 
     // No cleanup needed — pool should never be created.
 
-    let output = crackling(&[
+    let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -274,7 +274,7 @@ fn init_custom_dataset_name() {
         dev: loop_dev.clone(),
     };
 
-    let output = crackling(&[
+    let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",

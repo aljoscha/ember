@@ -126,7 +126,7 @@ pub fn list(parent: &str) -> Result<Vec<DatasetInfo>> {
 
 /// Create a ZFS dataset (filesystem type).
 ///
-/// Sets `mountpoint=none` since crackling uses datasets only as parent
+/// Sets `mountpoint=none` since ember uses datasets only as parent
 /// namespaces for zvols, not as mounted filesystems.
 ///
 /// Creates parent datasets as needed (`-p` flag).

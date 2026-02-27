@@ -10,5 +10,5 @@ pub struct CpArgs {
 }
 
 pub fn run(_args: &CpArgs) -> anyhow::Result<()> {
-    anyhow::bail!("crackling cp is not yet implemented")
+    anyhow::bail!("ember cp is not yet implemented")
 }

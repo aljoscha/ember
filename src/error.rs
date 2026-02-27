@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-/// Unified error type for crackling.
+/// Unified error type for ember.
 #[derive(Debug, Error)]
 pub enum Error {
     /// A shelled-out command exited with a non-zero status.
@@ -86,7 +86,7 @@ pub enum Error {
     Yaml(#[from] serde_yaml::Error),
 }
 
-/// Convenience alias used throughout crackling.
+/// Convenience alias used throughout ember.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {

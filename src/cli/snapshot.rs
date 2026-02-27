@@ -57,16 +57,16 @@ pub struct DeleteArgs {
 pub fn run(cmd: &SnapshotCommand) -> anyhow::Result<()> {
     match cmd {
         SnapshotCommand::Create(_) => {
-            anyhow::bail!("crackling snapshot create is not yet implemented")
+            anyhow::bail!("ember snapshot create is not yet implemented")
         }
         SnapshotCommand::Restore(_) => {
-            anyhow::bail!("crackling snapshot restore is not yet implemented")
+            anyhow::bail!("ember snapshot restore is not yet implemented")
         }
         SnapshotCommand::List(_) => {
-            anyhow::bail!("crackling snapshot list is not yet implemented")
+            anyhow::bail!("ember snapshot list is not yet implemented")
         }
         SnapshotCommand::Delete(_) => {
-            anyhow::bail!("crackling snapshot delete is not yet implemented")
+            anyhow::bail!("ember snapshot delete is not yet implemented")
         }
     }
 }

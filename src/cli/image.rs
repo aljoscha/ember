@@ -55,7 +55,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
         ImageCommand::Pull(args) => pull(args, state_dir),
         ImageCommand::List(args) => list(args, state_dir),
         ImageCommand::Delete(args) => delete(args, state_dir),
-        ImageCommand::Inspect(_) => anyhow::bail!("crackling image inspect is not yet implemented"),
+        ImageCommand::Inspect(_) => anyhow::bail!("ember image inspect is not yet implemented"),
     }
 }
 
@@ -144,7 +144,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
         OutputFormat::Table => {
             if registry.is_empty() {
-                println!("No images found. Pull one with: crackling image pull <reference>");
+                println!("No images found. Pull one with: ember image pull <reference>");
                 return Ok(());
             }
 

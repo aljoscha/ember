@@ -15,5 +15,5 @@ pub struct ExecArgs {
 }
 
 pub fn run(_args: &ExecArgs) -> anyhow::Result<()> {
-    anyhow::bail!("crackling exec is not yet implemented")
+    anyhow::bail!("ember exec is not yet implemented")
 }

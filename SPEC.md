@@ -1,4 +1,4 @@
-# Crackling — Lightweight Firecracker VM Manager
+# Ember — Lightweight Firecracker VM Manager
 
 A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only — no daemon, no REST API.
 
@@ -12,7 +12,7 @@ A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only �
 ## CLI Commands
 
 ```
-crackling
+ember
 ├── init [--pool <name>] [--device <path>] [--dataset <name>] [--kernel-url <url>]
 │
 ├── vm
@@ -50,7 +50,7 @@ crackling
 ### Global Flags
 
 ```
---state-dir <path>     # Override state directory (default: /var/lib/crackling)
+--state-dir <path>     # Override state directory (default: /var/lib/ember)
 --log-level <level>    # trace, debug, info, warn, error (default: info)
 --config <file>        # Global config file override
 ```
@@ -81,12 +81,12 @@ src/
 ├── main.rs              # Entry point, CLI dispatch
 ├── cli/
 │   ├── mod.rs           # clap App definition
-│   ├── init.rs          # crackling init
-│   ├── vm.rs            # crackling vm *
-│   ├── image.rs         # crackling image *
-│   ├── snapshot.rs      # crackling snapshot *
-│   ├── exec.rs          # crackling exec
-│   └── cp.rs            # crackling cp
+│   ├── init.rs          # ember init
+│   ├── vm.rs            # ember vm *
+│   ├── image.rs         # ember image *
+│   ├── snapshot.rs      # ember snapshot *
+│   ├── exec.rs          # ember exec
+│   └── cp.rs            # ember cp
 ├── zfs/
 │   ├── mod.rs
 │   ├── pool.rs          # zpool create/status
@@ -162,7 +162,7 @@ src/
 OCI registry
     │  (oci-unpack or skopeo)
     ▼
-Unpacked layer directory (/tmp/crackling-image-XXXX/)
+Unpacked layer directory (/tmp/ember-image-XXXX/)
     │  (mkfs.ext4 + loop mount + copy)
     ▼
 ext4 image file
@@ -187,7 +187,7 @@ After cloning, the VM's zvol is loop-mounted and the invoking user's SSH public 
 ### VM Resize
 
 ```
-crackling vm resize myvm --disk-size 8
+ember vm resize myvm --disk-size 8
 ```
 
 1. VM must be stopped
@@ -200,10 +200,10 @@ Shrinking is not supported — only growing. The command errors if the new size 
 ### User Snapshots
 
 ```
-crackling snapshot create myvm snap1   →  zfs snapshot <pool>/vms/myvm@snap1
-crackling snapshot restore myvm snap1  →  zfs rollback <pool>/vms/myvm@snap1  (VM must be stopped)
-crackling snapshot list myvm           →  zfs list -t snapshot -r <pool>/vms/myvm
-crackling snapshot delete myvm snap1   →  zfs destroy <pool>/vms/myvm@snap1
+ember snapshot create myvm snap1   →  zfs snapshot <pool>/vms/myvm@snap1
+ember snapshot restore myvm snap1  →  zfs rollback <pool>/vms/myvm@snap1  (VM must be stopped)
+ember snapshot list myvm           →  zfs list -t snapshot -r <pool>/vms/myvm
+ember snapshot delete myvm snap1   →  zfs destroy <pool>/vms/myvm@snap1
 ```
 
 ## Firecracker Integration
@@ -252,7 +252,7 @@ The kernel `ip=` parameter configures guest networking at boot. No cloud-init or
 Each VM gets an isolated point-to-point link:
 
 ```
-Host: cr-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
+Host: em-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 ```
 
 ### IP Allocation
@@ -266,7 +266,7 @@ Host: cr-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 ### Setup (per VM start)
 
 1. Create TAP device via ioctl (`/dev/net/tun`, IFF_TAP | IFF_NO_PI)
-2. `ip addr add <host-ip>/30 dev cr-<short-id>` + `ip link set up`
+2. `ip addr add <host-ip>/30 dev em-<short-id>` + `ip link set up`
 3. Enable IP forwarding: `sysctl net.ipv4.ip_forward=1`
 4. iptables rules:
    ```
@@ -278,7 +278,7 @@ Host: cr-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 ### Cleanup (per VM stop/delete)
 
 1. `iptables -D` (same rules with delete flag)
-2. `ip link delete cr-<short-id>`
+2. `ip link delete em-<short-id>`
 3. Release IP allocation
 
 ### WAN Interface Detection
@@ -287,10 +287,10 @@ Host: cr-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 
 ## State Management
 
-### State Directory (`/var/lib/crackling/`)
+### State Directory (`/var/lib/ember/`)
 
 ```
-/var/lib/crackling/
+/var/lib/ember/
 ├── config.json
 ├── kernels/
 │   └── vmlinux-<version>
@@ -338,7 +338,7 @@ pub struct VmMetadata {
 On every command invocation, lightweight reconciliation:
 - For each VM in Running state, check if PID is alive (`kill(pid, 0)`)
 - Dead process → mark Stopped, cleanup TAP + iptables
-- Orphaned `cr-*` TAP devices without running VM → delete
+- Orphaned `em-*` TAP devices without running VM → delete
 
 ### Cleanup on Delete
 

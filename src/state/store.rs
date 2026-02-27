@@ -258,20 +258,20 @@ mod tests {
 
     #[test]
     fn tmp_path_contains_pid() {
-        let path = Path::new("/var/lib/crackling/config.json");
+        let path = Path::new("/var/lib/ember/config.json");
         let tmp = tmp_path_for(path);
         let tmp_str = tmp.to_string_lossy();
-        assert!(tmp_str.starts_with("/var/lib/crackling/config.json.tmp."));
+        assert!(tmp_str.starts_with("/var/lib/ember/config.json.tmp."));
         assert!(tmp_str.contains(&std::process::id().to_string()));
     }
 
     #[test]
     fn lock_path_has_lock_extension() {
-        let path = Path::new("/var/lib/crackling/config.json");
+        let path = Path::new("/var/lib/ember/config.json");
         let lock = lock_path_for(path);
         assert_eq!(
             lock,
-            PathBuf::from("/var/lib/crackling/config.json.lock")
+            PathBuf::from("/var/lib/ember/config.json.lock")
         );
     }
 
@@ -374,28 +374,28 @@ mod tests {
 
     #[test]
     fn path_helpers() {
-        let store = StateStore::new(PathBuf::from("/var/lib/crackling"));
+        let store = StateStore::new(PathBuf::from("/var/lib/ember"));
 
-        assert_eq!(store.vm_dir("myvm"), PathBuf::from("/var/lib/crackling/vms/myvm"));
+        assert_eq!(store.vm_dir("myvm"), PathBuf::from("/var/lib/ember/vms/myvm"));
         assert_eq!(
             store.vm_metadata_path("myvm"),
-            PathBuf::from("/var/lib/crackling/vms/myvm/vm.json")
+            PathBuf::from("/var/lib/ember/vms/myvm/vm.json")
         );
         assert_eq!(
             store.image_registry_path(),
-            PathBuf::from("/var/lib/crackling/images/registry.json")
+            PathBuf::from("/var/lib/ember/images/registry.json")
         );
         assert_eq!(
             store.network_allocations_path(),
-            PathBuf::from("/var/lib/crackling/network/allocations.json")
+            PathBuf::from("/var/lib/ember/network/allocations.json")
         );
         assert_eq!(
             store.config_path(),
-            PathBuf::from("/var/lib/crackling/config.json")
+            PathBuf::from("/var/lib/ember/config.json")
         );
         assert_eq!(
             store.kernel_dir(),
-            PathBuf::from("/var/lib/crackling/kernels")
+            PathBuf::from("/var/lib/ember/kernels")
         );
     }
 }
