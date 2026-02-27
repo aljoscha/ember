@@ -46,8 +46,12 @@ pub struct DeleteArgs {
 
 #[derive(Args)]
 pub struct InspectArgs {
-    /// Image name
+    /// Image reference (e.g. alpine, docker.io/library/alpine:latest)
     pub name: String,
+
+    /// Output format
+    #[arg(long, default_value = "table")]
+    pub format: OutputFormat,
 }
 
 pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
@@ -55,7 +59,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
         ImageCommand::Pull(args) => pull(args, state_dir),
         ImageCommand::List(args) => list(args, state_dir),
         ImageCommand::Delete(args) => delete(args, state_dir),
-        ImageCommand::Inspect(_) => anyhow::bail!("ember image inspect is not yet implemented"),
+        ImageCommand::Inspect(args) => inspect(args, state_dir),
     }
 }
 
@@ -182,5 +186,37 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     println!("Image '{}' deleted.", entry.reference);
+    Ok(())
+}
+
+/// Show detailed information about a local image.
+fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let registry = ImageRegistry::load(&store)?;
+
+    let reference = ImageReference::parse(&args.name)?;
+    let entry = registry
+        .get(&reference.local_name())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "image '{}' not found locally — pull it first with: ember image pull {}",
+                args.name,
+                args.name
+            )
+        })?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(entry)?);
+        }
+        OutputFormat::Table => {
+            println!("Reference:   {}", entry.reference);
+            println!("Local name:  {}", entry.local_name);
+            println!("ZFS zvol:    {}", entry.zvol);
+            println!("Size:        {} MiB", entry.size_mib);
+            println!("Pulled:      {}", entry.pulled_at);
+        }
+    }
+
     Ok(())
 }
