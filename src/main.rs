@@ -28,6 +28,12 @@ fn main() -> anyhow::Result<()> {
         require_root()?;
     }
 
+    // Lightweight state reconciliation on every command (except init/version).
+    // Cleans up after crashes: marks dead VMs stopped, removes orphaned TAP devices.
+    if !matches!(&cli.command, Command::Version | Command::Init(_)) {
+        state::reconcile::run(&cli.state_dir);
+    }
+
     match &cli.command {
         Command::Init(args) => cli::init::run(args, &cli.state_dir),
         Command::Vm(cmd) => cli::vm::run(cmd, &cli.state_dir),

@@ -149,6 +149,41 @@ pub fn delete(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// List all ember TAP devices (names starting with `em-`) on the system.
+///
+/// Parses the output of `ip -o link show type tun` to find persistent
+/// TAP devices created by ember. Returns just the device names.
+pub fn list_ember_devices() -> Result<Vec<String>> {
+    let output = Command::new("ip")
+        .args(["-o", "link", "show", "type", "tun"])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "ip link show".into(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        // If the command fails (e.g. no tun module loaded), return empty list.
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut devices = Vec::new();
+    for line in stdout.lines() {
+        // Format: "3: em-abc1234: <...>"
+        // Split on ':' and take the second field (device name), trimmed.
+        let parts: Vec<&str> = line.splitn(3, ':').collect();
+        if parts.len() >= 2 {
+            let name = parts[1].trim();
+            if name.starts_with("em-") {
+                devices.push(name.to_string());
+            }
+        }
+    }
+
+    Ok(devices)
+}
+
 /// Check whether a TAP device exists by name.
 pub fn exists(name: &str) -> Result<bool> {
     let output = Command::new("ip")

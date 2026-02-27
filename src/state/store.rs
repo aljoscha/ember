@@ -42,6 +42,18 @@ impl StateStore {
         Self { root }
     }
 
+    /// Open an existing state store, returning `None` if the directory
+    /// doesn't exist (e.g., before `ember init` has been run).
+    pub fn try_open(root: &Path) -> Option<Self> {
+        if root.join("vms").is_dir() {
+            Some(Self {
+                root: root.to_path_buf(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Initialize the state directory structure.
     ///
     /// Creates the root and all standard subdirectories if they don't exist.
