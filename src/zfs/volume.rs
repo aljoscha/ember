@@ -127,7 +127,7 @@ pub fn destroy(zvol: &str, recursive: bool) -> Result<()> {
 /// `new_zvol` is the destination zvol (e.g. `tank/ember/vms/myvm`).
 pub fn clone(snapshot: &str, new_zvol: &str) -> Result<()> {
     let output = Command::new("zfs")
-        .args(["clone", snapshot, new_zvol])
+        .args(["clone", "-p", snapshot, new_zvol])
         .output()
         .map_err(|e| Error::CommandExec {
             command: "zfs clone".to_string(),

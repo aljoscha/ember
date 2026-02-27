@@ -104,7 +104,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Download a file using curl.
-fn download_file(url: &str, dest: &Path) -> crate::error::Result<()> {
+pub(super) fn download_file(url: &str, dest: &Path) -> crate::error::Result<()> {
     let output = Command::new("curl")
         .args(["-fSL", "-o"])
         .arg(dest)

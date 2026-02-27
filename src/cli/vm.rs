@@ -4,7 +4,7 @@ use std::process::Command as ProcessCommand;
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
-use super::init::GlobalConfig;
+use super::init::{self, GlobalConfig};
 use crate::error::Error;
 use crate::firecracker;
 use crate::image;
@@ -166,13 +166,56 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+const DEFAULT_KERNEL_FILENAME: &str = "vmlinux-6.1.102";
+
+fn default_kernel_url() -> String {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "aarch64",
+        _ => "x86_64",
+    };
+    format!(
+        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/{arch}/{DEFAULT_KERNEL_FILENAME}"
+    )
+}
+
+/// Resolve the kernel path: CLI flag → global config → auto-download default.
+fn ensure_kernel(
+    cli_kernel: &Option<PathBuf>,
+    config: &mut GlobalConfig,
+    store: &StateStore,
+) -> anyhow::Result<PathBuf> {
+    if let Some(path) = cli_kernel {
+        return Ok(path.clone());
+    }
+    if let Some(path) = &config.kernel_path {
+        return Ok(path.clone());
+    }
+
+    // No kernel configured — download the default.
+    let dest = store.kernel_dir().join(DEFAULT_KERNEL_FILENAME);
+    if dest.exists() {
+        println!("Using default kernel at {}", dest.display());
+    } else {
+        let url = default_kernel_url();
+        println!("No kernel configured — downloading default from {url}...");
+        init::download_file(&url, &dest)?;
+        println!("Kernel saved to {}", dest.display());
+    }
+
+    // Persist so future creates skip the download.
+    config.kernel_path = Some(dest.clone());
+    store.write(&store.config_path(), config)?;
+
+    Ok(dest)
+}
+
 /// Create a new VM from an image.
 ///
 /// Workflow: look up image → ZFS clone @base snapshot → grow zvol if needed
 /// → mount zvol → inject per-VM SSH key → unmount → save metadata.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let config: GlobalConfig = store.read(&store.config_path())?;
+    let mut config: GlobalConfig = store.read(&store.config_path())?;
 
     // Check VM doesn't already exist.
     if vm::exists(&store, &args.name) {
@@ -213,7 +256,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     zfs::volume::clone(&snapshot, &vm_zvol)?;
 
     // Run the remainder in a closure so we can clean up the zvol on failure.
-    let result = create_post_clone(args, &store, &config, &vm_zvol, image_size_mib, &image_ref);
+    let result = create_post_clone(args, &store, &mut config, &vm_zvol, image_size_mib, &image_ref);
 
     if result.is_err() {
         eprintln!("VM creation failed, cleaning up...");
@@ -230,7 +273,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn create_post_clone(
     args: &CreateArgs,
     store: &StateStore,
-    config: &GlobalConfig,
+    config: &mut GlobalConfig,
     vm_zvol: &str,
     image_size_mib: u64,
     image_ref: &str,
@@ -269,16 +312,8 @@ fn create_post_clone(
     inject_result?;
     umount_result?;
 
-    // Determine kernel path.
-    let kernel_path = args
-        .kernel
-        .clone()
-        .or(config.kernel_path.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no kernel available — provide --kernel or run 'ember init --kernel-url <url>'"
-            )
-        })?;
+    // Determine kernel path (auto-downloads default if needed).
+    let kernel_path = ensure_kernel(&args.kernel, config, &store)?;
 
     // Build and save VM metadata.
     let metadata = VmMetadata {
