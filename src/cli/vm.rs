@@ -156,7 +156,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
     match cmd {
         VmCommand::Create(args) => create(args, state_dir),
         VmCommand::Start(args) => start(args, state_dir),
-        VmCommand::Stop(_) => anyhow::bail!("ember vm stop is not yet implemented"),
+        VmCommand::Stop(args) => stop(args, state_dir),
         VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
         VmCommand::Delete(_) => anyhow::bail!("ember vm delete is not yet implemented"),
@@ -396,6 +396,91 @@ fn start_configure(
         let client = firecracker::api::FirecrackerClient::new(socket_path);
         vm_config.configure_and_start(&client).await
     })
+}
+
+/// Stop a running VM: graceful shutdown via SendCtrlAltDel, then SIGKILL fallback.
+///
+/// Workflow: validate state → send CtrlAltDel (or skip if --force) → wait for exit
+/// → SIGKILL if still alive → clean up socket → update metadata.
+///
+/// Network cleanup (TAP, iptables, IP release) is not yet implemented.
+fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Load and validate VM state.
+    let mut metadata = vm::load(&store, &args.name)?;
+    match metadata.status {
+        VmStatus::Running | VmStatus::Paused => {}
+        _ => {
+            return Err(Error::VmWrongState {
+                name: args.name.clone(),
+                actual: metadata.status.to_string(),
+                expected: "running or paused".to_string(),
+            }
+            .into())
+        }
+    }
+
+    let pid = metadata.pid.ok_or_else(|| {
+        anyhow::anyhow!(
+            "vm '{}' is {} but has no PID — state may be corrupted",
+            args.name,
+            metadata.status
+        )
+    })?;
+
+    // Check if the process is actually alive.
+    if !firecracker::process::is_alive(pid) {
+        println!("Firecracker process (pid {pid}) is already dead.");
+    } else if args.force {
+        // --force: skip graceful shutdown, go straight to SIGKILL.
+        println!("Force-killing Firecracker (pid {pid})...");
+        firecracker::process::kill(pid)?;
+    } else {
+        // Graceful shutdown: send CtrlAltDel via the API, then wait.
+        println!("Sending shutdown signal to VM '{}'...", args.name);
+        let socket_path = &metadata.api_socket;
+
+        let send_result = if socket_path.exists() {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                let client = firecracker::api::FirecrackerClient::new(socket_path);
+                client
+                    .put_action(&firecracker::api::InstanceAction::send_ctrl_alt_del())
+                    .await
+            })
+        } else {
+            Err(anyhow::anyhow!("API socket not found, falling back to SIGKILL"))
+        };
+
+        if let Err(e) = send_result {
+            eprintln!("Graceful shutdown failed ({e}), sending SIGKILL...");
+            firecracker::process::kill(pid)?;
+        } else {
+            // Wait up to 10 seconds for the process to exit.
+            println!("Waiting for VM to shut down (up to 10s)...");
+            let exited =
+                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
+            if !exited {
+                println!("VM did not exit in time, sending SIGKILL...");
+                firecracker::process::kill(pid)?;
+            }
+        }
+    }
+
+    // Clean up the API socket.
+    let socket_path = &metadata.api_socket;
+    if socket_path.exists() {
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    // Update metadata.
+    metadata.status = VmStatus::Stopped;
+    metadata.pid = None;
+    vm::save(&store, &metadata)?;
+
+    println!("VM '{}' stopped.", args.name);
+    Ok(())
 }
 
 /// Inject the invoking user's SSH public key into the rootfs.
