@@ -1,8 +1,8 @@
 //! Local image registry tracking.
 //!
-//! Tracks metadata about OCI images that have been pulled and written
-//! to ZFS zvols. Persisted as `registry.json` in the state directory
-//! via [`StateStore`].
+//! Tracks metadata about images (pulled from OCI registries or built
+//! locally from Dockerfiles) that have been written to ZFS zvols.
+//! Persisted as `registry.json` in the state directory via [`StateStore`].
 
 use serde::{Deserialize, Serialize};
 
@@ -74,11 +74,17 @@ impl ImageRegistry {
 
     /// Find an image by a user-provided reference string.
     ///
-    /// Parses the reference and looks up by local name, so users can
-    /// query with the same shorthand they used to pull (e.g. `alpine`).
+    /// First tries parsing as an OCI reference and looking up by its
+    /// local name (so `alpine` finds `library-alpine-latest`).  If that
+    /// doesn't match, falls back to a direct local-name lookup so that
+    /// locally built images (e.g. `ubuntu-vm`) can be found too.
     pub fn find_by_reference(&self, reference: &str) -> Result<Option<&ImageEntry>> {
         let parsed = ImageReference::parse(reference)?;
-        Ok(self.get(&parsed.local_name()))
+        if let Some(entry) = self.get(&parsed.local_name()) {
+            return Ok(Some(entry));
+        }
+        // Fall back to direct local_name match (for locally built images).
+        Ok(self.get(reference))
     }
 
     /// Number of tracked images.
@@ -97,6 +103,20 @@ pub fn new_entry(reference: &ImageReference, zvol: &str, size_mib: u64) -> Image
     ImageEntry {
         reference: reference.to_string(),
         local_name: reference.local_name(),
+        zvol: zvol.to_string(),
+        size_mib,
+        pulled_at: now_iso8601(),
+    }
+}
+
+/// Build an [`ImageEntry`] for a locally built image.
+///
+/// The reference is stored as `local:<name>` to distinguish built
+/// images from pulled ones in `ember image list` output.
+pub fn new_build_entry(name: &str, local_name: &str, zvol: &str, size_mib: u64) -> ImageEntry {
+    ImageEntry {
+        reference: format!("local:{name}"),
+        local_name: local_name.to_string(),
         zvol: zvol.to_string(),
         size_mib,
         pulled_at: now_iso8601(),

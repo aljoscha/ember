@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
@@ -6,7 +6,7 @@ use super::init::GlobalConfig;
 use super::vm::OutputFormat;
 use crate::image;
 use crate::image::pull::ImageReference;
-use crate::image::registry::{ImageRegistry, new_entry};
+use crate::image::registry::{ImageRegistry, new_build_entry, new_entry};
 use crate::state::store::StateStore;
 use crate::zfs;
 
@@ -14,6 +14,9 @@ use crate::zfs;
 pub enum ImageCommand {
     /// Pull an OCI image from a registry
     Pull(PullArgs),
+
+    /// Build a VM image from a Dockerfile
+    Build(BuildArgs),
 
     /// List locally available images
     List(ListArgs),
@@ -29,6 +32,16 @@ pub enum ImageCommand {
 pub struct PullArgs {
     /// Image reference (e.g. docker.io/library/ubuntu:22.04)
     pub reference: String,
+}
+
+#[derive(Args)]
+pub struct BuildArgs {
+    /// Image name (e.g. ubuntu-vm, my-image:v1)
+    pub name: String,
+
+    /// Path to Dockerfile (default: built-in Ubuntu 24.04 VM image)
+    #[arg(long = "file", short = 'f')]
+    pub dockerfile: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -57,6 +70,7 @@ pub struct InspectArgs {
 pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
     match cmd {
         ImageCommand::Pull(args) => pull(args, state_dir),
+        ImageCommand::Build(args) => build(args, state_dir),
         ImageCommand::List(args) => list(args, state_dir),
         ImageCommand::Delete(args) => delete(args, state_dir),
         ImageCommand::Inspect(args) => inspect(args, state_dir),
@@ -109,6 +123,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
     image::inject::inject_resolv_conf(&rootfs_dir)?;
+    image::inject::inject_inittab(&rootfs_dir)?;
 
     // Step 3: Create ext4 filesystem image from rootfs.
     let size_mib = image::ext4::estimate_size_mib(&rootfs_dir)?;
@@ -134,6 +149,97 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     registry.save(&store)?;
 
     println!("Image '{reference}' pulled successfully as '{local_name}'.");
+    Ok(())
+}
+
+/// Build a VM image from a Dockerfile and write it to a ZFS zvol.
+///
+/// Full pipeline: docker build → export rootfs → inject SSH keys + resolv.conf
+/// → ext4 image → zvol create → dd to zvol → @base snapshot → register.
+fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let images_dataset = format!("{}/{}/images", config.pool, config.dataset);
+
+    // Sanitize the name for ZFS dataset use.
+    let local_name = image::build::sanitize_name(&args.name)?;
+    let zvol = format!("{images_dataset}/{local_name}");
+
+    // Check if this image already exists.
+    let registry = ImageRegistry::load(&store)?;
+    if registry.exists(&local_name) {
+        println!("Image '{}' already exists locally.", local_name);
+        return Ok(());
+    }
+
+    println!("Building image '{}'...", args.name);
+
+    let work_dir = tempfile::tempdir().map_err(|e| crate::error::Error::Io {
+        path: std::env::temp_dir(),
+        source: e,
+    })?;
+
+    // Resolve the Dockerfile: user-provided or built-in default.
+    let dockerfile = match &args.dockerfile {
+        Some(path) => {
+            if !path.exists() {
+                anyhow::bail!("Dockerfile not found: {}", path.display());
+            }
+            path.clone()
+        }
+        None => {
+            let default_path = work_dir.path().join("Dockerfile");
+            std::fs::write(&default_path, image::build::DEFAULT_DOCKERFILE)
+                .map_err(|e| crate::error::Error::Io {
+                    path: default_path.clone(),
+                    source: e,
+                })?;
+            default_path
+        }
+    };
+
+    // Step 1: Build container image and export rootfs.
+    println!("  Building container image...");
+    let rootfs_dir = image::build::build(&dockerfile, work_dir.path(), &local_name)?;
+
+    // Step 2: Inject SSH authorized_keys and resolv.conf into rootfs.
+    // Skip inittab — systemd-based images handle init and CtrlAltDel natively.
+    if let Some(pubkey_path) = image::inject::default_ssh_pubkey_path() {
+        if pubkey_path.exists() {
+            println!("  Injecting SSH public key from {}...", pubkey_path.display());
+            image::inject::inject_ssh_authorized_keys(&rootfs_dir, &pubkey_path)?;
+        } else {
+            println!(
+                "  Warning: SSH public key not found at {}, skipping injection.",
+                pubkey_path.display()
+            );
+        }
+    }
+    image::inject::inject_resolv_conf(&rootfs_dir)?;
+
+    // Step 3: Create ext4 filesystem image from rootfs.
+    let size_mib = image::ext4::estimate_size_mib(&rootfs_dir)?;
+    let ext4_path = work_dir.path().join("rootfs.ext4");
+    println!("  Creating ext4 image ({size_mib} MiB)...");
+    image::ext4::create(&rootfs_dir, &ext4_path, size_mib)?;
+
+    // Step 4: Create ZFS zvol and write ext4 image to it.
+    println!("  Creating zvol {zvol}...");
+    zfs::volume::create(&zvol, size_mib)?;
+
+    println!("  Writing image to zvol and creating @base snapshot...");
+    if let Err(e) = image::zvol::write_to_zvol(&ext4_path, &zvol) {
+        let _ = zfs::volume::destroy(&zvol, true);
+        return Err(e.into());
+    }
+
+    // Step 5: Register in local image registry.
+    let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
+    let mut registry = ImageRegistry::load(&store)?;
+    registry.add(entry);
+    registry.save(&store)?;
+
+    println!("Image '{}' built successfully.", local_name);
     Ok(())
 }
 
@@ -172,10 +278,9 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
-    // Look up the image by parsing the user-provided name as a reference.
-    // This allows both "alpine" and "docker.io/library/alpine:latest".
-    let reference = ImageReference::parse(&args.name)?;
-    let local_name = reference.local_name();
+    // Try parsing as an OCI reference first, fall back to direct local_name
+    // lookup for locally built images.
+    let local_name = resolve_local_name(&store, &args.name)?;
 
     let entry = image::registry::remove_image(&store, &local_name)?;
 
@@ -194,14 +299,13 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let registry = ImageRegistry::load(&store)?;
 
-    let reference = ImageReference::parse(&args.name)?;
+    let local_name = resolve_local_name(&store, &args.name)?;
     let entry = registry
-        .get(&reference.local_name())
+        .get(&local_name)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "image '{}' not found locally — pull it first with: ember image pull {}",
+                "image '{}' not found locally",
                 args.name,
-                args.name
             )
         })?;
 
@@ -219,4 +323,30 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve a user-provided image name to its registry local_name.
+///
+/// Tries parsing as an OCI reference first (so `alpine` resolves to
+/// `library-alpine-latest`).  Falls back to a direct local_name lookup
+/// so that locally built images (e.g. `ubuntu-vm`) work too.
+fn resolve_local_name(store: &StateStore, name: &str) -> anyhow::Result<String> {
+    let registry = ImageRegistry::load(store)?;
+
+    // Try OCI reference parse → local_name.
+    let reference = ImageReference::parse(name)?;
+    let oci_local = reference.local_name();
+    if registry.exists(&oci_local) {
+        return Ok(oci_local);
+    }
+
+    // Fall back to direct local_name (for locally built images).
+    if registry.exists(name) {
+        return Ok(name.to_string());
+    }
+
+    anyhow::bail!(
+        "image '{}' not found locally",
+        name,
+    )
 }
