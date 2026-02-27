@@ -10,13 +10,27 @@
 # Usage:
 #   ./run-integration-tests.sh              # run all integration tests
 #   ./run-integration-tests.sh init         # run only tests/init.rs
-#   ./run-integration-tests.sh image init   # run specific tests
+#   ./run-integration-tests.sh image init   # run specific test files
+#   ./run-integration-tests.sh vm::networking_ssh_and_internet  # run one test
 
 set -euo pipefail
 
-# Discover which test crates to run.
+# Parse arguments. "vm::foo" means run only test "foo" from tests/vm.rs.
+# Plain "vm" runs all tests in tests/vm.rs.
+declare -A test_filters  # map: test_file -> filter (empty = all)
+
 if [[ $# -gt 0 ]]; then
-    tests=("$@")
+    tests=()
+    for arg in "$@"; do
+        if [[ "$arg" == *::* ]]; then
+            file="${arg%%::*}"
+            filter="${arg#*::}"
+            tests+=("$file")
+            test_filters["$file"]="$filter"
+        else
+            tests+=("$arg")
+        fi
+    done
 else
     # All .rs files in tests/ (strip path and extension).
     tests=()
@@ -60,8 +74,15 @@ failed=0
 for i in "${!tests[@]}"; do
     name="${tests[$i]}"
     bin="${binaries[$i]}"
-    echo "=== $name ==="
-    if sudo "$bin" --ignored --test-threads=1; then
+    filter="${test_filters[$name]:-}"
+
+    if [[ -n "$filter" ]]; then
+        echo "=== $name::$filter ==="
+    else
+        echo "=== $name ==="
+    fi
+
+    if sudo "$bin" --ignored --test-threads=1 --nocapture "$filter"; then
         echo "--- $name: PASSED ---"
     else
         echo "--- $name: FAILED ---"
