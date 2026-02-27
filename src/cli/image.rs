@@ -1,13 +1,16 @@
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use clap::{Args, Subcommand};
 
 use super::init::GlobalConfig;
 use super::vm::OutputFormat;
+use crate::firecracker;
 use crate::image;
 use crate::image::pull::ImageReference;
 use crate::image::registry::{ImageRegistry, new_build_entry, new_entry};
 use crate::state::store::StateStore;
+use crate::state::vm::{self, VmMetadata, VmStatus};
 use crate::zfs;
 
 #[derive(Subcommand)]
@@ -55,6 +58,10 @@ pub struct ListArgs {
 pub struct DeleteArgs {
     /// Image name
     pub name: String,
+
+    /// Force delete, also removing any VMs that depend on this image
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args)]
@@ -275,6 +282,11 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Delete a local image: remove from registry and destroy ZFS zvol.
+///
+/// If VMs were cloned from this image, they hold a ZFS dependency on the
+/// image's `@base` snapshot. Without `--force`, the command lists the
+/// dependent VMs and exits. With `--force`, it deletes those VMs first,
+/// then destroys the image.
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
@@ -282,7 +294,37 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // lookup for locally built images.
     let local_name = resolve_local_name(&store, &args.name)?;
 
-    let entry = image::registry::remove_image(&store, &local_name)?;
+    // Look up the image entry (don't remove from registry yet — the zvol
+    // destroy might fail if there are dependent clones).
+    let registry = ImageRegistry::load(&store)?;
+    let entry = registry
+        .get(&local_name)
+        .ok_or_else(|| anyhow::anyhow!("image '{}' not found locally", args.name))?
+        .clone();
+
+    // Find VMs that were created from this image.
+    let dependent_vms: Vec<VmMetadata> = vm::list(&store)?
+        .into_iter()
+        .filter(|v| v.image == entry.reference)
+        .collect();
+
+    if !dependent_vms.is_empty() {
+        let vm_names: Vec<&str> = dependent_vms.iter().map(|v| v.name.as_str()).collect();
+
+        if !args.force {
+            anyhow::bail!(
+                "image '{}' is in use by VM(s): {}\n\
+                 Delete them first, or use --force to delete the image and all dependent VMs.",
+                entry.reference,
+                vm_names.join(", ")
+            );
+        }
+
+        // Force-delete each dependent VM.
+        for vm_meta in &dependent_vms {
+            force_delete_vm(&store, vm_meta)?;
+        }
+    }
 
     // Destroy the ZFS zvol (and its @base snapshot) recursively.
     if zfs::volume::exists(&entry.zvol)? {
@@ -290,7 +332,54 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         zfs::volume::destroy(&entry.zvol, true)?;
     }
 
+    // Remove from registry last, after the zvol is gone.
+    image::registry::remove_image(&store, &local_name)?;
+
     println!("Image '{}' deleted.", entry.reference);
+    Ok(())
+}
+
+/// Force-delete a single VM: stop if running, destroy zvol, remove state.
+///
+/// Mirrors the logic in `cli/vm.rs delete --force` but is callable from
+/// image deletion.
+fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Result<()> {
+    println!("Deleting dependent VM '{}'...", metadata.name);
+
+    // Kill the Firecracker process if the VM is running/paused.
+    if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) {
+        if let Some(pid) = metadata.pid {
+            if firecracker::process::is_alive(pid) {
+                println!("  Force-killing Firecracker (pid {pid})...");
+                firecracker::process::kill(pid)?;
+                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
+            }
+        }
+        if metadata.api_socket.exists() {
+            let _ = std::fs::remove_file(&metadata.api_socket);
+        }
+    }
+
+    let _ = ProcessCommand::new("udevadm").arg("settle").status();
+
+    // Destroy the VM's zvol.
+    if zfs::volume::exists(&metadata.zvol_path)? {
+        println!("  Destroying zvol '{}'...", metadata.zvol_path);
+        match zfs::volume::destroy(&metadata.zvol_path, true) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!(
+                    "  Warning: failed to destroy zvol '{}': {e}",
+                    metadata.zvol_path
+                );
+            }
+        }
+    }
+
+    // Remove the VM state directory.
+    vm::delete(store, &metadata.name)?;
+
+    println!("  VM '{}' deleted.", metadata.name);
     Ok(())
 }
 
