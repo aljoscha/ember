@@ -1091,33 +1091,47 @@ fn networking_ssh_and_internet() {
     let hostname = hostname_result.unwrap();
     eprintln!("Guest hostname: {hostname}");
 
-    // -- Verify internet from guest --
-    // Ubuntu has both wget and ping available.
+    // -- Verify DNS resolution from guest --
+    // /etc/resolv.conf should be a symlink to /proc/net/pnp with real nameservers.
+    let resolv_result = ssh_exec(guest_ip, &ssh_key, "cat /etc/resolv.conf");
+    assert!(
+        resolv_result.is_ok(),
+        "failed to read /etc/resolv.conf: {:?}",
+        resolv_result.err()
+    );
+    let resolv_contents = resolv_result.unwrap();
+    eprintln!("Guest /etc/resolv.conf:\n{resolv_contents}");
+    assert!(
+        resolv_contents.contains("nameserver"),
+        "expected nameserver entries in resolv.conf: {resolv_contents}"
+    );
+
+    // Verify DNS actually works by resolving a domain name.
+    let dns_result = ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 example.com");
+    assert!(
+        dns_result.is_ok(),
+        "DNS resolution failed — guest cannot resolve example.com: {:?}",
+        dns_result.err()
+    );
+    eprintln!("Guest DNS resolution verified (ping example.com)");
+
+    // -- Verify internet from guest (requires both DNS + connectivity) --
     let inet_result = ssh_exec(
         guest_ip,
         &ssh_key,
         "wget -q -O /dev/null -T 5 http://example.com && echo OK",
     );
-    match &inet_result {
-        Ok(out) => {
-            assert!(
-                out.contains("OK"),
-                "expected 'OK' from wget, got: {out}"
-            );
-            eprintln!("Guest internet access verified (wget http://example.com)");
-        }
-        Err(e) => {
-            // wget might fail due to DNS; try ping as fallback.
-            eprintln!("wget failed ({e}), trying ping...");
-            let ping_result = ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 8.8.8.8");
-            assert!(
-                ping_result.is_ok(),
-                "Guest cannot reach the internet. wget: {e}, ping: {:?}",
-                ping_result.err()
-            );
-            eprintln!("Guest internet access verified (ping 8.8.8.8)");
-        }
-    }
+    assert!(
+        inet_result.is_ok(),
+        "Guest internet access failed (wget http://example.com): {:?}",
+        inet_result.err()
+    );
+    let inet_out = inet_result.unwrap();
+    assert!(
+        inet_out.contains("OK"),
+        "expected 'OK' from wget, got: {inet_out}"
+    );
+    eprintln!("Guest internet access verified (wget http://example.com)");
 
     // -- Stop VM --
     let stop_output = ember(&[

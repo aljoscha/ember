@@ -26,6 +26,10 @@ pub struct VmNetworkConfig {
     pub netmask: String,
     /// Optional guest MAC address.
     pub guest_mac: Option<String>,
+    /// DNS nameservers to pass to the guest via the kernel `ip=` parameter.
+    /// The kernel writes these to `/proc/net/pnp` which the guest uses as
+    /// `/etc/resolv.conf`. At most 2 servers are used (kernel limit).
+    pub dns_servers: Vec<String>,
 }
 
 /// Collected configuration for a Firecracker microVM.
@@ -86,12 +90,26 @@ impl VmConfig {
     /// If networking is configured, appends the kernel `ip=` parameter
     /// so the guest configures its network interface at boot without
     /// needing cloud-init or DHCP.
+    ///
+    /// The full `ip=` format is:
+    /// `ip=<client>:<server>:<gw>:<mask>:<hostname>:<device>:<autoconf>:<dns0>:<dns1>`
+    ///
+    /// DNS servers are included so the kernel populates `/proc/net/pnp`,
+    /// which the guest symlinks as `/etc/resolv.conf`.
     fn full_boot_args(&self) -> String {
         match &self.network {
-            Some(net) => format!(
-                "{} ip={}::{}:{}::eth0:off",
-                self.boot_args, net.guest_ip, net.gateway_ip, net.netmask
-            ),
+            Some(net) => {
+                let dns_suffix = net
+                    .dns_servers
+                    .iter()
+                    .take(2)
+                    .map(|s| format!(":{s}"))
+                    .collect::<String>();
+                format!(
+                    "{} ip={}::{}:{}::eth0:off{}",
+                    self.boot_args, net.guest_ip, net.gateway_ip, net.netmask, dns_suffix
+                )
+            }
             None => self.boot_args.clone(),
         }
     }
@@ -172,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn boot_args_with_network() {
+    fn boot_args_with_network_no_dns() {
         let config = VmConfig::new(2, 512, "/boot/vmlinux", "/dev/zvol/pool/vms/test")
             .with_network(VmNetworkConfig {
                 tap_device: "em-abc123".to_string(),
@@ -180,10 +198,28 @@ mod tests {
                 gateway_ip: "10.100.0.1".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: None,
+                dns_servers: vec![],
             });
         assert_eq!(
             config.full_boot_args(),
             "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252::eth0:off"
+        );
+    }
+
+    #[test]
+    fn boot_args_with_network_and_dns() {
+        let config = VmConfig::new(2, 512, "/boot/vmlinux", "/dev/zvol/pool/vms/test")
+            .with_network(VmNetworkConfig {
+                tap_device: "em-abc123".to_string(),
+                guest_ip: "10.100.0.2".to_string(),
+                gateway_ip: "10.100.0.1".to_string(),
+                netmask: "255.255.255.252".to_string(),
+                guest_mac: None,
+                dns_servers: vec!["10.64.0.1".to_string(), "192.168.0.1".to_string()],
+            });
+        assert_eq!(
+            config.full_boot_args(),
+            "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252::eth0:off:10.64.0.1:192.168.0.1"
         );
     }
 
@@ -204,10 +240,11 @@ mod tests {
                 gateway_ip: "10.100.0.5".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: Some("AA:FC:00:00:00:01".to_string()),
+                dns_servers: vec!["1.1.1.1".to_string()],
             });
         assert_eq!(
             config.full_boot_args(),
-            "console=ttyS0 panic=1 ip=10.100.0.6::10.100.0.5:255.255.255.252::eth0:off"
+            "console=ttyS0 panic=1 ip=10.100.0.6::10.100.0.5:255.255.255.252::eth0:off:1.1.1.1"
         );
     }
 }

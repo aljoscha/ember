@@ -1,3 +1,4 @@
+pub mod dns;
 pub mod ip;
 pub mod nat;
 pub mod tap;

@@ -523,6 +523,13 @@ fn start_configure(
     // Wait for the API socket to appear.
     firecracker::process::wait_for_socket(socket_path)?;
 
+    // Detect host DNS servers for the guest.
+    let dns_servers = network::dns::detect_nameservers();
+    println!(
+        "Using DNS servers: {}",
+        dns_servers.join(", ")
+    );
+
     // Build VM configuration with networking.
     let vm_config = firecracker::config::VmConfig::new(
         metadata.cpus,
@@ -536,6 +543,7 @@ fn start_configure(
         gateway_ip: net_info.gateway_ip.clone(),
         netmask: net_info.netmask.clone(),
         guest_mac: net_info.guest_mac.clone(),
+        dns_servers,
     });
 
     // Run the async API calls.
