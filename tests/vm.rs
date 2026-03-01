@@ -1116,22 +1116,23 @@ fn networking_ssh_and_internet() {
     eprintln!("Guest DNS resolution verified (ping example.com)");
 
     // -- Verify internet from guest (requires both DNS + connectivity) --
+    // Use curl with generous timeout — first DNS query after boot can be slow.
     let inet_result = ssh_exec(
         guest_ip,
         &ssh_key,
-        "wget -q -O /dev/null -T 5 http://example.com && echo OK",
+        "curl -sS -o /dev/null -w '%{http_code}' -m 15 http://example.com",
     );
     assert!(
         inet_result.is_ok(),
-        "Guest internet access failed (wget http://example.com): {:?}",
+        "Guest internet access failed (curl http://example.com): {:?}",
         inet_result.err()
     );
-    let inet_out = inet_result.unwrap();
+    let http_code = inet_result.unwrap();
     assert!(
-        inet_out.contains("OK"),
-        "expected 'OK' from wget, got: {inet_out}"
+        http_code.starts_with('2') || http_code.starts_with('3'),
+        "expected HTTP 2xx/3xx from example.com, got: {http_code}"
     );
-    eprintln!("Guest internet access verified (wget http://example.com)");
+    eprintln!("Guest internet access verified (curl http://example.com → {http_code})");
 
     // -- Stop VM --
     let stop_output = ember(&[

@@ -523,8 +523,10 @@ fn start_configure(
     // Wait for the API socket to appear.
     firecracker::process::wait_for_socket(socket_path)?;
 
-    // Detect host DNS servers for the guest.
-    let dns_servers = network::dns::detect_nameservers();
+    // Detect host DNS servers for the guest, scoped to the WAN interface
+    // so we only get servers reachable through the VM's NAT path.
+    let wan_iface = net_info.wan_iface.as_deref().unwrap_or("eth0");
+    let dns_servers = network::dns::detect_nameservers(wan_iface);
     println!(
         "Using DNS servers: {}",
         dns_servers.join(", ")

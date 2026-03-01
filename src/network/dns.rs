@@ -7,6 +7,7 @@
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::process::Command;
 
 /// Fallback DNS servers when host detection fails.
 const FALLBACK_NAMESERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
@@ -14,18 +15,32 @@ const FALLBACK_NAMESERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
 /// Maximum number of DNS servers to return (kernel ip= supports 2).
 const MAX_NAMESERVERS: usize = 2;
 
-/// Detect the host's DNS nameservers.
+/// Detect the host's DNS nameservers for a specific WAN interface.
+///
+/// VM traffic is NATed through the WAN interface, so only DNS servers
+/// reachable via that interface are useful. Using servers from other
+/// interfaces (e.g. LAN router DNS when traffic goes through a VPN)
+/// causes ~10s timeouts per query.
 ///
 /// Resolution order:
-/// 1. `/run/systemd/resolve/resolv.conf` — upstream servers from
+/// 1. `resolvectl dns <wan_iface>` — DNS servers for the specific
+///    interface (most accurate, avoids unreachable servers)
+/// 2. `/run/systemd/resolve/resolv.conf` — all upstream servers from
 ///    systemd-resolved (avoids the 127.0.0.53 stub)
-/// 2. `/etc/resolv.conf` — direct resolv.conf
-/// 3. Fallback to 1.1.1.1 + 8.8.8.8
+/// 3. `/etc/resolv.conf` — direct resolv.conf
+/// 4. Fallback to 1.1.1.1 + 8.8.8.8
 ///
 /// Filters out IPv6 addresses (VMs only have IPv4) and loopback
 /// addresses (unreachable from the guest).
-pub fn detect_nameservers() -> Vec<String> {
-    // Try systemd-resolved upstream config first.
+pub fn detect_nameservers(wan_iface: &str) -> Vec<String> {
+    // Try interface-specific DNS via resolvectl (most accurate).
+    if let Some(servers) = resolvectl_dns(wan_iface) {
+        if !servers.is_empty() {
+            return servers;
+        }
+    }
+
+    // Fall back to systemd-resolved upstream config.
     if let Some(servers) = parse_resolv_conf(Path::new("/run/systemd/resolve/resolv.conf")) {
         if !servers.is_empty() {
             return servers;
@@ -44,6 +59,31 @@ pub fn detect_nameservers() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// Query DNS servers for a specific interface via `resolvectl dns`.
+///
+/// Output format: `Link N (ifname): 10.64.0.1 fc00:bbbb::1`
+fn resolvectl_dns(iface: &str) -> Option<Vec<String>> {
+    let output = Command::new("resolvectl")
+        .args(["dns", iface])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The servers are space-separated after the colon.
+    let servers_part = stdout.split_once(':')?.1;
+    let servers: Vec<String> = servers_part
+        .split_whitespace()
+        .filter(|addr| is_usable_ipv4(addr))
+        .take(MAX_NAMESERVERS)
+        .map(|s| s.to_string())
+        .collect();
+    Some(servers)
 }
 
 /// Parse nameserver entries from a resolv.conf file.
@@ -171,8 +211,30 @@ mod tests {
 
     #[test]
     fn detect_nameservers_returns_something() {
-        let servers = detect_nameservers();
+        // Use a bogus interface — should fall back to resolv.conf or hardcoded.
+        let servers = detect_nameservers("nonexistent0");
         assert!(!servers.is_empty());
         assert!(servers.len() <= MAX_NAMESERVERS);
+    }
+
+    #[test]
+    fn resolvectl_dns_nonexistent_iface() {
+        // Should return None or empty, not panic.
+        let result = resolvectl_dns("nonexistent0");
+        assert!(result.is_none() || result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolvectl_parses_output() {
+        // Simulates: "Link 4 (wg0-mullvad): 10.64.0.1 fc00:bbbb:bbbb:bb01::1"
+        let output = "Link 4 (wg0-mullvad): 10.64.0.1 fc00:bbbb:bbbb:bb01::1";
+        let servers_part = output.split_once(':').unwrap().1;
+        let servers: Vec<String> = servers_part
+            .split_whitespace()
+            .filter(|addr| is_usable_ipv4(addr))
+            .take(MAX_NAMESERVERS)
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(servers, vec!["10.64.0.1"]);
     }
 }
