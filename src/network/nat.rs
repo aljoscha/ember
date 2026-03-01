@@ -137,25 +137,33 @@ fn iptables(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Run an iptables delete command, ignoring "rule doesn't exist" errors.
+/// Run an iptables delete command, removing ALL matching instances.
 ///
-/// When iptables can't find a matching rule to delete, it exits with:
-/// `"Bad rule (does a matching rule exist in that chain?)."` — we treat
-/// this as success for idempotent cleanup.
+/// `iptables -D` only removes the first match. If the same rule was
+/// added multiple times (e.g. a test VM and a manual VM both at the
+/// same IP), we need to loop until all copies are gone.
+///
+/// Silently ignores "rule doesn't exist" errors for idempotent cleanup.
 fn iptables_delete(args: &[&str]) -> Result<()> {
-    let output = Command::new("iptables")
-        .args(args)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "iptables".into(),
-            source: e,
-        })?;
+    loop {
+        let output = Command::new("iptables")
+            .args(args)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "iptables".into(),
+                source: e,
+            })?;
 
-    if !output.status.success() {
+        if output.status.success() {
+            // Deleted one instance — loop to catch duplicates.
+            continue;
+        }
+
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does a matching rule exist")
             || stderr.contains("No chain/target/match")
         {
+            // No more matching rules — done.
             return Ok(());
         }
         return Err(Error::Network(format!(
@@ -163,6 +171,4 @@ fn iptables_delete(args: &[&str]) -> Result<()> {
             stderr.trim()
         )));
     }
-
-    Ok(())
 }
