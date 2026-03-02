@@ -66,7 +66,7 @@
 - [x] Implement `ember snapshot create`
 - [x] Implement `ember snapshot restore` (enforce VM stopped)
 - [x] Implement `ember snapshot list`
-- [ ] Implement `ember snapshot delete`
+- [x] Implement `ember snapshot delete`
 - [ ] Test: snapshot, modify VM, restore, verify original state
 
 ## Phase 7: VM Resize

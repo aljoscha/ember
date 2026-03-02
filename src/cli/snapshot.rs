@@ -65,9 +65,7 @@ pub fn run(cmd: &SnapshotCommand, state_dir: &Path) -> anyhow::Result<()> {
         SnapshotCommand::Create(args) => create(args, state_dir),
         SnapshotCommand::Restore(args) => restore(args, state_dir),
         SnapshotCommand::List(args) => list(args, state_dir),
-        SnapshotCommand::Delete(_) => {
-            anyhow::bail!("ember snapshot delete is not yet implemented")
-        }
+        SnapshotCommand::Delete(args) => delete(args, state_dir),
     }
 }
 
@@ -178,6 +176,37 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Delete a ZFS snapshot from a VM's zvol.
+///
+/// The reserved `@base` snapshot cannot be deleted — it is used for image
+/// cloning. ZFS will return an error if the snapshot has dependent clones.
+fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let metadata = vm::load(&store, &args.vm_name)?;
+
+    // Disallow deleting the reserved @base snapshot.
+    if args.snapshot_name == "base" {
+        anyhow::bail!("snapshot 'base' is reserved for image cloning and cannot be deleted");
+    }
+
+    // Verify the snapshot exists.
+    if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
+        anyhow::bail!(
+            "snapshot '{}' does not exist on vm '{}'",
+            args.snapshot_name,
+            args.vm_name
+        );
+    }
+
+    zfs::snapshot::destroy(&metadata.zvol_path, &args.snapshot_name)?;
+
+    println!(
+        "Deleted snapshot '{}' from vm '{}'",
+        args.snapshot_name, args.vm_name
+    );
+    Ok(())
 }
 
 /// Restore a VM's zvol to a previously created snapshot.
