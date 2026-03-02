@@ -78,7 +78,7 @@ pub struct CreateArgs {
     pub network: Option<String>,
 
     /// VM config YAML file
-    #[arg(long = "vm-config")]
+    #[arg(long)]
     pub config: Option<PathBuf>,
 
     /// Don't start the VM after creation
