@@ -17,13 +17,13 @@ ember
 │        [--wan-iface <iface>]
 │
 ├── vm
-│   ├── create <name> --image <image> [--cpus N] [--memory MiB] [--disk-size GiB]
+│   ├── create <name> --image <image> [--cpus N] [--memory SIZE] [--disk-size SIZE]
 │   │          [--kernel <path>] [--network <subnet>] [--vm-config <file>] [--no-start]
 │   ├── start <name>
 │   ├── stop <name> [--force]
 │   ├── pause <name>
 │   ├── resume <name>
-│   ├── resize <name> --disk-size <GiB>
+│   ├── resize <name> --disk-size <SIZE>
 │   ├── delete <name> [--force]
 │   ├── list [--format table|json]
 │   ├── inspect <name> [--format table|json]
@@ -63,8 +63,8 @@ ember
 name: myvm
 image: docker.io/library/ubuntu:22.04
 cpus: 2
-memory: 512          # MiB
-disk_size: 4         # GiB
+memory: 512M
+disk_size: 4G
 kernel: /path/to/custom/vmlinux  # optional
 network:
   subnet: 10.100.0.0/16
@@ -238,7 +238,7 @@ This keeps the `@base` snapshot shareable across all VMs while giving each VM it
 ### VM Resize
 
 ```
-ember vm resize myvm --disk-size 8
+ember vm resize myvm --disk-size 8G
 ```
 
 1. VM must be stopped

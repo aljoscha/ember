@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::config::size::ByteSize;
 use crate::error::Error;
 
 /// Per-VM YAML configuration.
@@ -24,10 +25,10 @@ pub struct VmConfig {
     pub image: Option<String>,
     /// Number of vCPUs.
     pub cpus: Option<u32>,
-    /// Memory in MiB.
-    pub memory: Option<u32>,
-    /// Disk size in GiB.
-    pub disk_size: Option<u32>,
+    /// Memory size (e.g., `512M`, `16G`).
+    pub memory: Option<ByteSize>,
+    /// Disk size (e.g., `8G`, `512M`).
+    pub disk_size: Option<ByteSize>,
     /// Path to custom kernel.
     pub kernel: Option<PathBuf>,
     /// Network configuration.
@@ -87,8 +88,8 @@ mod tests {
 name: myvm
 image: docker.io/library/ubuntu:22.04
 cpus: 2
-memory: 512
-disk_size: 4
+memory: 512M
+disk_size: 4G
 kernel: /path/to/vmlinux
 network:
   subnet: 10.100.0.0/16
@@ -104,8 +105,8 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
             Some("docker.io/library/ubuntu:22.04")
         );
         assert_eq!(config.cpus, Some(2));
-        assert_eq!(config.memory, Some(512));
-        assert_eq!(config.disk_size, Some(4));
+        assert_eq!(config.memory.unwrap().to_mib().unwrap(), 512);
+        assert_eq!(config.disk_size.unwrap().to_gib().unwrap(), 4);
         assert_eq!(config.kernel, Some(PathBuf::from("/path/to/vmlinux")));
         assert_eq!(
             config.network.as_ref().unwrap().subnet.as_deref(),
@@ -120,6 +121,22 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
             config.boot_args.as_deref(),
             Some("console=ttyS0 reboot=k panic=1 pci=off")
         );
+    }
+
+    #[test]
+    fn reject_bare_integer_memory() {
+        let yaml = "memory: 512\n";
+        let err = serde_yaml::from_str::<VmConfig>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("requires a unit suffix"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_bare_integer_disk_size() {
+        let yaml = "disk_size: 4\n";
+        let err = serde_yaml::from_str::<VmConfig>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("requires a unit suffix"), "got: {msg}");
     }
 
     #[test]

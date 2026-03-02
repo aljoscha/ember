@@ -321,7 +321,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
         "vm", "create", vm_name,
         "--image", "ubuntu-vm",
         "--cpus", "1",
-        "--memory", "512",
+        "--memory", "512M",
         "--kernel", kernel,
         "--no-start",
     ]);

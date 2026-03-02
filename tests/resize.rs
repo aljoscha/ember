@@ -95,7 +95,7 @@ impl Drop for PoolCleanup {
 fn setup_pool_and_vm(
     test_name: &str,
     vm_name: &str,
-    disk_size: u32,
+    disk_size: &str,
     tmp: &tempfile::TempDir,
 ) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
@@ -143,8 +143,6 @@ fn setup_pool_and_vm(
     let kernel = tmp.path().join("vmlinux-dummy");
     std::fs::write(&kernel, b"not a real kernel").unwrap();
 
-    let disk_size_str = disk_size.to_string();
-
     // Create a VM (--no-start, no Firecracker needed).
     let output = ember(&[
         "--state-dir",
@@ -157,7 +155,7 @@ fn setup_pool_and_vm(
         "--kernel",
         kernel.to_str().unwrap(),
         "--disk-size",
-        &disk_size_str,
+        disk_size,
         "--no-start",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -243,7 +241,7 @@ where
 fn resize_stopped_vm_grows_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let (pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresize", "resizevm", 1, &tmp);
+        setup_pool_and_vm("vmresize", "resizevm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/resizevm");
     let zvol_device = format!("/dev/zvol/{vm_zvol}");
@@ -271,7 +269,7 @@ fn resize_stopped_vm_grows_disk() {
     let resize_output = ember(&[
         "--state-dir", state,
         "vm", "resize", "resizevm",
-        "--disk-size", "2",
+        "--disk-size", "2G",
     ]);
     let stdout = String::from_utf8_lossy(&resize_output.stdout);
     let stderr = String::from_utf8_lossy(&resize_output.stderr);
@@ -347,14 +345,14 @@ fn resize_stopped_vm_grows_disk() {
 fn resize_shrink_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let (_pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresizeshrink", "shrinkvm", 2, &tmp);
+        setup_pool_and_vm("vmresizeshrink", "shrinkvm", "2G", &tmp);
     let state = state_dir.to_str().unwrap();
 
     // Try to shrink from 2 GiB to 1 GiB.
     let output = ember(&[
         "--state-dir", state,
         "vm", "resize", "shrinkvm",
-        "--disk-size", "1",
+        "--disk-size", "1G",
     ]);
     assert!(
         !output.status.success(),
@@ -370,7 +368,7 @@ fn resize_shrink_fails() {
     let output = ember(&[
         "--state-dir", state,
         "vm", "resize", "shrinkvm",
-        "--disk-size", "2",
+        "--disk-size", "2G",
     ]);
     assert!(
         !output.status.success(),
@@ -418,7 +416,7 @@ fn resize_nonexistent_vm_fails() {
     let output = ember(&[
         "--state-dir", state,
         "vm", "resize", "nosuchvm",
-        "--disk-size", "16",
+        "--disk-size", "16G",
     ]);
     assert!(
         !output.status.success(),
@@ -432,7 +430,7 @@ fn resize_nonexistent_vm_fails() {
 fn resize_multiple_grows() {
     let tmp = tempfile::tempdir().unwrap();
     let (pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresizemulti", "multivm", 1, &tmp);
+        setup_pool_and_vm("vmresizemulti", "multivm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/multivm");
 
@@ -440,7 +438,7 @@ fn resize_multiple_grows() {
     let output = ember(&[
         "--state-dir", state,
         "vm", "resize", "multivm",
-        "--disk-size", "2",
+        "--disk-size", "2G",
     ]);
     assert!(
         output.status.success(),
@@ -453,7 +451,7 @@ fn resize_multiple_grows() {
     let output = ember(&[
         "--state-dir", state,
         "vm", "resize", "multivm",
-        "--disk-size", "4",
+        "--disk-size", "4G",
     ]);
     assert!(
         output.status.success(),

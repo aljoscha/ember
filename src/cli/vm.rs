@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::init::{self, GlobalConfig};
 use crate::config;
+use crate::config::size::ByteSize;
 use crate::error::Error;
 use crate::firecracker;
 use crate::image;
@@ -61,13 +62,13 @@ pub struct CreateArgs {
     #[arg(long)]
     pub cpus: Option<u32>,
 
-    /// Memory in MiB (default: 16384)
+    /// Memory size, e.g. 512M, 16G (default: 16G)
     #[arg(long)]
-    pub memory: Option<u32>,
+    pub memory: Option<ByteSize>,
 
-    /// Disk size in GiB (default: 8)
+    /// Disk size, e.g. 8G, 512M (default: 8G)
     #[arg(long)]
-    pub disk_size: Option<u32>,
+    pub disk_size: Option<ByteSize>,
 
     /// Path to custom kernel
     #[arg(long)]
@@ -119,9 +120,9 @@ pub struct ResizeArgs {
     /// VM name
     pub name: String,
 
-    /// New disk size in GiB (must be larger than current size)
+    /// New disk size with unit, e.g. 16G (must be larger than current size)
     #[arg(long)]
-    pub disk_size: u32,
+    pub disk_size: ByteSize,
 }
 
 #[derive(Args)]
@@ -184,8 +185,8 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
 
 /// Program defaults for VM creation.
 const DEFAULT_CPUS: u32 = 1;
-const DEFAULT_MEMORY_MIB: u32 = 16384;
-const DEFAULT_DISK_SIZE_GIB: u32 = 8;
+const DEFAULT_MEMORY: ByteSize = ByteSize::from_gib(16);
+const DEFAULT_DISK_SIZE: ByteSize = ByteSize::from_gib(8);
 
 /// Resolved VM creation configuration after merging defaults, YAML config, and CLI flags.
 ///
@@ -229,15 +230,21 @@ fn resolve_create_config(
         .or_else(|| yaml.and_then(|c| c.cpus))
         .unwrap_or(DEFAULT_CPUS);
 
-    let memory = args
+    let memory_size = args
         .memory
         .or_else(|| yaml.and_then(|c| c.memory))
-        .unwrap_or(DEFAULT_MEMORY_MIB);
+        .unwrap_or(DEFAULT_MEMORY);
+    let memory = memory_size
+        .to_mib()
+        .map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?;
 
-    let disk_size = args
+    let disk_size_val = args
         .disk_size
         .or_else(|| yaml.and_then(|c| c.disk_size))
-        .unwrap_or(DEFAULT_DISK_SIZE_GIB);
+        .unwrap_or(DEFAULT_DISK_SIZE);
+    let disk_size = disk_size_val
+        .to_gib()
+        .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
 
     let kernel = args.kernel.clone().or_else(|| {
         yaml.and_then(|c| c.kernel.as_ref().map(|p| config::vm::expand_tilde(p)))
@@ -901,19 +908,25 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Convert size with unit to GiB.
+    let new_gib = args
+        .disk_size
+        .to_gib()
+        .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
+
     // Enforce grow-only (shrinking is not supported).
     let current_gib = metadata.disk_size_gib;
-    if args.disk_size <= current_gib {
+    if new_gib <= current_gib {
         anyhow::bail!(
             "new disk size ({} GiB) must be larger than current size ({} GiB)",
-            args.disk_size,
+            new_gib,
             current_gib
         );
     }
 
     // Grow the ZFS zvol.
-    println!("Growing zvol to {} GiB...", args.disk_size);
-    zfs::volume::set_volsize(&metadata.zvol_path, args.disk_size)?;
+    println!("Growing zvol to {} GiB...", new_gib);
+    zfs::volume::set_volsize(&metadata.zvol_path, new_gib)?;
 
     // Wait for the block device node to settle after the resize.
     let dev_path = zfs::volume::device_path(&metadata.zvol_path);
@@ -925,12 +938,12 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     resize2fs(&dev_path)?;
 
     // Update metadata.
-    metadata.disk_size_gib = args.disk_size;
+    metadata.disk_size_gib = new_gib;
     vm::save(&store, &metadata)?;
 
     println!(
         "VM '{}' disk resized from {} GiB to {} GiB.",
-        args.name, current_gib, args.disk_size
+        args.name, current_gib, new_gib
     );
     Ok(())
 }
