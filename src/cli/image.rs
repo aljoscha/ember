@@ -317,7 +317,13 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let registry = ImageRegistry::load(&store)?;
     let entry = registry
         .get(&local_name)
-        .ok_or_else(|| anyhow::anyhow!("image '{}' not found locally", args.name))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "image '{}' not found locally\n\
+                 Hint: run 'ember image list' to see available images",
+                args.name
+            )
+        })?
         .clone();
 
     // Find VMs that were created from this image.
@@ -411,7 +417,8 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
         .get(&local_name)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "image '{}' not found locally",
+                "image '{}' not found locally\n\
+                 Hint: run 'ember image list' to see available images",
                 args.name,
             )
         })?;
@@ -453,7 +460,10 @@ fn resolve_local_name(store: &StateStore, name: &str) -> anyhow::Result<String> 
     }
 
     anyhow::bail!(
-        "image '{}' not found locally",
+        "image '{}' not found locally\n\
+         Hint: run 'ember image list' to see available images, \
+         or 'ember image pull {}' to pull it",
+        name,
         name,
     )
 }

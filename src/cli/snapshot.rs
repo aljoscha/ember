@@ -194,8 +194,10 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Verify the snapshot exists.
     if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
         anyhow::bail!(
-            "snapshot '{}' does not exist on vm '{}'",
+            "snapshot '{}' does not exist on vm '{}'\n\
+             Hint: list snapshots with: ember snapshot list {}",
             args.snapshot_name,
+            args.vm_name,
             args.vm_name
         );
     }
@@ -239,8 +241,10 @@ fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Verify the snapshot exists.
     if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
         anyhow::bail!(
-            "snapshot '{}' does not exist on vm '{}'",
+            "snapshot '{}' does not exist on vm '{}'\n\
+             Hint: list snapshots with: ember snapshot list {}",
             args.snapshot_name,
+            args.vm_name,
             args.vm_name
         );
     }

@@ -84,4 +84,4 @@
 - [x] Add `--format json` output to all list/inspect commands
 - [x] Add integration tests for `ember vm pause` and `ember vm resume`
 - [x] Implement cleanup/rollback for partial operations (e.g., TAP created but firecracker failed)
-- [ ] Polish error messages across the board
+- [x] Polish error messages across the board

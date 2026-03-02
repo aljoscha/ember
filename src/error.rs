@@ -14,7 +14,7 @@ pub enum Error {
     },
 
     /// A shelled-out command could not be spawned.
-    #[error("failed to execute {command}")]
+    #[error("failed to execute '{command}' — is it installed and in PATH?")]
     CommandExec {
         command: String,
         #[source]
@@ -50,7 +50,7 @@ pub enum Error {
     Config(String),
 
     /// VM not found.
-    #[error("vm '{name}' not found")]
+    #[error("vm '{name}' not found — run 'ember vm list' to see available VMs")]
     VmNotFound { name: String },
 
     /// Image not found locally.

@@ -35,7 +35,12 @@ pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn firecracker: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to spawn firecracker: {e}\n\
+                 Hint: is the 'firecracker' binary installed and in PATH?"
+            )
+        })?;
 
     Ok(child)
 }
@@ -53,9 +58,11 @@ pub fn wait_for_socket(socket_path: &Path) -> anyhow::Result<()> {
         thread::sleep(SOCKET_POLL_INTERVAL);
     }
     anyhow::bail!(
-        "firecracker API socket did not appear at {} within {:?}",
+        "firecracker API socket did not appear at {} within {:?}\n\
+         Hint: check {} for errors",
         socket_path.display(),
         SOCKET_TIMEOUT,
+        socket_path.with_extension("log").display(),
     )
 }
 

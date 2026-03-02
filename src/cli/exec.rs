@@ -27,9 +27,10 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     if metadata.status != VmStatus::Running {
         anyhow::bail!(
-            "vm '{}' is {}, expected running",
+            "vm '{}' is {} — start it first with: ember vm start {}",
             args.vm_name,
-            metadata.status
+            metadata.status,
+            args.vm_name
         );
     }
 

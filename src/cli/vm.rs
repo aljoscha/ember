@@ -709,9 +709,11 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let pid = metadata.pid.ok_or_else(|| {
         anyhow::anyhow!(
-            "vm '{}' is {} but has no PID — state may be corrupted",
+            "vm '{}' is {} but has no PID — state may be corrupted\n\
+             Hint: try 'ember vm delete --force {}' and recreate the VM",
             args.name,
-            metadata.status
+            metadata.status,
+            args.name
         )
     })?;
 
@@ -802,7 +804,10 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     let socket_path = &metadata.api_socket;
     if !socket_path.exists() {
         anyhow::bail!(
-            "VM '{}' is marked as running but API socket not found — state may be corrupted",
+            "vm '{}' is marked as running but API socket not found at {}\n\
+             Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
+            args.name,
+            socket_path.display(),
             args.name
         );
     }
@@ -847,7 +852,10 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let socket_path = &metadata.api_socket;
     if !socket_path.exists() {
         anyhow::bail!(
-            "VM '{}' is marked as paused but API socket not found — state may be corrupted",
+            "vm '{}' is marked as paused but API socket not found at {}\n\
+             Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
+            args.name,
+            socket_path.display(),
             args.name
         );
     }
@@ -1093,9 +1101,10 @@ fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     if metadata.status != VmStatus::Running {
         anyhow::bail!(
-            "vm '{}' is {}, expected running",
+            "vm '{}' is {} — start it first with: ember vm start {}",
             args.name,
-            metadata.status
+            metadata.status,
+            args.name
         );
     }
 
@@ -1124,7 +1133,10 @@ fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     let status = cmd.status().map_err(|e| {
-        anyhow::anyhow!("failed to run ssh: {e}")
+        anyhow::anyhow!(
+            "failed to execute ssh: {e}\n\
+             Hint: is the 'ssh' client installed and in PATH?"
+        )
     })?;
 
     if !status.success() {
@@ -1141,7 +1153,8 @@ fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<String> {
     let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
         anyhow::anyhow!(
-            "no SSH public key found — create one with: ssh-keygen -t ed25519"
+            "no SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub\n\
+             Hint: create one with: ssh-keygen -t ed25519"
         )
     })?;
 

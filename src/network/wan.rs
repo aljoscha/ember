@@ -33,9 +33,11 @@ pub fn detect() -> Result<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     parse_dev_from_route(&stdout).ok_or_else(|| {
-        Error::Network(format!(
-            "could not determine WAN interface from `ip route get 8.8.8.8` output: {stdout}"
-        ))
+        Error::Network(
+            "could not detect default network interface — is the host connected to the internet?\n\
+             Hint: specify the interface manually with: ember init --wan-iface <iface>"
+                .to_string(),
+        )
     })
 }
 
