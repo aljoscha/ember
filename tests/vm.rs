@@ -1182,3 +1182,424 @@ fn networking_ssh_and_internet() {
     assert_dataset_absent(&format!("{pool}/ember/vms/netvm"));
     eprintln!("Networking test complete.");
 }
+
+// ---------------------------------------------------------------------------
+// Pause/Resume tests
+// ---------------------------------------------------------------------------
+
+/// Pausing a created (not running) VM should fail with a state error.
+#[test]
+#[ignore]
+fn pause_created_vm_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmpausecreated", &tmp);
+    let kernel = create_dummy_kernel(tmp.path());
+    let state = state_dir.to_str().unwrap();
+
+    // Create a VM but don't start it.
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "pausetest",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Try to pause — should fail because VM is in "created" state.
+    let pause_output = ember(&["--state-dir", state, "vm", "pause", "pausetest"]);
+    assert!(
+        !pause_output.status.success(),
+        "expected pause to fail for non-running VM"
+    );
+    let stderr = String::from_utf8_lossy(&pause_output.stderr);
+    assert!(
+        stderr.contains("created") && stderr.contains("expected running"),
+        "expected state error mentioning 'created' and 'expected running': {stderr}"
+    );
+}
+
+/// Resuming a created (not paused) VM should fail with a state error.
+#[test]
+#[ignore]
+fn resume_created_vm_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmresumecreated", &tmp);
+    let kernel = create_dummy_kernel(tmp.path());
+    let state = state_dir.to_str().unwrap();
+
+    // Create a VM but don't start it.
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "resumetest",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Try to resume — should fail because VM is in "created" state.
+    let resume_output = ember(&["--state-dir", state, "vm", "resume", "resumetest"]);
+    assert!(
+        !resume_output.status.success(),
+        "expected resume to fail for non-paused VM"
+    );
+    let stderr = String::from_utf8_lossy(&resume_output.stderr);
+    assert!(
+        stderr.contains("created") && stderr.contains("expected paused"),
+        "expected state error mentioning 'created' and 'expected paused': {stderr}"
+    );
+}
+
+/// Full pause/resume lifecycle: create → start → pause → verify paused
+/// → resume → verify running → stop → delete.
+///
+/// Verifies:
+/// - Pause transitions status from running to paused
+/// - PID is preserved across pause (Firecracker process stays alive)
+/// - Resume transitions status from paused to running
+/// - PID is unchanged after resume
+/// - Resuming a running VM (after resume) fails
+/// - Pausing a paused VM fails
+/// - Stopping a paused VM works
+///
+/// Requires `firecracker` in PATH and a bootable kernel.
+#[test]
+#[ignore]
+fn pause_resume_lifecycle() {
+    if !firecracker_available() {
+        return;
+    }
+
+    let kernel_path = match ensure_kernel() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmpauseresume", &tmp);
+    let state = state_dir.to_str().unwrap();
+    let kernel = kernel_path.to_str().unwrap();
+
+    // -- Create --
+    let create_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "prvm",
+        "--image",
+        "alpine:latest",
+        "--cpus",
+        "1",
+        "--memory",
+        "128",
+        "--kernel",
+        kernel,
+        "--no-start",
+    ]);
+    assert!(
+        create_output.status.success(),
+        "vm create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    // -- Start --
+    let start_output = ember(&["--state-dir", state, "vm", "start", "prvm"]);
+    assert!(
+        start_output.status.success(),
+        "vm start failed: {}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+
+    // Capture PID while running.
+    let inspect1 = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect1.status.success());
+    let json1: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect1.stdout))
+            .expect("failed to parse inspect JSON");
+    assert_eq!(json1["status"], "running");
+    let pid = json1["pid"]
+        .as_u64()
+        .expect("expected numeric PID in inspect output");
+
+    // -- Pause --
+    let pause_output = ember(&["--state-dir", state, "vm", "pause", "prvm"]);
+    let pause_stdout = String::from_utf8_lossy(&pause_output.stdout);
+    let pause_stderr = String::from_utf8_lossy(&pause_output.stderr);
+    assert!(
+        pause_output.status.success(),
+        "vm pause failed.\nstdout: {pause_stdout}\nstderr: {pause_stderr}"
+    );
+    assert!(
+        pause_stdout.contains("paused"),
+        "expected 'paused' in output: {pause_stdout}"
+    );
+
+    // Verify status is paused and PID is preserved.
+    let inspect2 = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect2.status.success());
+    let json2: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+            .expect("failed to parse inspect JSON after pause");
+    assert_eq!(
+        json2["status"], "paused",
+        "expected status 'paused', got: {}",
+        json2["status"]
+    );
+    assert_eq!(
+        json2["pid"].as_u64().unwrap(),
+        pid,
+        "PID should be preserved after pause"
+    );
+
+    // Firecracker process should still be alive (paused, not killed).
+    assert!(
+        Path::new(&format!("/proc/{pid}")).exists(),
+        "Firecracker process (pid {pid}) should be alive while paused"
+    );
+
+    // -- Pausing an already paused VM should fail --
+    let pause_again = ember(&["--state-dir", state, "vm", "pause", "prvm"]);
+    assert!(
+        !pause_again.status.success(),
+        "expected pause to fail for already-paused VM"
+    );
+    let pause_again_stderr = String::from_utf8_lossy(&pause_again.stderr);
+    assert!(
+        pause_again_stderr.contains("paused") && pause_again_stderr.contains("expected running"),
+        "expected state error: {pause_again_stderr}"
+    );
+
+    // -- Resume --
+    let resume_output = ember(&["--state-dir", state, "vm", "resume", "prvm"]);
+    let resume_stdout = String::from_utf8_lossy(&resume_output.stdout);
+    let resume_stderr = String::from_utf8_lossy(&resume_output.stderr);
+    assert!(
+        resume_output.status.success(),
+        "vm resume failed.\nstdout: {resume_stdout}\nstderr: {resume_stderr}"
+    );
+    assert!(
+        resume_stdout.contains("resumed"),
+        "expected 'resumed' in output: {resume_stdout}"
+    );
+
+    // Verify status is back to running and PID is unchanged.
+    let inspect3 = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect3.status.success());
+    let json3: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect3.stdout))
+            .expect("failed to parse inspect JSON after resume");
+    assert_eq!(
+        json3["status"], "running",
+        "expected status 'running' after resume, got: {}",
+        json3["status"]
+    );
+    assert_eq!(
+        json3["pid"].as_u64().unwrap(),
+        pid,
+        "PID should be preserved after resume"
+    );
+
+    // -- Resuming a running VM should fail --
+    let resume_again = ember(&["--state-dir", state, "vm", "resume", "prvm"]);
+    assert!(
+        !resume_again.status.success(),
+        "expected resume to fail for already-running VM"
+    );
+    let resume_again_stderr = String::from_utf8_lossy(&resume_again.stderr);
+    assert!(
+        resume_again_stderr.contains("running") && resume_again_stderr.contains("expected paused"),
+        "expected state error: {resume_again_stderr}"
+    );
+
+    // -- Stop and cleanup --
+    let stop_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "stop",
+        "prvm",
+        "--force",
+    ]);
+    assert!(
+        stop_output.status.success(),
+        "vm stop failed: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let del_output = ember(&["--state-dir", state, "vm", "delete", "prvm"]);
+    assert!(
+        del_output.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del_output.stderr)
+    );
+
+    assert_dataset_absent(&format!("{pool}/ember/vms/prvm"));
+    eprintln!("Pause/resume lifecycle test complete.");
+}
+
+/// Stopping a paused VM should work (via --force).
+///
+/// Requires `firecracker` in PATH and a bootable kernel.
+#[test]
+#[ignore]
+fn stop_paused_vm() {
+    if !firecracker_available() {
+        return;
+    }
+
+    let kernel_path = match ensure_kernel() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) = setup_pool_init_and_pull("vmstoppaused", &tmp);
+    let state = state_dir.to_str().unwrap();
+    let kernel = kernel_path.to_str().unwrap();
+
+    // Create and start.
+    let create_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "spvm",
+        "--image",
+        "alpine:latest",
+        "--cpus",
+        "1",
+        "--memory",
+        "128",
+        "--kernel",
+        kernel,
+        "--no-start",
+    ]);
+    assert!(
+        create_output.status.success(),
+        "vm create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    let start_output = ember(&["--state-dir", state, "vm", "start", "spvm"]);
+    assert!(
+        start_output.status.success(),
+        "vm start failed: {}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+
+    // Get PID for later verification.
+    let inspect = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "spvm",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+            .expect("failed to parse inspect JSON");
+    let pid = json["pid"].as_u64().expect("expected numeric PID");
+
+    // Pause the VM.
+    let pause_output = ember(&["--state-dir", state, "vm", "pause", "spvm"]);
+    assert!(
+        pause_output.status.success(),
+        "vm pause failed: {}",
+        String::from_utf8_lossy(&pause_output.stderr)
+    );
+
+    // Stop the paused VM with --force.
+    let stop_output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "stop",
+        "spvm",
+        "--force",
+    ]);
+    let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
+    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
+    assert!(
+        stop_output.status.success(),
+        "vm stop --force failed for paused VM.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
+    );
+
+    // Verify process is dead.
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "Firecracker process (pid {pid}) should be dead after stop"
+    );
+
+    // Verify status is stopped.
+    let inspect2 = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "spvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect2.status.success());
+    let json2: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+            .expect("failed to parse inspect JSON after stop");
+    assert_eq!(json2["status"], "stopped");
+
+    // Cleanup.
+    let del_output = ember(&["--state-dir", state, "vm", "delete", "spvm"]);
+    assert!(
+        del_output.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del_output.stderr)
+    );
+
+    assert_dataset_absent(&format!("{pool}/ember/vms/spvm"));
+    eprintln!("Stop paused VM test complete.");
+}
