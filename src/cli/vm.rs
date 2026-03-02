@@ -54,7 +54,7 @@ pub struct CreateArgs {
     pub name: String,
 
     /// Base image reference
-    #[arg(long, required_unless_present = "config")]
+    #[arg(long, required_unless_present = "vm_config")]
     pub image: Option<String>,
 
     /// Number of vCPUs (default: 1)
@@ -78,8 +78,8 @@ pub struct CreateArgs {
     pub network: Option<String>,
 
     /// VM config YAML file
-    #[arg(long)]
-    pub config: Option<PathBuf>,
+    #[arg(long = "vm-config")]
+    pub vm_config: Option<PathBuf>,
 
     /// Don't start the VM after creation
     #[arg(long)]
@@ -321,7 +321,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
 
     // Load YAML config if provided.
-    let yaml_config = match &args.config {
+    let yaml_config = match &args.vm_config {
         Some(path) => {
             println!("Loading VM config from {}...", path.display());
             Some(config::vm::load(path)?)

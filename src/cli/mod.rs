@@ -21,7 +21,7 @@ pub struct Cli {
     pub log_level: String,
 
     /// Global config file override
-    #[arg(long = "config")]
+    #[arg(long = "config", global = true)]
     pub config_file: Option<PathBuf>,
 
     #[command(subcommand)]

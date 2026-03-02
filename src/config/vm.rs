@@ -1,7 +1,7 @@
 //! YAML configuration file for VM creation.
 //!
 //! Provides types for deserializing per-VM YAML config files passed
-//! via `--config`. All fields are optional — they override program
+//! via `--vm-config`. All fields are optional — they override program
 //! defaults and are in turn overridden by explicit CLI flags.
 //!
 //! Merge order: program defaults < YAML config < CLI flags.
