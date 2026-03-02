@@ -331,7 +331,11 @@ fn create_post_clone(
         pid: None,
         api_socket: store.vm_dir(&args.name).join("firecracker.sock"),
         created_at: vm::now_iso8601(),
-        ssh: SshConfig::default(),
+        ssh: SshConfig {
+            user: "root".to_string(),
+            key: image::inject::default_ssh_privkey_path()
+                .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519")),
+        },
     };
 
     vm::save(store, &metadata)?;

@@ -19,6 +19,13 @@ const SSH_PUBKEY_NAMES: &[&str] = &[
     "id_rsa.pub",
 ];
 
+/// Common SSH private key filenames, in preference order.
+const SSH_PRIVKEY_NAMES: &[&str] = &[
+    "id_ed25519",
+    "id_ecdsa",
+    "id_rsa",
+];
+
 /// Return the default SSH public key path.
 ///
 /// Looks in the invoking user's `~/.ssh/` directory for common key types.
@@ -27,6 +34,20 @@ const SSH_PUBKEY_NAMES: &[&str] = &[
 pub fn default_ssh_pubkey_path() -> Option<PathBuf> {
     let home = invoking_user_home()?;
     find_ssh_pubkey_in(&home.join(".ssh"))
+}
+
+/// Return the default SSH private key path.
+///
+/// Looks in the invoking user's `~/.ssh/` directory for common key types.
+/// When running under `sudo`, uses `SUDO_USER` to resolve the real user's
+/// home directory instead of root's.
+pub fn default_ssh_privkey_path() -> Option<PathBuf> {
+    let home = invoking_user_home()?;
+    let ssh_dir = home.join(".ssh");
+    SSH_PRIVKEY_NAMES
+        .iter()
+        .map(|name| ssh_dir.join(name))
+        .find(|p| p.exists())
 }
 
 /// Find the first matching SSH public key in the given `.ssh` directory.
