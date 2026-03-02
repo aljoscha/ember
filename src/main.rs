@@ -1,3 +1,4 @@
+mod cleanup;
 mod cli;
 pub mod config;
 pub mod error;

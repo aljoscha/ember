@@ -316,7 +316,12 @@ fn ensure_kernel(
 /// Workflow: load YAML config (if provided) → merge with CLI flags →
 /// look up image → ZFS clone @base snapshot → grow zvol if needed
 /// → mount zvol → inject per-VM SSH key → unmount → save metadata.
+///
+/// Uses a [`Rollback`] guard to ensure the zvol clone and state directory
+/// are cleaned up if any step after cloning fails.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
+    use crate::cleanup::Rollback;
+
     let store = StateStore::new(state_dir.to_path_buf());
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
 
@@ -365,27 +370,32 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let base_dataset = format!("{}/{}", global_config.pool, global_config.dataset);
     let vm_zvol = format!("{base_dataset}/vms/{}", resolved.name);
 
+    let mut rollback = Rollback::new();
+
     // Clone @base snapshot → per-VM zvol (instant, copy-on-write).
     let snapshot = format!("{image_zvol}@base");
     println!("Cloning {} → {}...", snapshot, vm_zvol);
     zfs::volume::clone(&snapshot, &vm_zvol)?;
+    {
+        let zvol = vm_zvol.clone();
+        let sd = state_dir.to_path_buf();
+        let name = resolved.name.clone();
+        rollback.push("ZFS zvol clone", move || {
+            let _ = zfs::volume::destroy(&zvol, true);
+            let _ = vm::delete(&StateStore::new(sd), &name);
+        });
+    }
 
-    // Run the remainder in a closure so we can clean up the zvol on failure.
-    let result = create_post_clone(
+    create_post_clone(
         &resolved,
         &store,
         &mut global_config,
         &vm_zvol,
         image_size_mib,
         &image_ref,
-    );
+    )?;
 
-    if result.is_err() {
-        eprintln!("VM creation failed, cleaning up...");
-        let _ = zfs::volume::destroy(&vm_zvol, true);
-        let _ = vm::delete(&store, &resolved.name);
-        return result;
-    }
+    rollback.commit();
 
     if !resolved.no_start {
         start(&StartArgs { name: resolved.name.clone() }, state_dir)?;
@@ -487,9 +497,11 @@ fn create_post_clone(
 /// → configure machine (CPU, memory, kernel, rootfs, network) → start instance
 /// → update metadata.
 ///
-/// On failure, all networking resources (TAP, iptables, IP allocation) are
-/// cleaned up before returning the error.
+/// Uses a [`Rollback`] guard to ensure all resources (IP allocation, TAP device,
+/// iptables rules, Firecracker process) are cleaned up if any step fails.
 fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
+    use crate::cleanup::Rollback;
+
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
 
@@ -507,28 +519,10 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // ── Networking setup ───────────────────────────────────────────
-    let net_info = start_setup_network(&store, &config, &metadata)?;
+    let mut rollback = Rollback::new();
 
-    // Everything from here needs network cleanup on failure.
-    let result = start_after_network(args, &store, &mut metadata, &net_info);
-    if let Err(e) = result {
-        cleanup_network(&store, &args.name, &net_info);
-        return Err(e);
-    }
+    // ── Networking ────────────────────────────────────────────────
 
-    Ok(())
-}
-
-/// Set up networking for a VM start: allocate IP, create TAP, enable NAT.
-///
-/// Returns the [`NetworkInfo`] to persist in metadata and use for Firecracker
-/// configuration. The caller is responsible for cleanup on failure.
-fn start_setup_network(
-    store: &StateStore,
-    config: &GlobalConfig,
-    metadata: &VmMetadata,
-) -> anyhow::Result<NetworkInfo> {
     // Determine WAN interface (from config or auto-detect).
     let wan_iface = match &config.wan_iface {
         Some(iface) => iface.clone(),
@@ -541,37 +535,46 @@ fn start_setup_network(
     // Allocate a /30 IP block for this VM.
     let subnet = network::ip::DEFAULT_SUBNET;
     println!("Allocating network address...");
-    let allocation = network::ip::allocate(store, subnet, &metadata.name)?;
+    let allocation = network::ip::allocate(&store, subnet, &metadata.name)?;
     println!(
         "  Guest IP: {}, Host IP: {}",
         allocation.guest_ip, allocation.host_ip
     );
+    {
+        let sd = state_dir.to_path_buf();
+        let name = metadata.name.clone();
+        rollback.push("IP allocation", move || {
+            let _ = network::ip::release(&StateStore::new(sd), &name);
+        });
+    }
 
     // Create TAP device.
     let tap_name = network::tap::device_name(&metadata.id);
     let host_ip_cidr = format!("{}/30", allocation.host_ip);
     println!("Creating TAP device {tap_name}...");
-    if let Err(e) = network::tap::create(&tap_name, &host_ip_cidr) {
-        // Clean up IP allocation before returning.
-        let _ = network::ip::release(store, &metadata.name);
-        return Err(e.into());
+    network::tap::create(&tap_name, &host_ip_cidr)?;
+    {
+        let tap = tap_name.clone();
+        rollback.push("TAP device", move || {
+            let _ = network::tap::delete(&tap);
+        });
     }
 
     // Enable IP forwarding (idempotent).
-    if let Err(e) = network::nat::enable_ip_forwarding() {
-        let _ = network::tap::delete(&tap_name);
-        let _ = network::ip::release(store, &metadata.name);
-        return Err(e.into());
-    }
+    network::nat::enable_ip_forwarding()?;
 
     // Add iptables NAT/forwarding rules.
-    if let Err(e) = network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface) {
-        let _ = network::tap::delete(&tap_name);
-        let _ = network::ip::release(store, &metadata.name);
-        return Err(e.into());
+    network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface)?;
+    {
+        let tap = tap_name.clone();
+        let guest_ip = allocation.guest_ip.clone();
+        let wan = wan_iface.clone();
+        rollback.push("iptables rules", move || {
+            let _ = network::nat::remove_rules(&tap, &guest_ip, &wan);
+        });
     }
 
-    Ok(NetworkInfo {
+    let net_info = NetworkInfo {
         tap_device: tap_name,
         host_ip: allocation.host_ip,
         guest_ip: allocation.guest_ip,
@@ -579,17 +582,10 @@ fn start_setup_network(
         netmask: allocation.netmask,
         guest_mac: None,
         wan_iface: Some(wan_iface),
-    })
-}
+    };
 
-/// Continue VM start after networking is set up: spawn Firecracker, configure, boot.
-fn start_after_network(
-    args: &StartArgs,
-    store: &StateStore,
-    metadata: &mut VmMetadata,
-    net_info: &NetworkInfo,
-) -> anyhow::Result<()> {
-    // Build paths.
+    // ── Firecracker ───────────────────────────────────────────────
+
     let socket_path = &metadata.api_socket;
     let log_path = store.vm_dir(&args.name).join("firecracker.log");
     let rootfs_path = zfs::volume::device_path(&metadata.zvol_path);
@@ -606,20 +602,22 @@ fn start_after_network(
     println!("Starting Firecracker...");
     let child = firecracker::process::spawn(socket_path, &log_path)?;
     let pid = child.id();
-
-    // Everything from here needs process cleanup on failure.
-    let result = start_configure(metadata, socket_path, &rootfs_path, net_info);
-    if let Err(e) = result {
-        eprintln!("VM start failed, killing Firecracker process (pid {pid})...");
+    rollback.push("Firecracker process", move || {
         let _ = firecracker::process::kill(pid);
-        return Err(e);
-    }
+    });
 
-    // Update metadata with network info, status, and PID.
-    metadata.network = Some(net_info.clone());
+    // Configure and boot via the Firecracker API.
+    start_configure(&metadata, socket_path, &rootfs_path, &net_info)?;
+
+    // ── Persist state ─────────────────────────────────────────────
+
+    metadata.network = Some(net_info);
     metadata.status = VmStatus::Running;
     metadata.pid = Some(pid);
-    vm::save(store, metadata)?;
+    vm::save(&store, &metadata)?;
+
+    // Everything succeeded — keep all resources.
+    rollback.commit();
 
     println!("VM '{}' started (pid {}).", args.name, pid);
     Ok(())

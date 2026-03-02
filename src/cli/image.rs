@@ -88,7 +88,12 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
 ///
 /// Full pipeline: skopeo pull → inject SSH keys + resolv.conf → ext4 image
 /// → zvol create → dd to zvol → @base snapshot → register in local registry.
+///
+/// Uses a [`Rollback`] guard to ensure the zvol is cleaned up if any step
+/// after creation fails (e.g., writing the image or saving the registry).
 fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
+    use crate::cleanup::Rollback;
+
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let images_dataset = format!("{}/{}/images", config.pool, config.dataset);
@@ -138,22 +143,28 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("  Creating ext4 image ({size_mib} MiB)...");
     image::ext4::create(&rootfs_dir, &ext4_path, size_mib)?;
 
+    let mut rollback = Rollback::new();
+
     // Step 4: Create ZFS zvol and write ext4 image to it.
     println!("  Creating zvol {zvol}...");
     zfs::volume::create(&zvol, size_mib)?;
+    {
+        let z = zvol.clone();
+        rollback.push("ZFS zvol", move || {
+            let _ = zfs::volume::destroy(&z, true);
+        });
+    }
 
     println!("  Writing image to zvol and creating @base snapshot...");
-    if let Err(e) = image::zvol::write_to_zvol(&ext4_path, &zvol) {
-        // Clean up the zvol on failure.
-        let _ = zfs::volume::destroy(&zvol, true);
-        return Err(e.into());
-    }
+    image::zvol::write_to_zvol(&ext4_path, &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_entry(&reference, &zvol, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
+
+    rollback.commit();
 
     println!("Image '{reference}' pulled successfully as '{local_name}'.");
     Ok(())
@@ -230,21 +241,28 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("  Creating ext4 image ({size_mib} MiB)...");
     image::ext4::create(&rootfs_dir, &ext4_path, size_mib)?;
 
+    let mut rollback = crate::cleanup::Rollback::new();
+
     // Step 4: Create ZFS zvol and write ext4 image to it.
     println!("  Creating zvol {zvol}...");
     zfs::volume::create(&zvol, size_mib)?;
+    {
+        let z = zvol.clone();
+        rollback.push("ZFS zvol", move || {
+            let _ = zfs::volume::destroy(&z, true);
+        });
+    }
 
     println!("  Writing image to zvol and creating @base snapshot...");
-    if let Err(e) = image::zvol::write_to_zvol(&ext4_path, &zvol) {
-        let _ = zfs::volume::destroy(&zvol, true);
-        return Err(e.into());
-    }
+    image::zvol::write_to_zvol(&ext4_path, &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
+
+    rollback.commit();
 
     println!("Image '{}' built successfully.", local_name);
     Ok(())
