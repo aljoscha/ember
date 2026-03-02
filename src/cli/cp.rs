@@ -65,9 +65,19 @@ pub fn run(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
     rt.block_on(async {
         let mut client = ssh::client::connect(guest_ip, user, key_path).await?;
         if uploading {
-            ssh::copy::upload(&mut client, Path::new(local_path), remote_path).await?;
+            let local = Path::new(local_path);
+            if local.is_dir() {
+                ssh::copy::upload_dir(&mut client, local, remote_path).await?;
+            } else {
+                ssh::copy::upload(&mut client, local, remote_path).await?;
+            }
         } else {
-            ssh::copy::download(&mut client, remote_path, Path::new(local_path)).await?;
+            let local = Path::new(local_path);
+            if ssh::copy::is_remote_dir(&mut client, remote_path).await? {
+                ssh::copy::download_dir(&mut client, remote_path, local).await?;
+            } else {
+                ssh::copy::download(&mut client, remote_path, local).await?;
+            }
         }
         let _ = client.close().await;
         Ok::<(), anyhow::Error>(())
