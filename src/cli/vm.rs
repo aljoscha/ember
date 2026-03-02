@@ -58,11 +58,11 @@ pub struct CreateArgs {
     pub cpus: u32,
 
     /// Memory in MiB
-    #[arg(long, default_value = "128")]
+    #[arg(long, default_value = "16384")]
     pub memory: u32,
 
     /// Disk size in GiB
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "8")]
     pub disk_size: u32,
 
     /// Path to custom kernel
