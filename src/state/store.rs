@@ -224,16 +224,36 @@ struct FileLock {
 
 impl FileLock {
     /// Acquire a shared (read) lock for the given data file.
-    fn shared(data_path: &Path) -> Result<Self> {
-        Self::acquire(data_path, FlockArg::LockShared)
+    ///
+    /// Opens the lock file read-only without creating it. If the lock file
+    /// doesn't exist (e.g., no writer has ever run, or we lack permission
+    /// to create it), returns `None` — reads proceed without locking, which
+    /// is safe because the data file is updated via atomic rename.
+    fn shared(data_path: &Path) -> Result<Option<Self>> {
+        let lock_path = lock_path_for(data_path);
+
+        let file = match OpenOptions::new().read(true).open(&lock_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(None),
+            Err(e) => {
+                return Err(Error::Io {
+                    path: lock_path,
+                    source: e,
+                })
+            }
+        };
+
+        let flock = Flock::lock(file, FlockArg::LockShared).map_err(|(_, errno)| Error::Io {
+            path: lock_path,
+            source: errno.into(),
+        })?;
+
+        Ok(Some(Self { _flock: flock }))
     }
 
     /// Acquire an exclusive (write) lock for the given data file.
     fn exclusive(data_path: &Path) -> Result<Self> {
-        Self::acquire(data_path, FlockArg::LockExclusive)
-    }
-
-    fn acquire(data_path: &Path, arg: FlockArg) -> Result<Self> {
         let lock_path = lock_path_for(data_path);
 
         // Ensure parent directory exists for the lock file.
@@ -254,10 +274,11 @@ impl FileLock {
                 source: e,
             })?;
 
-        let flock = Flock::lock(file, arg).map_err(|(_, errno)| Error::Io {
-            path: lock_path,
-            source: errno.into(),
-        })?;
+        let flock =
+            Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Io {
+                path: lock_path,
+                source: errno.into(),
+            })?;
 
         Ok(Self { _flock: flock })
     }

@@ -9,6 +9,7 @@ pub mod zfs;
 
 use clap::Parser;
 use cli::{Cli, Command};
+use cli::vm::VmCommand;
 
 /// Check that the process is running as root (euid 0).
 fn require_root() -> anyhow::Result<()> {
@@ -21,17 +22,43 @@ fn require_root() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Returns true for commands that don't need root privileges.
+///
+/// SSH-based commands (exec, cp, vm ssh) only read VM state and invoke the
+/// system SSH client — no root required. Read-only queries (vm list, vm
+/// inspect) also work without elevated privileges.
+fn needs_root(command: &Command) -> bool {
+    match command {
+        Command::Version => false,
+        Command::Exec(_) | Command::Cp(_) => false,
+        Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_)) => false,
+        _ => true,
+    }
+}
+
+/// Returns true for commands that should trigger state reconciliation.
+///
+/// Reconciliation cleans up after crashes (dead VMs, orphaned TAP devices)
+/// and requires root. Skip it for read-only and SSH-client commands.
+fn needs_reconcile(command: &Command) -> bool {
+    match command {
+        Command::Version | Command::Init(_) => false,
+        Command::Exec(_) | Command::Cp(_) => false,
+        Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_)) => false,
+        _ => true,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // version doesn't need root
-    if !matches!(&cli.command, Command::Version) {
+    if needs_root(&cli.command) {
         require_root()?;
     }
 
-    // Lightweight state reconciliation on every command (except init/version).
+    // Lightweight state reconciliation on every privileged command.
     // Cleans up after crashes: marks dead VMs stopped, removes orphaned TAP devices.
-    if !matches!(&cli.command, Command::Version | Command::Init(_)) {
+    if needs_reconcile(&cli.command) {
         state::reconcile::run(&cli.state_dir);
     }
 
