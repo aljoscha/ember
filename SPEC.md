@@ -14,10 +14,11 @@ A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only �
 ```
 ember
 ├── init [--pool <name>] [--device <path>] [--dataset <name>] [--kernel-url <url>]
+│        [--wan-iface <iface>]
 │
 ├── vm
 │   ├── create <name> --image <image> [--cpus N] [--memory MiB] [--disk-size GiB]
-│   │          [--kernel <path>] [--network <subnet>] [--config <file>] [--no-start]
+│   │          [--kernel <path>] [--network <subnet>] [--vm-config <file>] [--no-start]
 │   ├── start <name>
 │   ├── stop <name> [--force]
 │   ├── pause <name>
@@ -25,14 +26,15 @@ ember
 │   ├── resize <name> --disk-size <GiB>
 │   ├── delete <name> [--force]
 │   ├── list [--format table|json]
-│   ├── inspect <name> [--format json]
+│   ├── inspect <name> [--format table|json]
 │   └── ssh <name> [-- <command>...]
 │
 ├── image
 │   ├── pull <reference>           # e.g. docker.io/library/ubuntu:22.04
+│   ├── build <name> [-f|--file <dockerfile>]
 │   ├── list [--format table|json]
-│   ├── delete <name>
-│   └── inspect <name>
+│   ├── delete <name> [--force]
+│   └── inspect <name> [--format table|json]
 │
 ├── snapshot
 │   ├── create <vm-name> <snapshot-name>
@@ -55,7 +57,7 @@ ember
 --config <file>        # Global config file override
 ```
 
-### YAML Config (for `vm create --config`)
+### YAML Config (for `vm create --vm-config`)
 
 ```yaml
 name: myvm
@@ -102,12 +104,16 @@ src/
 │   ├── mod.rs
 │   ├── tap.rs           # TAP device via ioctl (nix crate)
 │   ├── ip.rs            # IP allocation from pool
-│   └── nat.rs           # iptables NAT/masquerade rules
+│   ├── nat.rs           # iptables NAT/masquerade rules
+│   ├── dns.rs           # Host DNS nameserver detection for guests
+│   └── wan.rs           # WAN interface auto-detection
 ├── image/
 │   ├── mod.rs
-│   ├── pull.rs          # OCI image pull (oci-unpack or skopeo fallback)
-│   ├── unpack.rs        # Layer extraction
+│   ├── pull.rs          # OCI image pull via skopeo + layer extraction
+│   ├── build.rs         # Dockerfile-based image building (docker/podman)
 │   ├── ext4.rs          # mkfs.ext4 + loop mount + rootfs copy
+│   ├── zvol.rs          # Write ext4 image to zvol + @base snapshot
+│   ├── inject.rs        # SSH key, resolv.conf, inittab injection into rootfs
 │   └── registry.rs      # Local image metadata
 ├── ssh/
 │   ├── mod.rs
@@ -117,10 +123,13 @@ src/
 ├── state/
 │   ├── mod.rs
 │   ├── store.rs         # JSON files + flock
-│   └── vm.rs            # VM metadata types
-└── config/
-    ├── mod.rs
-    └── vm.rs            # YAML config parsing + merge
+│   ├── vm.rs            # VM metadata types
+│   └── reconcile.rs     # Crash recovery reconciliation
+├── config/
+│   ├── mod.rs
+│   └── vm.rs            # YAML config parsing + merge
+├── cleanup.rs           # RAII rollback guard for multi-step operations
+└── error.rs             # Unified thiserror-based error types
 ```
 
 ## Key Dependencies
@@ -130,12 +139,13 @@ src/
 | clap (derive) | CLI parsing |
 | serde, serde_json, serde_yaml | Config and state serialization |
 | tokio | Async runtime |
-| hyper + hyperlocal | HTTP over Unix socket (Firecracker API) |
+| hyper + hyper-util + http-body-util + hyperlocal | HTTP over Unix socket (Firecracker API) |
 | nix | TAP device ioctl, process signals |
 | russh + russh-keys | SSH client |
 | thiserror, anyhow | Error handling |
 | uuid | VM identifiers |
 | indicatif | Progress bars for image pulls |
+| tempfile | Temporary directories for image build/pull pipelines |
 
 **No ZFS crate** — shell out to `zfs`/`zpool` CLI. The Rust ZFS crates are unmaintained or FreeBSD-only. Shelling out is standard practice (Proxmox, TrueNAS).
 
@@ -160,9 +170,12 @@ src/
 
 ```
 OCI registry
-    │  (oci-unpack or skopeo)
+    │  (skopeo copy + tar extract layers)
     ▼
-Unpacked layer directory (/tmp/ember-image-XXXX/)
+Unpacked rootfs directory (/tmp/ember-image-XXXX/rootfs/)
+    │  (inject SSH authorized_keys, resolv.conf, inittab)
+    ▼
+Prepared rootfs
     │  (mkfs.ext4 + loop mount + copy)
     ▼
 ext4 image file
@@ -174,6 +187,38 @@ ZFS zvol: <pool>/images/<name>-<tag>
 ZFS snapshot: <pool>/images/<name>-<tag>@base
 ```
 
+### Image Build Workflow
+
+```
+ember image build <name> [-f|--file <dockerfile>]
+```
+
+Builds a VM image from a Dockerfile using Docker or Podman. If no Dockerfile is given, uses a built-in Ubuntu 24.04 VM image with systemd, sshd, and an `ubuntu` user with passwordless sudo.
+
+```
+Dockerfile
+    │  (docker build + docker export)
+    ▼
+Exported rootfs tarball
+    │  (tar extract)
+    ▼
+Unpacked rootfs directory
+    │  (inject SSH authorized_keys, resolv.conf)
+    ▼
+Prepared rootfs
+    │  (mkfs.ext4 + loop mount + copy)
+    ▼
+ext4 image file
+    │  (dd to zvol)
+    ▼
+ZFS zvol: <pool>/images/<name>
+    │  (zfs snapshot)
+    ▼
+ZFS snapshot: <pool>/images/<name>@base
+```
+
+Built images skip `inittab` injection because the default Dockerfile uses systemd, which handles init and CtrlAltDel natively.
+
 ### VM Create (Instant Clone + Per-VM SSH Key)
 
 ```
@@ -182,7 +227,13 @@ zfs clone <pool>/images/<name>-<tag>@base <pool>/vms/<vm-name>
 
 This is instant regardless of image size (copy-on-write). The zvol appears as `/dev/zvol/<pool>/vms/<vm-name>` — passed directly to Firecracker as the root drive block device.
 
-After cloning, the VM's zvol is loop-mounted and the invoking user's SSH public key is injected into `/root/.ssh/authorized_keys`. This keeps the `@base` snapshot pristine (shared across all VMs) while giving each VM its own key. If the user specifies `--ssh-key`, that key is used instead of the default.
+SSH key injection happens at two stages:
+
+1. **Image pull/build time**: The invoking user's default SSH public key is injected into the rootfs *before* the `@base` snapshot is created, providing a working key in the base image.
+
+2. **VM creation time**: After cloning, the VM's zvol is loop-mounted and the key is injected again into the per-VM clone. The target user is auto-detected: if `/home/ubuntu` exists in the rootfs, the key goes there and SSH connects as `ubuntu`; otherwise it targets `/root` and SSH connects as `root`.
+
+This keeps the `@base` snapshot shareable across all VMs while giving each VM its own key. The SSH public key is auto-discovered from `~/.ssh/` in preference order: `id_ed25519.pub`, `id_ecdsa.pub`, `id_rsa.pub`. When running under `sudo`, the real user's home directory is resolved via `SUDO_USER`.
 
 ### VM Resize
 
@@ -240,10 +291,10 @@ ember snapshot delete myvm snap1   →  zfs destroy <pool>/vms/myvm@snap1
 ### Boot Arguments
 
 ```
-console=ttyS0 reboot=k panic=1 pci=off ip=<guest-ip>::<gateway>:<netmask>::eth0:off
+console=ttyS0 reboot=k panic=1 pci=off ip=<guest-ip>::<gateway>:<netmask>::eth0:off:<dns0>:<dns1>
 ```
 
-The kernel `ip=` parameter configures guest networking at boot. No cloud-init or DHCP needed.
+The kernel `ip=` parameter configures guest networking at boot. No cloud-init or DHCP needed. DNS servers are appended to the `ip=` parameter — the kernel writes them to `/proc/net/pnp`, which the guest symlinks as `/etc/resolv.conf` (see "Guest DNS" below). At most 2 servers are included (kernel limit).
 
 ## Networking
 
@@ -283,7 +334,30 @@ Host: em-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 
 ### WAN Interface Detection
 
-`ip route get 8.8.8.8 | grep -oP 'dev \K\S+'` — cached at init, overridable via config.
+Runs `ip route get 8.8.8.8` and parses the `dev <iface>` field. Auto-detected during `ember init` and cached in the global config (`config.json` `wan_iface` field). Can be overridden with `ember init --wan-iface <iface>`. At VM start time, falls back to re-detection if not cached.
+
+### Guest DNS
+
+Guest VMs need DNS servers reachable through their NATed network path. The host's nameservers are detected and passed via the kernel `ip=` boot parameter, which populates `/proc/net/pnp` in the guest. The rootfs injection step symlinks `/etc/resolv.conf` to `/proc/net/pnp`, so DNS configuration is dynamic per boot.
+
+Detection order (scoped to the WAN interface to avoid unreachable servers):
+
+1. `resolvectl dns <wan-iface>` — per-interface DNS from systemd-resolved
+2. `/run/systemd/resolve/resolv.conf` — upstream servers from systemd-resolved (avoids 127.0.0.53 stub)
+3. `/etc/resolv.conf` — direct resolv.conf parsing
+4. Fallback: `1.1.1.1`, `8.8.8.8`
+
+Filters out IPv6 addresses (VMs only have IPv4) and loopback addresses (unreachable from the guest). Returns at most 2 servers (kernel `ip=` parameter limit).
+
+### Rootfs Injection
+
+During image pull and build, the following files are injected into the unpacked rootfs before the ext4 image is created:
+
+- **SSH `authorized_keys`**: The invoking user's default public key is written to `/root/.ssh/authorized_keys` (or `/home/ubuntu/.ssh/authorized_keys` for built images). Permissions: `.ssh/` at 700, `authorized_keys` at 600. For non-root users, files are chowned to match the home directory owner (required by OpenSSH `StrictModes`).
+
+- **`/etc/resolv.conf`**: Replaced with a symlink to `/proc/net/pnp`. The kernel populates this file from the `ip=` boot parameter's DNS fields, so DNS configuration is dynamic per boot without baking addresses into the image.
+
+- **`/etc/inittab`** (pulled images only, skipped for built images): A minimal busybox-init-compatible inittab that maps Ctrl+Alt+Del to `/sbin/reboot` (required for Firecracker's `SendCtrlAltDel` graceful shutdown), spawns a login shell on `ttyS0`, and runs OpenRC init scripts if present. Built images use systemd which handles these natively.
 
 ## State Management
 
@@ -335,12 +409,25 @@ pub struct VmMetadata {
 
 ### Crash Recovery
 
-On every command invocation, lightweight reconciliation:
-- For each VM in Running state, check if PID is alive (`kill(pid, 0)`)
-- Dead process → mark Stopped, cleanup TAP + iptables
+On every privileged command invocation (skipped for `init`, `version`, read-only queries, and SSH-client commands), lightweight reconciliation runs (`state/reconcile.rs`):
+- For each VM in Running or Paused state, check if PID is alive (`kill(pid, 0)`)
+- Dead process → mark Stopped, cleanup TAP + iptables + IP allocation
 - Orphaned `em-*` TAP devices without running VM → delete
 
-### Cleanup on Delete
+All reconciliation operations are best-effort: errors are logged but never propagated, so reconciliation never blocks normal CLI operation.
+
+### Rollback Guards
+
+Multi-step operations (VM create, VM start, image pull, image build) use an RAII rollback guard (`cleanup.rs`) to clean up partial state on failure. Each successful resource creation registers a cleanup closure. If the operation fails (due to `?` early return), the guard's `Drop` implementation executes all registered cleanups in LIFO order. If the operation succeeds, `commit()` disarms the guard.
+
+For example, during `vm start`:
+1. IP allocation → registers release on rollback
+2. TAP device creation → registers deletion on rollback
+3. iptables rules → registers rule removal on rollback
+4. Firecracker process → registers kill on rollback
+5. All steps succeed → `commit()` keeps all resources
+
+### Cleanup on VM Delete
 
 1. Stop if running (or `--force` → SIGKILL)
 2. Remove iptables rules
@@ -350,6 +437,12 @@ On every command invocation, lightweight reconciliation:
 6. Remove state directory
 
 Each step is idempotent — continues if resource already gone.
+
+### Cleanup on Image Delete
+
+`ember image delete <name>` removes the image from the local registry and destroys its ZFS zvol (including the `@base` snapshot).
+
+If VMs were cloned from the image, they hold a ZFS dependency on the `@base` snapshot. Without `--force`, the command lists the dependent VMs and refuses to delete. With `--force`, it cascade-deletes all dependent VMs first (force-killing any that are running), then destroys the image zvol and removes the registry entry.
 
 ## Guest Access (SSH-based)
 
@@ -361,6 +454,6 @@ No custom guest agent initially. All guest interaction over SSH:
 
 SSH readiness: exponential backoff retry after VM boot, up to ~30s timeout.
 
-Authentication: SSH key from config (default `~/.ssh/id_ed25519`), injected into rootfs at image pull time.
+Authentication: The invoking user's SSH public key (auto-discovered from `~/.ssh/`: prefers `id_ed25519.pub`, then `id_ecdsa.pub`, then `id_rsa.pub`) is injected at both image pull/build time and VM creation time. The SSH user is auto-detected (`ubuntu` if `/home/ubuntu` exists, otherwise `root`) and can be overridden in the YAML config.
 
 Future: custom Rust agent over virtio-vsock for exec/cp without requiring SSH.
