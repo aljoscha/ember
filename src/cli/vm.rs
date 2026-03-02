@@ -172,7 +172,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Start(args) => start(args, state_dir),
         VmCommand::Stop(args) => stop(args, state_dir),
         VmCommand::Pause(args) => pause(args, state_dir),
-        VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
+        VmCommand::Resume(args) => resume(args, state_dir),
         VmCommand::Resize(args) => resize(args, state_dir),
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
@@ -706,6 +706,51 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::save(&store, &metadata)?;
 
     println!("VM '{}' paused.", args.name);
+    Ok(())
+}
+
+/// Resume a paused VM via the Firecracker PATCH /vm API.
+///
+/// Workflow: validate VM is paused → send PATCH /vm { state: "Resumed" } → update metadata.
+/// Network and PID were preserved during pause, so the VM resumes exactly where it left off.
+fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Load and validate VM state — only paused VMs can be resumed.
+    let mut metadata = vm::load(&store, &args.name)?;
+    match metadata.status {
+        VmStatus::Paused => {}
+        _ => {
+            return Err(Error::VmWrongState {
+                name: args.name.clone(),
+                actual: metadata.status.to_string(),
+                expected: "paused".to_string(),
+            }
+            .into())
+        }
+    }
+
+    let socket_path = &metadata.api_socket;
+    if !socket_path.exists() {
+        anyhow::bail!(
+            "VM '{}' is marked as paused but API socket not found — state may be corrupted",
+            args.name
+        );
+    }
+
+    println!("Resuming VM '{}'...", args.name);
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let client = firecracker::api::FirecrackerClient::new(socket_path);
+        client
+            .patch_vm(&firecracker::api::VmStateUpdate::resume())
+            .await
+    })?;
+
+    metadata.status = VmStatus::Running;
+    vm::save(&store, &metadata)?;
+
+    println!("VM '{}' resumed.", args.name);
     Ok(())
 }
 
