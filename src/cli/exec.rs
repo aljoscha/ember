@@ -12,9 +12,9 @@ pub struct ExecArgs {
     /// VM name
     pub vm_name: String,
 
-    /// User to run the command as
-    #[arg(long, default_value = "root")]
-    pub user: String,
+    /// User to run the command as (default: from VM metadata)
+    #[arg(long)]
+    pub user: Option<String>,
 
     /// Command to execute (everything after --)
     #[arg(last = true, required = true)]
@@ -42,13 +42,14 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let guest_ip = &network.guest_ip;
     let key_path = &metadata.ssh.key;
+    let user = args.user.as_deref().unwrap_or(&metadata.ssh.user);
 
     // Build the remote command string from the argument vector.
     let command = shell_escape_join(&args.command);
 
     let rt = tokio::runtime::Runtime::new()?;
     let exit_code = rt.block_on(async {
-        let mut client = ssh::client::connect(guest_ip, &args.user, key_path).await?;
+        let mut client = ssh::client::connect(guest_ip, user, key_path).await?;
         let code = ssh::exec::exec(&mut client, &command).await?;
         let _ = client.close().await;
         Ok::<u32, anyhow::Error>(code)

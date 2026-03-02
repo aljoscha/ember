@@ -310,7 +310,7 @@ fn create_post_clone(
     let umount_result = umount(mount_dir.path());
 
     // Always try to unmount, even if injection failed.
-    inject_result?;
+    let ssh_user = inject_result?;
     umount_result?;
 
     // Determine kernel path (auto-downloads default if needed).
@@ -332,7 +332,7 @@ fn create_post_clone(
         api_socket: store.vm_dir(&args.name).join("firecracker.sock"),
         created_at: vm::now_iso8601(),
         ssh: SshConfig {
-            user: "root".to_string(),
+            user: ssh_user,
             key: image::inject::default_ssh_privkey_path()
                 .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519")),
         },
@@ -860,16 +860,22 @@ fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Inject the invoking user's SSH public key into the rootfs.
-fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<()> {
+///
+/// Detects whether the rootfs has an `ubuntu` user and injects the key
+/// into the appropriate home directory. Returns the detected SSH user name.
+fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<String> {
     let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
         anyhow::anyhow!(
             "no SSH public key found — create one with: ssh-keygen -t ed25519"
         )
     })?;
 
-    println!("Injecting SSH key from {}...", pubkey_path.display());
-    image::inject::inject_ssh_authorized_keys(rootfs_dir, &pubkey_path)?;
-    Ok(())
+    let (user, home_relative) = image::inject::detect_ssh_user(rootfs_dir);
+
+    println!("Injecting SSH key from {} (user: {user})...", pubkey_path.display());
+    image::inject::inject_ssh_authorized_keys_for_home(rootfs_dir, &pubkey_path, home_relative)?;
+
+    Ok(user.to_string())
 }
 
 /// Mount a block device at the given mount point.

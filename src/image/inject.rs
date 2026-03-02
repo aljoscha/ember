@@ -7,6 +7,7 @@
 //! Called after OCI layer extraction and before ext4 image creation.
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -58,17 +59,28 @@ fn find_ssh_pubkey_in(ssh_dir: &Path) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// Inject an SSH `authorized_keys` file into the rootfs.
+/// Inject an SSH `authorized_keys` file into the rootfs for the root user.
 ///
-/// Reads the public key from `pubkey_path` and writes it to
-/// `/root/.ssh/authorized_keys` inside the rootfs. Permissions are
-/// set to 700 for `.ssh/` and 600 for `authorized_keys` as required
-/// by OpenSSH.
-///
-/// The SPEC says: "SSH key from config (default `~/.ssh/id_ed25519`),
-/// injected into rootfs at image pull time." The caller passes the
-/// `.pub` counterpart of the configured private key.
+/// Convenience wrapper around [`inject_ssh_authorized_keys_for_home`] that
+/// targets `/root/.ssh/authorized_keys`.
 pub fn inject_ssh_authorized_keys(rootfs_dir: &Path, pubkey_path: &Path) -> Result<()> {
+    inject_ssh_authorized_keys_for_home(rootfs_dir, pubkey_path, "root")
+}
+
+/// Inject an SSH `authorized_keys` file into a user's home directory in the rootfs.
+///
+/// `home_relative` is the path relative to the rootfs root — e.g. `"root"` for
+/// the root user or `"home/ubuntu"` for the ubuntu user. Permissions are set to
+/// 700 for `.ssh/` and 600 for `authorized_keys` as required by OpenSSH.
+///
+/// For non-root users, the `.ssh/` directory and `authorized_keys` file are
+/// chowned to match the ownership of the home directory. This is required
+/// because OpenSSH's `StrictModes` rejects keys not owned by the target user.
+pub fn inject_ssh_authorized_keys_for_home(
+    rootfs_dir: &Path,
+    pubkey_path: &Path,
+    home_relative: &str,
+) -> Result<()> {
     let pubkey = fs::read_to_string(pubkey_path).map_err(|e| Error::Io {
         path: pubkey_path.to_path_buf(),
         source: e,
@@ -81,7 +93,8 @@ pub fn inject_ssh_authorized_keys(rootfs_dir: &Path, pubkey_path: &Path) -> Resu
         )));
     }
 
-    let ssh_dir = rootfs_dir.join("root/.ssh");
+    let home_dir = rootfs_dir.join(home_relative);
+    let ssh_dir = home_dir.join(".ssh");
     fs::create_dir_all(&ssh_dir).map_err(|e| Error::Io {
         path: ssh_dir.clone(),
         source: e,
@@ -101,11 +114,49 @@ pub fn inject_ssh_authorized_keys(rootfs_dir: &Path, pubkey_path: &Path) -> Resu
         fs::Permissions::from_mode(0o600),
     )
     .map_err(|e| Error::Io {
-        path: authorized_keys_path,
+        path: authorized_keys_path.clone(),
         source: e,
     })?;
 
+    // For non-root users, chown .ssh/ and authorized_keys to match the home
+    // directory's owner. OpenSSH StrictModes requires this.
+    if home_relative != "root" {
+        let meta = fs::metadata(&home_dir).map_err(|e| Error::Io {
+            path: home_dir.clone(),
+            source: e,
+        })?;
+        let uid = meta.uid();
+        let gid = meta.gid();
+
+        chown_path(&ssh_dir, uid, gid)?;
+        chown_path(&authorized_keys_path, uid, gid)?;
+    }
+
     Ok(())
+}
+
+/// Detect the preferred SSH user for a rootfs.
+///
+/// Checks whether `/home/ubuntu` exists in the rootfs. If so, returns
+/// `("ubuntu", "home/ubuntu")`. Otherwise falls back to `("root", "root")`.
+///
+/// This heuristic works because our ubuntu-vm Dockerfile creates
+/// `/home/ubuntu`, while pulled Alpine/other images only have `/root`.
+pub fn detect_ssh_user(rootfs_dir: &Path) -> (&'static str, &'static str) {
+    if rootfs_dir.join("home/ubuntu").is_dir() {
+        ("ubuntu", "home/ubuntu")
+    } else {
+        ("root", "root")
+    }
+}
+
+/// Set ownership of a path (file or directory).
+fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
+    nix::unistd::chown(path, Some(nix::unistd::Uid::from_raw(uid)), Some(nix::unistd::Gid::from_raw(gid)))
+        .map_err(|e| Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::from_raw_os_error(e as i32),
+        })
 }
 
 /// Inject `/etc/resolv.conf` into the rootfs for DNS resolution.
@@ -281,6 +332,65 @@ mod tests {
 
         let ak = rootfs.path().join("root/.ssh/authorized_keys");
         assert!(ak.exists());
+    }
+
+    #[test]
+    fn inject_ssh_for_home_creates_authorized_keys() {
+        let rootfs = tempfile::tempdir().unwrap();
+        // Create the home directory to simulate useradd.
+        fs::create_dir_all(rootfs.path().join("home/ubuntu")).unwrap();
+
+        let keyfile = rootfs.path().join("test_key.pub");
+        fs::write(&keyfile, "ssh-ed25519 AAAA... user@host\n").unwrap();
+
+        inject_ssh_authorized_keys_for_home(rootfs.path(), &keyfile, "home/ubuntu").unwrap();
+
+        let ak = rootfs.path().join("home/ubuntu/.ssh/authorized_keys");
+        assert!(ak.exists());
+        assert_eq!(
+            fs::read_to_string(&ak).unwrap(),
+            "ssh-ed25519 AAAA... user@host\n"
+        );
+    }
+
+    #[test]
+    fn inject_ssh_for_home_sets_permissions() {
+        let rootfs = tempfile::tempdir().unwrap();
+        fs::create_dir_all(rootfs.path().join("home/ubuntu")).unwrap();
+
+        let keyfile = rootfs.path().join("test_key.pub");
+        fs::write(&keyfile, "ssh-ed25519 AAAA... user@host\n").unwrap();
+
+        inject_ssh_authorized_keys_for_home(rootfs.path(), &keyfile, "home/ubuntu").unwrap();
+
+        let ssh_dir = rootfs.path().join("home/ubuntu/.ssh");
+        let dir_mode = fs::metadata(&ssh_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "~/.ssh should be 700");
+
+        let ak = ssh_dir.join("authorized_keys");
+        let file_mode = fs::metadata(&ak).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "authorized_keys should be 600");
+    }
+
+    #[test]
+    fn detect_ssh_user_with_ubuntu() {
+        let rootfs = tempfile::tempdir().unwrap();
+        fs::create_dir_all(rootfs.path().join("home/ubuntu")).unwrap();
+
+        let (user, home) = detect_ssh_user(rootfs.path());
+        assert_eq!(user, "ubuntu");
+        assert_eq!(home, "home/ubuntu");
+    }
+
+    #[test]
+    fn detect_ssh_user_without_ubuntu() {
+        let rootfs = tempfile::tempdir().unwrap();
+        // No /home/ubuntu — only root.
+        fs::create_dir_all(rootfs.path().join("root")).unwrap();
+
+        let (user, home) = detect_ssh_user(rootfs.path());
+        assert_eq!(user, "root");
+        assert_eq!(home, "root");
     }
 
     #[test]
