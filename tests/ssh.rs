@@ -98,7 +98,7 @@ fn setup_pool_init_and_build_ubuntu(
 ) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "4G");
+    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "8G");
 
     let cleanup = PoolCleanup {
         pool: pool.clone(),

@@ -206,14 +206,14 @@ fn docker_available() -> bool {
 /// everything needed for SSH and internet connectivity tests.
 /// Requires Docker for the image build step.
 ///
-/// Uses a 4 GB sparse file for the ZFS pool (ubuntu-vm is ~1-2 GB).
+/// Uses an 8 GB sparse file for the ZFS pool (ubuntu-vm zvol is ~4 GB).
 fn setup_pool_init_and_build_ubuntu(
     test_name: &str,
     tmp: &tempfile::TempDir,
 ) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "4G");
+    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "8G");
 
     let cleanup = PoolCleanup {
         pool: pool.clone(),

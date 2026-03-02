@@ -31,6 +31,9 @@ pub enum VmCommand {
     /// Resume a paused VM
     Resume(ResumeArgs),
 
+    /// Resize a stopped VM's disk
+    Resize(ResizeArgs),
+
     /// Delete a VM and its resources
     Delete(DeleteArgs),
 
@@ -111,6 +114,16 @@ pub struct ResumeArgs {
 }
 
 #[derive(Args)]
+pub struct ResizeArgs {
+    /// VM name
+    pub name: String,
+
+    /// New disk size in GiB (must be larger than current size)
+    #[arg(long)]
+    pub disk_size: u32,
+}
+
+#[derive(Args)]
 pub struct DeleteArgs {
     /// VM name
     pub name: String,
@@ -160,6 +173,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Stop(args) => stop(args, state_dir),
         VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
+        VmCommand::Resize(args) => resize(args, state_dir),
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
@@ -263,9 +277,14 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         eprintln!("VM creation failed, cleaning up...");
         let _ = zfs::volume::destroy(&vm_zvol, true);
         let _ = vm::delete(&store, &args.name);
+        return result;
     }
 
-    result
+    if !args.no_start {
+        start(&StartArgs { name: args.name.clone() }, state_dir)?;
+    }
+
+    Ok(())
 }
 
 /// Post-clone steps: grow zvol, inject SSH key, save metadata.
@@ -341,13 +360,6 @@ fn create_post_clone(
     vm::save(store, &metadata)?;
 
     println!("VM '{}' created successfully.", args.name);
-
-    if !args.no_start {
-        println!(
-            "Note: auto-start is not yet implemented. Start with: ember vm start {}",
-            args.name
-        );
-    }
 
     Ok(())
 }
@@ -649,6 +661,65 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::save(&store, &metadata)?;
 
     println!("VM '{}' stopped.", args.name);
+    Ok(())
+}
+
+/// Grow a stopped VM's disk.
+///
+/// Workflow: enforce stopped/created state → check new size > current
+/// → grow zvol → expand ext4 → update metadata.
+fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let mut metadata = vm::load(&store, &args.name)?;
+
+    // Enforce VM is not running or paused.
+    match metadata.status {
+        VmStatus::Created | VmStatus::Stopped => {}
+        VmStatus::Running => {
+            anyhow::bail!(
+                "vm '{}' is running — stop it before resizing",
+                args.name
+            );
+        }
+        VmStatus::Paused => {
+            anyhow::bail!(
+                "vm '{}' is paused — stop it before resizing",
+                args.name
+            );
+        }
+    }
+
+    // Enforce grow-only (shrinking is not supported).
+    let current_gib = metadata.disk_size_gib;
+    if args.disk_size <= current_gib {
+        anyhow::bail!(
+            "new disk size ({} GiB) must be larger than current size ({} GiB)",
+            args.disk_size,
+            current_gib
+        );
+    }
+
+    // Grow the ZFS zvol.
+    println!("Growing zvol to {} GiB...", args.disk_size);
+    zfs::volume::set_volsize(&metadata.zvol_path, args.disk_size)?;
+
+    // Wait for the block device node to settle after the resize.
+    let dev_path = zfs::volume::device_path(&metadata.zvol_path);
+    image::zvol::wait_for_device(&dev_path)?;
+
+    // Expand the ext4 filesystem to fill the new space.
+    println!("Expanding ext4 filesystem...");
+    e2fsck(&dev_path)?;
+    resize2fs(&dev_path)?;
+
+    // Update metadata.
+    metadata.disk_size_gib = args.disk_size;
+    vm::save(&store, &metadata)?;
+
+    println!(
+        "VM '{}' disk resized from {} GiB to {} GiB.",
+        args.name, current_gib, args.disk_size
+    );
     Ok(())
 }
 

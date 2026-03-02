@@ -71,8 +71,8 @@
 
 ## Phase 7: VM Resize
 
-- [ ] Implement `ember vm resize`: grow zvol + resize2fs (enforce VM stopped, grow-only)
-- [ ] Add `--disk-size` flag to `vm resize` CLI command
+- [x] Implement `ember vm resize`: grow zvol + resize2fs (enforce VM stopped, grow-only)
+- [x] Add `--disk-size` flag to `vm resize` CLI command
 - [ ] Test: resize a stopped VM, start it, verify new disk size visible in guest
 
 ## Phase 8: Pause/Resume + YAML Config + Polish
