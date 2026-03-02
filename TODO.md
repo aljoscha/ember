@@ -62,7 +62,7 @@
 
 ## Phase 6: ZFS Snapshots
 
-- [ ] Implement ZFS snapshot operations: create, rollback, list, destroy (`src/zfs/snapshot.rs`)
+- [x] Implement ZFS snapshot operations: create, rollback, list, destroy (`src/zfs/snapshot.rs`)
 - [ ] Implement `ember snapshot create`
 - [ ] Implement `ember snapshot restore` (enforce VM stopped)
 - [ ] Implement `ember snapshot list`
