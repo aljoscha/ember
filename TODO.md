@@ -81,7 +81,7 @@
 - [x] Implement `ember vm resume` via Firecracker `PATCH /vm`
 - [x] Implement YAML config file loading and merge with CLI flags (`src/config/vm.rs`)
 - [x] Add `--config` flag to `vm create`
-- [ ] Add `--format json` output to all list/inspect commands
+- [x] Add `--format json` output to all list/inspect commands
 - [ ] Add integration tests for `ember vm pause` and `ember vm resume`
 - [ ] Implement cleanup/rollback for partial operations (e.g., TAP created but firecracker failed)
 - [ ] Polish error messages across the board
