@@ -163,7 +163,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
-        VmCommand::Ssh(_) => anyhow::bail!("ember vm ssh is not yet implemented"),
+        VmCommand::Ssh(args) => ssh(args, state_dir),
     }
 }
 
@@ -798,6 +798,58 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("  User:        {}", metadata.ssh.user);
             println!("  Key:         {}", metadata.ssh.key.display());
         }
+    }
+
+    Ok(())
+}
+
+/// Open an SSH session to a running VM.
+///
+/// Invokes the system `ssh` command for full interactive terminal support
+/// (PTY, resize, escape sequences). If a command is given after `--`, it
+/// is passed to ssh for non-interactive execution.
+fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let metadata = vm::load(&store, &args.name)?;
+
+    if metadata.status != VmStatus::Running {
+        anyhow::bail!(
+            "vm '{}' is {}, expected running",
+            args.name,
+            metadata.status
+        );
+    }
+
+    let network = metadata.network.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "vm '{}' has no network configured — cannot connect via SSH",
+            args.name
+        )
+    })?;
+
+    let guest_ip = &network.guest_ip;
+    let user = &metadata.ssh.user;
+    let key_path = &metadata.ssh.key;
+
+    let mut cmd = ProcessCommand::new("ssh");
+    cmd.args([
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-i", &key_path.to_string_lossy(),
+        &format!("{user}@{guest_ip}"),
+    ]);
+
+    if !args.command.is_empty() {
+        cmd.args(&args.command);
+    }
+
+    let status = cmd.status().map_err(|e| {
+        anyhow::anyhow!("failed to run ssh: {e}")
+    })?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
 
     Ok(())
