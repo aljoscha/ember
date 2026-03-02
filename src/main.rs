@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
         Command::Vm(cmd) => cli::vm::run(cmd, &cli.state_dir),
         Command::Image(cmd) => cli::image::run(cmd, &cli.state_dir),
         Command::Snapshot(cmd) => cli::snapshot::run(cmd),
-        Command::Exec(args) => cli::exec::run(args),
+        Command::Exec(args) => cli::exec::run(args, &cli.state_dir),
         Command::Cp(args) => cli::cp::run(args),
         Command::Version => {
             println!("ember {}", env!("CARGO_PKG_VERSION"));
