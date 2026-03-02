@@ -1165,8 +1165,9 @@ fn networking_ssh_and_internet() {
         .output()
         .expect("failed to run iptables");
     let nat_rules_after = String::from_utf8_lossy(&iptables_nat_after.stdout);
+    let guest_cidr = format!("{guest_ip}/32");
     assert!(
-        !nat_rules_after.contains(guest_ip),
+        !nat_rules_after.contains(&guest_cidr),
         "MASQUERADE rule for {guest_ip} should be gone after stop:\n{nat_rules_after}"
     );
 
