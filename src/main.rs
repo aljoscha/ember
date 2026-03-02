@@ -1,4 +1,5 @@
 mod cli;
+pub mod config;
 pub mod error;
 pub mod firecracker;
 pub mod image;

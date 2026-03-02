@@ -5,6 +5,7 @@ use clap::{Args, Subcommand};
 use uuid::Uuid;
 
 use super::init::{self, GlobalConfig};
+use crate::config;
 use crate::error::Error;
 use crate::firecracker;
 use crate::image;
@@ -53,20 +54,20 @@ pub struct CreateArgs {
     pub name: String,
 
     /// Base image reference
+    #[arg(long, required_unless_present = "config")]
+    pub image: Option<String>,
+
+    /// Number of vCPUs (default: 1)
     #[arg(long)]
-    pub image: String,
+    pub cpus: Option<u32>,
 
-    /// Number of vCPUs
-    #[arg(long, default_value = "1")]
-    pub cpus: u32,
+    /// Memory in MiB (default: 16384)
+    #[arg(long)]
+    pub memory: Option<u32>,
 
-    /// Memory in MiB
-    #[arg(long, default_value = "16384")]
-    pub memory: u32,
-
-    /// Disk size in GiB
-    #[arg(long, default_value = "8")]
-    pub disk_size: u32,
+    /// Disk size in GiB (default: 8)
+    #[arg(long)]
+    pub disk_size: Option<u32>,
 
     /// Path to custom kernel
     #[arg(long)]
@@ -181,6 +182,92 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Program defaults for VM creation.
+const DEFAULT_CPUS: u32 = 1;
+const DEFAULT_MEMORY_MIB: u32 = 16384;
+const DEFAULT_DISK_SIZE_GIB: u32 = 8;
+
+/// Resolved VM creation configuration after merging defaults, YAML config, and CLI flags.
+///
+/// Merge order: program defaults < YAML config < CLI flags.
+#[allow(dead_code)]
+struct ResolvedVmCreate {
+    name: String,
+    image: String,
+    cpus: u32,
+    memory: u32,
+    disk_size: u32,
+    kernel: Option<PathBuf>,
+    /// Network subnet from YAML config (used during `start`, not `create`).
+    network: Option<String>,
+    no_start: bool,
+    /// SSH user override from YAML config.
+    ssh_user: Option<String>,
+    /// SSH private key override from YAML config.
+    ssh_key: Option<PathBuf>,
+}
+
+/// Resolve VM creation config by merging defaults, YAML config, and CLI flags.
+///
+/// CLI flags take highest priority, then YAML config, then program defaults.
+fn resolve_create_config(
+    args: &CreateArgs,
+    yaml: Option<&config::vm::VmConfig>,
+) -> anyhow::Result<ResolvedVmCreate> {
+    let image = args
+        .image
+        .clone()
+        .or_else(|| yaml.and_then(|c| c.image.clone()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no image specified — provide --image or set 'image' in the YAML config"
+            )
+        })?;
+
+    let cpus = args
+        .cpus
+        .or_else(|| yaml.and_then(|c| c.cpus))
+        .unwrap_or(DEFAULT_CPUS);
+
+    let memory = args
+        .memory
+        .or_else(|| yaml.and_then(|c| c.memory))
+        .unwrap_or(DEFAULT_MEMORY_MIB);
+
+    let disk_size = args
+        .disk_size
+        .or_else(|| yaml.and_then(|c| c.disk_size))
+        .unwrap_or(DEFAULT_DISK_SIZE_GIB);
+
+    let kernel = args.kernel.clone().or_else(|| {
+        yaml.and_then(|c| c.kernel.as_ref().map(|p| config::vm::expand_tilde(p)))
+    });
+
+    let network = args.network.clone().or_else(|| {
+        yaml.and_then(|c| c.network.as_ref().and_then(|n| n.subnet.clone()))
+    });
+
+    let ssh_user = yaml.and_then(|c| c.ssh.as_ref().and_then(|s| s.user.clone()));
+    let ssh_key = yaml.and_then(|c| {
+        c.ssh
+            .as_ref()
+            .and_then(|s| s.key.as_ref().map(|p| config::vm::expand_tilde(p)))
+    });
+
+    Ok(ResolvedVmCreate {
+        name: args.name.clone(),
+        image,
+        cpus,
+        memory,
+        disk_size,
+        kernel,
+        network,
+        no_start: args.no_start,
+        ssh_user,
+        ssh_key,
+    })
+}
+
 const DEFAULT_KERNEL_FILENAME: &str = "vmlinux-6.1.102";
 
 fn default_kernel_url() -> String {
@@ -226,26 +313,39 @@ fn ensure_kernel(
 
 /// Create a new VM from an image.
 ///
-/// Workflow: look up image → ZFS clone @base snapshot → grow zvol if needed
+/// Workflow: load YAML config (if provided) → merge with CLI flags →
+/// look up image → ZFS clone @base snapshot → grow zvol if needed
 /// → mount zvol → inject per-VM SSH key → unmount → save metadata.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let mut config: GlobalConfig = store.read(&store.config_path())?;
+    let mut global_config: GlobalConfig = store.read(&store.config_path())?;
+
+    // Load YAML config if provided.
+    let yaml_config = match &args.config {
+        Some(path) => {
+            println!("Loading VM config from {}...", path.display());
+            Some(config::vm::load(path)?)
+        }
+        None => None,
+    };
+
+    // Resolve configuration: program defaults < YAML config < CLI flags.
+    let resolved = resolve_create_config(args, yaml_config.as_ref())?;
 
     // Check VM doesn't already exist.
-    if vm::exists(&store, &args.name) {
-        anyhow::bail!("vm '{}' already exists", args.name);
+    if vm::exists(&store, &resolved.name) {
+        anyhow::bail!("vm '{}' already exists", resolved.name);
     }
 
     // Look up image in local registry.
     let registry = ImageRegistry::load(&store)?;
     let image_entry = registry
-        .find_by_reference(&args.image)?
+        .find_by_reference(&resolved.image)?
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "image '{}' not found locally — pull it first with: ember image pull {}",
-                args.image,
-                args.image
+                resolved.image,
+                resolved.image
             )
         })?;
 
@@ -262,8 +362,8 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     // Build zvol path for the VM.
-    let base_dataset = format!("{}/{}", config.pool, config.dataset);
-    let vm_zvol = format!("{base_dataset}/vms/{}", args.name);
+    let base_dataset = format!("{}/{}", global_config.pool, global_config.dataset);
+    let vm_zvol = format!("{base_dataset}/vms/{}", resolved.name);
 
     // Clone @base snapshot → per-VM zvol (instant, copy-on-write).
     let snapshot = format!("{image_zvol}@base");
@@ -271,17 +371,24 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     zfs::volume::clone(&snapshot, &vm_zvol)?;
 
     // Run the remainder in a closure so we can clean up the zvol on failure.
-    let result = create_post_clone(args, &store, &mut config, &vm_zvol, image_size_mib, &image_ref);
+    let result = create_post_clone(
+        &resolved,
+        &store,
+        &mut global_config,
+        &vm_zvol,
+        image_size_mib,
+        &image_ref,
+    );
 
     if result.is_err() {
         eprintln!("VM creation failed, cleaning up...");
         let _ = zfs::volume::destroy(&vm_zvol, true);
-        let _ = vm::delete(&store, &args.name);
+        let _ = vm::delete(&store, &resolved.name);
         return result;
     }
 
-    if !args.no_start {
-        start(&StartArgs { name: args.name.clone() }, state_dir)?;
+    if !resolved.no_start {
+        start(&StartArgs { name: resolved.name.clone() }, state_dir)?;
     }
 
     Ok(())
@@ -291,19 +398,19 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 ///
 /// Separated from [`create`] so the caller can clean up the zvol on failure.
 fn create_post_clone(
-    args: &CreateArgs,
+    resolved: &ResolvedVmCreate,
     store: &StateStore,
-    config: &mut GlobalConfig,
+    global_config: &mut GlobalConfig,
     vm_zvol: &str,
     image_size_mib: u64,
     image_ref: &str,
 ) -> anyhow::Result<()> {
     // Grow zvol if requested disk size exceeds image size.
-    let requested_size_mib = args.disk_size as u64 * 1024;
+    let requested_size_mib = resolved.disk_size as u64 * 1024;
     let needs_resize = requested_size_mib > image_size_mib;
     if needs_resize {
-        println!("Growing zvol to {} GiB...", args.disk_size);
-        zfs::volume::set_volsize(vm_zvol, args.disk_size)?;
+        println!("Growing zvol to {} GiB...", resolved.disk_size);
+        zfs::volume::set_volsize(vm_zvol, resolved.disk_size)?;
     }
 
     // Wait for the zvol device node to appear.
@@ -329,37 +436,46 @@ fn create_post_clone(
     let umount_result = umount(mount_dir.path());
 
     // Always try to unmount, even if injection failed.
-    let ssh_user = inject_result?;
+    let detected_ssh_user = inject_result?;
     umount_result?;
 
     // Determine kernel path (auto-downloads default if needed).
-    let kernel_path = ensure_kernel(&args.kernel, config, &store)?;
+    let kernel_path = ensure_kernel(&resolved.kernel, global_config, store)?;
+
+    // Use YAML SSH overrides if provided, otherwise use auto-detected values.
+    let ssh_user = resolved
+        .ssh_user
+        .clone()
+        .unwrap_or(detected_ssh_user);
+    let ssh_key = resolved.ssh_key.clone().unwrap_or_else(|| {
+        image::inject::default_ssh_privkey_path()
+            .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519"))
+    });
 
     // Build and save VM metadata.
     let metadata = VmMetadata {
-        name: args.name.clone(),
+        name: resolved.name.clone(),
         id: Uuid::new_v4(),
         status: VmStatus::Created,
         image: image_ref.to_string(),
-        cpus: args.cpus,
-        memory_mib: args.memory,
-        disk_size_gib: args.disk_size,
+        cpus: resolved.cpus,
+        memory_mib: resolved.memory,
+        disk_size_gib: resolved.disk_size,
         kernel_path,
         zvol_path: vm_zvol.to_string(),
         network: None,
         pid: None,
-        api_socket: store.vm_dir(&args.name).join("firecracker.sock"),
+        api_socket: store.vm_dir(&resolved.name).join("firecracker.sock"),
         created_at: vm::now_iso8601(),
         ssh: SshConfig {
             user: ssh_user,
-            key: image::inject::default_ssh_privkey_path()
-                .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519")),
+            key: ssh_key,
         },
     };
 
     vm::save(store, &metadata)?;
 
-    println!("VM '{}' created successfully.", args.name);
+    println!("VM '{}' created successfully.", resolved.name);
 
     Ok(())
 }
