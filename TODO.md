@@ -77,7 +77,7 @@
 
 ## Phase 8: Pause/Resume + YAML Config + Polish
 
-- [ ] Implement `ember vm pause` via Firecracker `PATCH /vm`
+- [x] Implement `ember vm pause` via Firecracker `PATCH /vm`
 - [ ] Implement `ember vm resume` via Firecracker `PATCH /vm`
 - [ ] Implement YAML config file loading and merge with CLI flags (`src/config/vm.rs`)
 - [ ] Add `--config` flag to `vm create`

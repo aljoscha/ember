@@ -171,7 +171,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Create(args) => create(args, state_dir),
         VmCommand::Start(args) => start(args, state_dir),
         VmCommand::Stop(args) => stop(args, state_dir),
-        VmCommand::Pause(_) => anyhow::bail!("ember vm pause is not yet implemented"),
+        VmCommand::Pause(args) => pause(args, state_dir),
         VmCommand::Resume(_) => anyhow::bail!("ember vm resume is not yet implemented"),
         VmCommand::Resize(args) => resize(args, state_dir),
         VmCommand::Delete(args) => delete(args, state_dir),
@@ -661,6 +661,51 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::save(&store, &metadata)?;
 
     println!("VM '{}' stopped.", args.name);
+    Ok(())
+}
+
+/// Pause a running VM via the Firecracker PATCH /vm API.
+///
+/// Workflow: validate VM is running → send PATCH /vm { state: "Paused" } → update metadata.
+/// Network and PID are preserved — the VM can be resumed or stopped from this state.
+fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Load and validate VM state — only running VMs can be paused.
+    let mut metadata = vm::load(&store, &args.name)?;
+    match metadata.status {
+        VmStatus::Running => {}
+        _ => {
+            return Err(Error::VmWrongState {
+                name: args.name.clone(),
+                actual: metadata.status.to_string(),
+                expected: "running".to_string(),
+            }
+            .into())
+        }
+    }
+
+    let socket_path = &metadata.api_socket;
+    if !socket_path.exists() {
+        anyhow::bail!(
+            "VM '{}' is marked as running but API socket not found — state may be corrupted",
+            args.name
+        );
+    }
+
+    println!("Pausing VM '{}'...", args.name);
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let client = firecracker::api::FirecrackerClient::new(socket_path);
+        client
+            .patch_vm(&firecracker::api::VmStateUpdate::pause())
+            .await
+    })?;
+
+    metadata.status = VmStatus::Paused;
+    vm::save(&store, &metadata)?;
+
+    println!("VM '{}' paused.", args.name);
     Ok(())
 }
 
