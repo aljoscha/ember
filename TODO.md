@@ -56,7 +56,7 @@
 
 - [x] Implement SSH client connection with retry/backoff (`src/ssh/client.rs`)
 - [x] Implement `ember exec`: remote command execution with streaming I/O (`src/ssh/exec.rs`)
-- [ ] Implement `ember cp`: SCP-style bidirectional file transfer (`src/ssh/copy.rs`)
+- [x] Implement `ember cp`: SCP-style bidirectional file transfer (`src/ssh/copy.rs`)
 - [ ] Implement `ember vm ssh`: convenience wrapper for interactive SSH
 - [ ] Test: exec a command, copy a file in both directions
 

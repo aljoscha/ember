@@ -5,4 +5,5 @@
 //! over SSH using keys injected at VM creation time.
 
 pub mod client;
+pub mod copy;
 pub mod exec;
