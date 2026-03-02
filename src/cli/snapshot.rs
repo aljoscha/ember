@@ -64,9 +64,7 @@ pub fn run(cmd: &SnapshotCommand, state_dir: &Path) -> anyhow::Result<()> {
     match cmd {
         SnapshotCommand::Create(args) => create(args, state_dir),
         SnapshotCommand::Restore(args) => restore(args, state_dir),
-        SnapshotCommand::List(_) => {
-            anyhow::bail!("ember snapshot list is not yet implemented")
-        }
+        SnapshotCommand::List(args) => list(args, state_dir),
         SnapshotCommand::Delete(_) => {
             anyhow::bail!("ember snapshot delete is not yet implemented")
         }
@@ -102,6 +100,84 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         args.snapshot_name, args.vm_name
     );
     Ok(())
+}
+
+/// List ZFS snapshots for a VM.
+///
+/// Shows all user-created snapshots on the VM's zvol, excluding the
+/// internal `@base` snapshot used for image cloning. Supports table
+/// and JSON output formats.
+fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let metadata = vm::load(&store, &args.vm_name)?;
+
+    let snapshots: Vec<_> = zfs::snapshot::list(&metadata.zvol_path)?
+        .into_iter()
+        .filter(|s| s.short_name != "base")
+        .collect();
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&snapshots)?);
+        }
+        OutputFormat::Table => {
+            if snapshots.is_empty() {
+                println!(
+                    "No snapshots for vm '{}'. Create one with: ember snapshot create {} <name>",
+                    args.vm_name, args.vm_name
+                );
+                return Ok(());
+            }
+
+            println!(
+                "{:<30} {:<24} {:>10} {:>10}",
+                "NAME", "CREATED", "USED", "REFER"
+            );
+            for snap in &snapshots {
+                println!(
+                    "{:<30} {:<24} {:>10} {:>10}",
+                    snap.short_name,
+                    format_epoch(snap.creation),
+                    format_bytes(snap.used),
+                    format_bytes(snap.referenced),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert a Unix epoch timestamp to a human-readable UTC string.
+///
+/// Shells out to `date` to avoid adding a datetime crate, consistent
+/// with the rest of the codebase.
+fn format_epoch(epoch: u64) -> String {
+    let output = std::process::Command::new("date")
+        .args(["--utc", "--date", &format!("@{epoch}"), "+%Y-%m-%d %H:%M:%S UTC"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => epoch.to_string(),
+    }
+}
+
+/// Format a byte count as a human-readable string (KiB, MiB, GiB).
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Restore a VM's zvol to a previously created snapshot.

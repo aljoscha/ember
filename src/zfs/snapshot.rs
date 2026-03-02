@@ -7,10 +7,12 @@
 
 use std::process::Command;
 
+use serde::Serialize;
+
 use crate::error::{Error, Result};
 
 /// Summary information about a ZFS snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SnapshotInfo {
     /// Full snapshot name including dataset (e.g. `tank/ember/vms/myvm@snap1`).
     pub name: String,

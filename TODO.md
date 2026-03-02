@@ -65,7 +65,7 @@
 - [x] Implement ZFS snapshot operations: create, rollback, list, destroy (`src/zfs/snapshot.rs`)
 - [x] Implement `ember snapshot create`
 - [x] Implement `ember snapshot restore` (enforce VM stopped)
-- [ ] Implement `ember snapshot list`
+- [x] Implement `ember snapshot list`
 - [ ] Implement `ember snapshot delete`
 - [ ] Test: snapshot, modify VM, restore, verify original state
 
