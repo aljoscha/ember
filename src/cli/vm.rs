@@ -570,7 +570,6 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
         tap_device: tap_name,
         host_ip: allocation.host_ip,
         guest_ip: allocation.guest_ip,
-        gateway_ip: allocation.gateway_ip,
         netmask: allocation.netmask,
         guest_mac: None,
         wan_iface: Some(wan_iface),
@@ -657,7 +656,7 @@ fn start_configure(
     let vm_config = vm_config.with_network(firecracker::config::VmNetworkConfig {
         tap_device: net_info.tap_device.clone(),
         guest_ip: net_info.guest_ip.clone(),
-        gateway_ip: net_info.gateway_ip.clone(),
+        host_ip: net_info.host_ip.clone(),
         netmask: net_info.netmask.clone(),
         guest_mac: net_info.guest_mac.clone(),
         dns_servers,

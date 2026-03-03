@@ -128,7 +128,7 @@ Findings from a full-codebase review. Work through these one at a time.
 - [x] ~~`VmConfig.name` parsed from YAML but never used~~ — kept: removing it would reject YAML files that include `name:`
 - [x] `ResolvedVmCreate.network` resolved but never consumed (related to network bug above)
 - [x] Several public ZFS/tap functions never called: `dataset::info/list/destroy`, `volume::info/list`, `tap::exists`
-- [ ] Redundant `gateway_ip` field — always equal to `host_ip` (`network/ip.rs:37,102`)
+- [x] Redundant `gateway_ip` field — always equal to `host_ip` (`network/ip.rs:37,102`)
 
 ### Minor Quality
 

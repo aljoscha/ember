@@ -20,8 +20,8 @@ pub struct VmNetworkConfig {
     pub tap_device: String,
     /// Guest IP address (e.g., "10.100.0.2").
     pub guest_ip: String,
-    /// Gateway IP address (e.g., "10.100.0.1").
-    pub gateway_ip: String,
+    /// Host-side IP (also serves as gateway for the guest, e.g., "10.100.0.1").
+    pub host_ip: String,
     /// Netmask (e.g., "255.255.255.252").
     pub netmask: String,
     /// Optional guest MAC address.
@@ -107,7 +107,7 @@ impl VmConfig {
                     .collect::<String>();
                 format!(
                     "{} ip={}::{}:{}::eth0:off{}",
-                    self.boot_args, net.guest_ip, net.gateway_ip, net.netmask, dns_suffix
+                    self.boot_args, net.guest_ip, net.host_ip, net.netmask, dns_suffix
                 )
             }
             None => self.boot_args.clone(),
@@ -195,7 +195,7 @@ mod tests {
             .with_network(VmNetworkConfig {
                 tap_device: "em-abc123".to_string(),
                 guest_ip: "10.100.0.2".to_string(),
-                gateway_ip: "10.100.0.1".to_string(),
+                host_ip: "10.100.0.1".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: None,
                 dns_servers: vec![],
@@ -212,7 +212,7 @@ mod tests {
             .with_network(VmNetworkConfig {
                 tap_device: "em-abc123".to_string(),
                 guest_ip: "10.100.0.2".to_string(),
-                gateway_ip: "10.100.0.1".to_string(),
+                host_ip: "10.100.0.1".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: None,
                 dns_servers: vec!["10.64.0.1".to_string(), "192.168.0.1".to_string()],
@@ -237,7 +237,7 @@ mod tests {
             .with_network(VmNetworkConfig {
                 tap_device: "em-xyz".to_string(),
                 guest_ip: "10.100.0.6".to_string(),
-                gateway_ip: "10.100.0.5".to_string(),
+                host_ip: "10.100.0.5".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: Some("AA:FC:00:00:00:01".to_string()),
                 dns_servers: vec!["1.1.1.1".to_string()],

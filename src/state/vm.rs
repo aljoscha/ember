@@ -51,8 +51,6 @@ pub struct NetworkInfo {
     pub host_ip: String,
     /// Guest-side IP (e.g., "10.100.0.2").
     pub guest_ip: String,
-    /// Gateway IP for the guest (same as host_ip).
-    pub gateway_ip: String,
     /// Netmask for the /30 link (e.g., "255.255.255.252").
     pub netmask: String,
     /// Guest MAC address, if assigned.
@@ -433,7 +431,6 @@ mod tests {
             tap_device: "em-abc123".to_string(),
             host_ip: "10.100.0.1".to_string(),
             guest_ip: "10.100.0.2".to_string(),
-            gateway_ip: "10.100.0.1".to_string(),
             netmask: "255.255.255.252".to_string(),
             guest_mac: Some("AA:FC:00:00:00:01".to_string()),
             wan_iface: Some("eth0".to_string()),

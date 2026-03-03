@@ -33,8 +33,6 @@ pub struct IpAllocation {
     pub host_ip: String,
     /// Guest-side IP — second usable address in the /30 (e.g., "10.100.0.2").
     pub guest_ip: String,
-    /// Gateway for the guest (same as host_ip).
-    pub gateway_ip: String,
     /// Netmask for the /30 link ("255.255.255.252").
     pub netmask: String,
 }
@@ -99,7 +97,6 @@ fn block_ips(base: Ipv4Addr, block_index: u32) -> IpAllocation {
         block_index,
         host_ip: host.to_string(),
         guest_ip: guest.to_string(),
-        gateway_ip: host.to_string(),
         netmask: NETMASK_30.to_string(),
     }
 }
@@ -227,7 +224,6 @@ mod tests {
         let alloc = block_ips(Ipv4Addr::new(10, 100, 0, 0), 0);
         assert_eq!(alloc.host_ip, "10.100.0.1");
         assert_eq!(alloc.guest_ip, "10.100.0.2");
-        assert_eq!(alloc.gateway_ip, "10.100.0.1");
         assert_eq!(alloc.netmask, "255.255.255.252");
     }
 
