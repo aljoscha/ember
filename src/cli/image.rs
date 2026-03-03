@@ -1,16 +1,14 @@
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
 use clap::{Args, Subcommand};
 
 use super::init::GlobalConfig;
 use super::vm::OutputFormat;
-use crate::firecracker;
 use crate::image;
 use crate::image::pull::ImageReference;
 use crate::image::registry::{ImageRegistry, new_build_entry, new_entry};
 use crate::state::store::StateStore;
-use crate::state::vm::{self, VmMetadata, VmStatus};
+use crate::state::vm::{self, VmMetadata};
 use crate::zfs;
 
 #[derive(Subcommand)]
@@ -363,48 +361,10 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Force-delete a single VM: stop if running, destroy zvol, remove state.
-///
-/// Mirrors the logic in `cli/vm.rs delete --force` but is callable from
-/// image deletion.
+/// Force-delete a single VM: delegates to the shared `vm::force_delete_vm`.
 fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Result<()> {
     println!("Deleting dependent VM '{}'...", metadata.name);
-
-    // Kill the Firecracker process if the VM is running/paused.
-    if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) {
-        if let Some(pid) = metadata.pid {
-            if firecracker::process::is_alive(pid) {
-                println!("  Force-killing Firecracker (pid {pid})...");
-                firecracker::process::kill(pid)?;
-                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
-            }
-        }
-        if metadata.api_socket.exists() {
-            let _ = std::fs::remove_file(&metadata.api_socket);
-        }
-    }
-
-    let _ = ProcessCommand::new("udevadm").arg("settle").status();
-
-    // Destroy the VM's zvol.
-    if zfs::volume::exists(&metadata.zvol_path)? {
-        println!("  Destroying zvol '{}'...", metadata.zvol_path);
-        match zfs::volume::destroy(&metadata.zvol_path, true) {
-            Ok(()) => {}
-            Err(e) => {
-                eprintln!(
-                    "  Warning: failed to destroy zvol '{}': {e}",
-                    metadata.zvol_path
-                );
-            }
-        }
-    }
-
-    // Remove the VM state directory.
-    vm::delete(store, &metadata.name)?;
-
-    println!("  VM '{}' deleted.", metadata.name);
-    Ok(())
+    super::vm::force_delete_vm(store, metadata)
 }
 
 /// Show detailed information about a local image.

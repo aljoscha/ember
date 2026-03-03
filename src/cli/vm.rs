@@ -942,44 +942,43 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let metadata = vm::load(&store, &args.name)?;
 
     // If the VM is running or paused, require --force.
-    match metadata.status {
-        VmStatus::Running | VmStatus::Paused => {
-            if !args.force {
-                anyhow::bail!(
-                    "vm '{}' is {} — stop it first or use --force",
-                    args.name,
-                    metadata.status
-                );
-            }
+    if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) && !args.force {
+        anyhow::bail!(
+            "vm '{}' is {} — stop it first or use --force",
+            args.name,
+            metadata.status
+        );
+    }
 
-            // Force-kill the Firecracker process and wait for it to die
-            // so it releases the zvol block device before we destroy it.
-            if let Some(pid) = metadata.pid {
-                if firecracker::process::is_alive(pid) {
-                    println!("Force-killing Firecracker (pid {pid})...");
-                    firecracker::process::kill(pid)?;
-                    firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
-                }
-            }
+    force_delete_vm(&store, &metadata)?;
+    Ok(())
+}
 
-            // Clean up the API socket.
-            if metadata.api_socket.exists() {
-                let _ = std::fs::remove_file(&metadata.api_socket);
+/// Force-delete a VM: kill process, clean up network, destroy zvol, remove state.
+///
+/// Idempotent — each cleanup step continues if the resource is already gone.
+/// Called from `vm delete --force` and `image delete --force`.
+pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Result<()> {
+    // Kill the Firecracker process if the VM is running/paused.
+    if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) {
+        if let Some(pid) = metadata.pid {
+            if firecracker::process::is_alive(pid) {
+                println!("Force-killing Firecracker (pid {pid})...");
+                firecracker::process::kill(pid)?;
+                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
             }
         }
-        VmStatus::Created | VmStatus::Stopped => {}
+        if metadata.api_socket.exists() {
+            let _ = std::fs::remove_file(&metadata.api_socket);
+        }
     }
 
     // Clean up networking resources (TAP device, iptables rules, IP allocation).
-    // Idempotent — safe to call even if resources are already gone.
     if let Some(ref net_info) = metadata.network {
-        cleanup_network(&store, &metadata.name, net_info);
+        cleanup_network(store, &metadata.name, net_info);
     }
 
-    // Wait for udev to finish processing device events. After mount/unmount
-    // cycles (e.g. SSH key injection during create), the zvol block device may
-    // still be briefly held by the kernel. Without this, `zfs destroy` can
-    // fail with "device busy".
+    // Wait for udev to finish processing device events.
     let _ = ProcessCommand::new("udevadm")
         .arg("settle")
         .status();
@@ -989,15 +988,14 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     match zfs::volume::destroy(&metadata.zvol_path, true) {
         Ok(()) => {}
         Err(e) => {
-            // Log but continue — the zvol may already be gone.
             eprintln!("Warning: failed to destroy zvol '{}': {e}", metadata.zvol_path);
         }
     }
 
     // Remove the VM state directory.
-    vm::delete(&store, &args.name)?;
+    vm::delete(store, &metadata.name)?;
 
-    println!("VM '{}' deleted.", args.name);
+    println!("VM '{}' deleted.", metadata.name);
     Ok(())
 }
 
