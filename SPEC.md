@@ -13,12 +13,12 @@ A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only �
 
 ```
 ember
-├── init [--pool <name>] [--device <path>] [--dataset <name>] [--kernel-url <url>]
+├── init [--pool <name>] [--device <path>] [--dataset <name>] [--kernel <preset|path>]
 │        [--wan-iface <iface>]
 │
 ├── vm
 │   ├── create <name> --image <image> [--cpus N] [--memory SIZE] [--disk-size SIZE]
-│   │          [--kernel <path>] [--network <subnet>] [--vm-config <file>] [--no-start]
+│   │          [--kernel <preset|path>] [--network <subnet>] [--vm-config <file>] [--no-start]
 │   ├── start <name>
 │   ├── stop <name> [--force]
 │   ├── pause <name>
@@ -65,7 +65,7 @@ image: docker.io/library/ubuntu:22.04
 cpus: 2
 memory: 512M
 disk_size: 4G
-kernel: /path/to/custom/vmlinux  # optional
+kernel: containerd               # preset name or file path (optional)
 network:
   subnet: 10.100.0.0/16
 ssh:
@@ -128,6 +128,7 @@ src/
 ├── config/
 │   ├── mod.rs
 │   └── vm.rs            # YAML config parsing + merge
+├── kernel.rs            # Named kernel presets (stock, containerd) + resolution
 ├── cleanup.rs           # RAII rollback guard for multi-step operations
 └── error.rs             # Unified thiserror-based error types
 ```
@@ -296,6 +297,27 @@ console=ttyS0 reboot=k panic=1 pci=off ip=<guest-ip>::<gateway>:<netmask>::eth0:
 
 The kernel `ip=` parameter configures guest networking at boot. No cloud-init or DHCP needed. DNS servers are appended to the `ip=` parameter — the kernel writes them to `/proc/net/pnp`, which the guest symlinks as `/etc/resolv.conf` (see "Guest DNS" below). At most 2 servers are included (kernel limit).
 
+### Kernel Presets
+
+The `--kernel` flag on `ember init` and `ember vm create` accepts either a named preset or a file path. Presets are auto-downloaded to `<state-dir>/kernels/` on first use.
+
+| Preset | Description | Kernel |
+|--------|-------------|--------|
+| `stock` | Firecracker CI kernel (default). Minimal but includes overlayfs, cgroups, namespaces, iptables, bridge, and veth. | vmlinux-6.1.102 |
+| `containerd` | firecracker-containerd quickstart kernel. Tuned for running Docker/containerd inside the guest. | vmlinux.bin |
+
+Examples:
+```
+ember init --kernel stock
+ember init --kernel containerd
+ember vm create myvm --image alpine:latest --kernel containerd
+ember vm create myvm --image alpine:latest --kernel /path/to/custom/vmlinux
+```
+
+YAML configs also accept preset names: `kernel: containerd`.
+
+When no kernel is specified, `stock` is used as the default and auto-downloaded on first `vm create`.
+
 ## Networking
 
 ### Model: TAP + NAT per VM
@@ -367,7 +389,8 @@ During image pull and build, the following files are injected into the unpacked 
 /var/lib/ember/
 ├── config.json
 ├── kernels/
-│   └── vmlinux-<version>
+│   ├── vmlinux-6.1.102         # stock preset
+│   └── vmlinux-containerd.bin  # containerd preset
 ├── images/
 │   └── registry.json
 ├── vms/
