@@ -15,12 +15,9 @@ use crate::state::store::StateStore;
 /// Named kernel presets with known download URLs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelPreset {
-    /// Firecracker CI kernel (vmlinux-6.1.102). Minimal but includes
-    /// overlayfs, cgroups, namespaces, iptables, bridge, and veth.
+    /// Firecracker CI kernel (vmlinux-6.1.102). Includes overlayfs,
+    /// cgroups, namespaces, iptables, bridge, veth, and virtio-rng.
     Stock,
-    /// firecracker-containerd quickstart kernel. Tuned for running
-    /// containerd/Docker inside the guest.
-    Containerd,
 }
 
 /// The default kernel preset used when no kernel is specified.
@@ -37,19 +34,13 @@ impl KernelPreset {
             KernelPreset::Stock => format!(
                 "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/{arch}/vmlinux-6.1.102"
             ),
-            KernelPreset::Containerd => format!(
-                "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/{arch}/kernels/vmlinux.bin"
-            ),
         }
     }
 
     /// Filename used when saving this kernel to the kernels/ directory.
-    ///
-    /// Each preset gets a distinct filename to avoid collisions.
     pub fn filename(&self) -> &'static str {
         match self {
             KernelPreset::Stock => "vmlinux-6.1.102",
-            KernelPreset::Containerd => "vmlinux-containerd.bin",
         }
     }
 }
@@ -58,7 +49,6 @@ impl fmt::Display for KernelPreset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KernelPreset::Stock => write!(f, "stock"),
-            KernelPreset::Containerd => write!(f, "containerd"),
         }
     }
 }
@@ -69,7 +59,6 @@ impl FromStr for KernelPreset {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "stock" => Ok(KernelPreset::Stock),
-            "containerd" => Ok(KernelPreset::Containerd),
             _ => Err(()),
         }
     }
@@ -78,8 +67,7 @@ impl FromStr for KernelPreset {
 /// A kernel specification: either a named preset or an explicit file path.
 ///
 /// When parsed from a string (CLI flag or YAML config), known preset names
-/// (`stock`, `containerd`) are recognized; anything else is treated as a
-/// filesystem path.
+/// (`stock`) are recognized; anything else is treated as a filesystem path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KernelSpec {
     Preset(KernelPreset),
@@ -152,26 +140,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_preset_containerd() {
-        assert_eq!(
-            "containerd".parse::<KernelPreset>(),
-            Ok(KernelPreset::Containerd)
-        );
-    }
-
-    #[test]
     fn parse_preset_case_insensitive() {
         assert_eq!("STOCK".parse::<KernelPreset>(), Ok(KernelPreset::Stock));
-        assert_eq!(
-            "Containerd".parse::<KernelPreset>(),
-            Ok(KernelPreset::Containerd)
-        );
     }
 
     #[test]
     fn parse_preset_unknown() {
         assert!("custom".parse::<KernelPreset>().is_err());
         assert!("/path/to/vmlinux".parse::<KernelPreset>().is_err());
+        assert!("containerd".parse::<KernelPreset>().is_err());
     }
 
     #[test]
@@ -179,10 +156,6 @@ mod tests {
         assert_eq!(
             "stock".parse::<KernelSpec>().unwrap(),
             KernelSpec::Preset(KernelPreset::Stock)
-        );
-        assert_eq!(
-            "containerd".parse::<KernelSpec>().unwrap(),
-            KernelSpec::Preset(KernelPreset::Containerd)
         );
     }
 
@@ -199,10 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn preset_filenames_are_distinct() {
-        assert_ne!(
-            KernelPreset::Stock.filename(),
-            KernelPreset::Containerd.filename()
+    fn containerd_is_treated_as_path() {
+        // "containerd" is no longer a preset — it should parse as a path.
+        assert_eq!(
+            "containerd".parse::<KernelSpec>().unwrap(),
+            KernelSpec::Path(PathBuf::from("containerd"))
         );
     }
 
@@ -211,13 +185,11 @@ mod tests {
         let arch = std::env::consts::ARCH;
         let expected_arch = if arch == "aarch64" { "aarch64" } else { "x86_64" };
         assert!(KernelPreset::Stock.url().contains(expected_arch));
-        assert!(KernelPreset::Containerd.url().contains(expected_arch));
     }
 
     #[test]
     fn display_round_trip() {
         assert_eq!(KernelPreset::Stock.to_string(), "stock");
-        assert_eq!(KernelPreset::Containerd.to_string(), "containerd");
     }
 
     #[test]

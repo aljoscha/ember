@@ -29,7 +29,7 @@ pub struct VmConfig {
     pub memory: Option<ByteSize>,
     /// Disk size (e.g., `8G`, `512M`).
     pub disk_size: Option<ByteSize>,
-    /// Kernel preset name (`stock`, `containerd`) or file path.
+    /// Kernel preset name (`stock`) or file path.
     pub kernel: Option<crate::kernel::KernelSpec>,
     /// Network configuration.
     pub network: Option<VmNetworkConfig>,
@@ -137,13 +137,14 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
             ))
         );
 
+        // "containerd" is no longer a preset — parsed as a path.
         let yaml = "kernel: containerd\n";
         let config: VmConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             config.kernel,
-            Some(crate::kernel::KernelSpec::Preset(
-                crate::kernel::KernelPreset::Containerd
-            ))
+            Some(crate::kernel::KernelSpec::Path(std::path::PathBuf::from(
+                "containerd"
+            )))
         );
     }
 

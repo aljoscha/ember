@@ -22,7 +22,7 @@ pub struct InitArgs {
     #[arg(long, default_value = "ember")]
     pub dataset: String,
 
-    /// Kernel preset or file path [presets: stock, containerd]
+    /// Kernel preset or file path [presets: stock]
     #[arg(long)]
     pub kernel: Option<crate::kernel::KernelSpec>,
 

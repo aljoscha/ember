@@ -70,7 +70,7 @@ pub struct CreateArgs {
     #[arg(long)]
     pub disk_size: Option<ByteSize>,
 
-    /// Kernel preset or file path [presets: stock, containerd]
+    /// Kernel preset or file path [presets: stock]
     #[arg(long)]
     pub kernel: Option<crate::kernel::KernelSpec>,
 

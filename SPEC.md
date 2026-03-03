@@ -65,7 +65,7 @@ image: docker.io/library/ubuntu:22.04
 cpus: 2
 memory: 512M
 disk_size: 4G
-kernel: containerd               # preset name or file path (optional)
+kernel: stock                    # preset name or file path (optional)
 network:
   subnet: 10.100.0.0/16
 ssh:
@@ -128,7 +128,7 @@ src/
 ├── config/
 │   ├── mod.rs
 │   └── vm.rs            # YAML config parsing + merge
-├── kernel.rs            # Named kernel presets (stock, containerd) + resolution
+├── kernel.rs            # Named kernel presets (stock) + resolution
 ├── cleanup.rs           # RAII rollback guard for multi-step operations
 └── error.rs             # Unified thiserror-based error types
 ```
@@ -303,18 +303,15 @@ The `--kernel` flag on `ember init` and `ember vm create` accepts either a named
 
 | Preset | Description | Kernel |
 |--------|-------------|--------|
-| `stock` | Firecracker CI kernel (default). Minimal but includes overlayfs, cgroups, namespaces, iptables, bridge, and veth. | vmlinux-6.1.102 |
-| `containerd` | firecracker-containerd quickstart kernel. Tuned for running Docker/containerd inside the guest. | vmlinux.bin |
+| `stock` | Firecracker CI kernel (default). Includes overlayfs, cgroups, namespaces, iptables, bridge, veth, and virtio-rng. | vmlinux-6.1.102 |
 
 Examples:
 ```
 ember init --kernel stock
-ember init --kernel containerd
-ember vm create myvm --image alpine:latest --kernel containerd
 ember vm create myvm --image alpine:latest --kernel /path/to/custom/vmlinux
 ```
 
-YAML configs also accept preset names: `kernel: containerd`.
+YAML configs also accept preset names: `kernel: stock`.
 
 When no kernel is specified, `stock` is used as the default and auto-downloaded on first `vm create`.
 
@@ -389,8 +386,7 @@ During image pull and build, the following files are injected into the unpacked 
 /var/lib/ember/
 ├── config.json
 ├── kernels/
-│   ├── vmlinux-6.1.102         # stock preset
-│   └── vmlinux-containerd.bin  # containerd preset
+│   └── vmlinux-6.1.102         # stock preset
 ├── images/
 │   └── registry.json
 ├── vms/

@@ -4,6 +4,7 @@
 //! as a child with `--api-sock` and `--log-path`, then controlled via
 //! the API socket and Unix signals.
 
+use std::fs::File;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -21,9 +22,18 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 /// Returns the `Child` handle — the caller should extract `.id()` for
 /// the PID and store it in VM metadata.
 ///
-/// Stdout and stderr go to `/dev/null`; Firecracker writes its own log
-/// via `--log-path`.
+/// Guest serial console output (`console=ttyS0`) is captured to a
+/// `console.log` file next to the Firecracker log. Stderr goes to
+/// `/dev/null`; Firecracker writes its own operational log via `--log-path`.
 pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
+    let console_log_path = log_path.with_file_name("console.log");
+    let console_log = File::create(&console_log_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to create console log at {}: {e}",
+            console_log_path.display()
+        )
+    })?;
+
     let child = Command::new("firecracker")
         .arg("--api-sock")
         .arg(socket_path)
@@ -32,7 +42,7 @@ pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
         .arg("--level")
         .arg("Info")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(console_log)
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
