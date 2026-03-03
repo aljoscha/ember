@@ -44,9 +44,6 @@ pub enum VmCommand {
 
     /// Show detailed VM information
     Inspect(InspectArgs),
-
-    /// Open an SSH session to a VM
-    Ssh(SshArgs),
 }
 
 #[derive(Args)]
@@ -152,16 +149,6 @@ pub struct InspectArgs {
     pub format: OutputFormat,
 }
 
-#[derive(Args)]
-pub struct SshArgs {
-    /// VM name
-    pub name: String,
-
-    /// Command to run (everything after --)
-    #[arg(last = true)]
-    pub command: Vec<String>,
-}
-
 #[derive(Clone, clap::ValueEnum)]
 pub enum OutputFormat {
     Table,
@@ -179,7 +166,6 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
-        VmCommand::Ssh(args) => ssh(args, state_dir),
     }
 }
 
@@ -1056,46 +1042,6 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("  User:        {}", metadata.ssh.user);
             println!("  Key:         {}", metadata.ssh.key.display());
         }
-    }
-
-    Ok(())
-}
-
-/// Open an SSH session to a running VM.
-///
-/// Invokes the system `ssh` command for full interactive terminal support
-/// (PTY, resize, escape sequences). If a command is given after `--`, it
-/// is passed to ssh for non-interactive execution.
-fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
-    let store = StateStore::new(state_dir.to_path_buf());
-    let (metadata, network) = vm::load_running_with_network(&store, &args.name)?;
-
-    let guest_ip = &network.guest_ip;
-    let user = &metadata.ssh.user;
-    let key_path = &metadata.ssh.key;
-
-    let mut cmd = ProcessCommand::new("ssh");
-    cmd.args([
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-i", &key_path.to_string_lossy(),
-        &format!("{user}@{guest_ip}"),
-    ]);
-
-    if !args.command.is_empty() {
-        cmd.args(&args.command);
-    }
-
-    let status = cmd.status().map_err(|e| {
-        anyhow::anyhow!(
-            "failed to execute ssh: {e}\n\
-             Hint: is the 'ssh' client installed and in PATH?"
-        )
-    })?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
     }
 
     Ok(())

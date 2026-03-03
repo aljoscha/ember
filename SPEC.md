@@ -26,8 +26,7 @@ ember
 │   ├── resize <name> --disk-size <SIZE>
 │   ├── delete <name> [--force]
 │   ├── list [--format table|json]
-│   ├── inspect <name> [--format table|json]
-│   └── ssh <name> [-- <command>...]
+│   └── inspect <name> [--format table|json]
 │
 ├── image
 │   ├── pull <reference>           # e.g. docker.io/library/ubuntu:22.04
@@ -41,6 +40,8 @@ ember
 │   ├── restore <vm-name> <snapshot-name>
 │   ├── list <vm-name> [--format table|json]
 │   └── delete <vm-name> <snapshot-name>
+│
+├── ssh <name> [-- <command>...]
 │
 ├── exec <vm-name> [--user <user>] -- <command>...
 │

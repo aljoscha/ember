@@ -3,6 +3,7 @@ pub mod exec;
 pub mod image;
 pub mod init;
 pub mod snapshot;
+pub mod ssh;
 pub mod vm;
 
 use clap::{Parser, Subcommand};
@@ -36,6 +37,9 @@ pub enum Command {
     /// Manage VM snapshots
     #[command(subcommand)]
     Snapshot(snapshot::SnapshotCommand),
+
+    /// SSH into a VM
+    Ssh(ssh::SshArgs),
 
     /// Execute a command in a VM
     Exec(exec::ExecArgs),

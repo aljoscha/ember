@@ -27,16 +27,17 @@ fn require_root() -> anyhow::Result<()> {
 
 /// Returns true for commands that don't need root privileges.
 ///
-/// SSH-based commands (exec, cp, vm ssh) only read VM state and invoke the
+/// SSH-based commands (ssh, exec, cp) only read VM state and invoke the
 /// system SSH client — no root required. Read-only queries (vm list, vm
 /// inspect) also work without elevated privileges.
 fn needs_root(command: &Command) -> bool {
     !matches!(
         command,
         Command::Version
+            | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
-            | Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_))
+            | Command::Vm(VmCommand::List(_) | VmCommand::Inspect(_))
     )
 }
 
@@ -49,9 +50,10 @@ fn needs_reconcile(command: &Command) -> bool {
         command,
         Command::Version
             | Command::Init(_)
+            | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
-            | Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_))
+            | Command::Vm(VmCommand::List(_) | VmCommand::Inspect(_))
     )
 }
 
@@ -73,6 +75,7 @@ fn main() -> anyhow::Result<()> {
         Command::Vm(cmd) => cli::vm::run(cmd, &cli.state_dir),
         Command::Image(cmd) => cli::image::run(cmd, &cli.state_dir),
         Command::Snapshot(cmd) => cli::snapshot::run(cmd, &cli.state_dir),
+        Command::Ssh(args) => cli::ssh::run(args, &cli.state_dir),
         Command::Exec(args) => cli::exec::run(args, &cli.state_dir),
         Command::Cp(args) => cli::cp::run(args, &cli.state_dir),
         Command::Version => {
