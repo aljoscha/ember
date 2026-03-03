@@ -140,22 +140,7 @@ pub fn create(dataset: &str) -> Result<()> {
 /// With `recursive: true`, also destroys all child datasets and snapshots
 /// (`-r` flag). Returns an error if the dataset does not exist.
 pub fn destroy(dataset: &str, recursive: bool) -> Result<()> {
-    let mut args = vec!["destroy"];
-    if recursive {
-        args.push("-r");
-    }
-    args.push(dataset);
-
-    let output = Command::new("zfs")
-        .args(&args)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "zfs destroy".to_string(),
-            source: e,
-        })?;
-
-    Error::check_command("zfs destroy", output)?;
-    Ok(())
+    super::destroy(dataset, recursive)
 }
 
 #[cfg(test)]

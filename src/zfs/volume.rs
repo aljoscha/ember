@@ -94,22 +94,7 @@ pub fn create(zvol: &str, size_mib: u64) -> Result<()> {
 /// With `recursive: true`, also destroys all snapshots and clones under
 /// the zvol (`-r` flag).
 pub fn destroy(zvol: &str, recursive: bool) -> Result<()> {
-    let mut args = vec!["destroy"];
-    if recursive {
-        args.push("-r");
-    }
-    args.push(zvol);
-
-    let output = Command::new("zfs")
-        .args(&args)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "zfs destroy".to_string(),
-            source: e,
-        })?;
-
-    Error::check_command("zfs destroy", output)?;
-    Ok(())
+    super::destroy(zvol, recursive)
 }
 
 /// Clone a ZFS snapshot to create a new zvol.
