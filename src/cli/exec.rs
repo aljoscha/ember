@@ -54,8 +54,7 @@ fn shell_escape_join(args: &[String]) -> String {
     args.iter()
         .map(|arg| {
             if arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c)) {
-                // Single-quote the argument, escaping any embedded single quotes.
-                format!("'{}'", arg.replace('\'', "'\\''"))
+                crate::ssh::copy::shell_quote(arg)
             } else {
                 arg.clone()
             }
