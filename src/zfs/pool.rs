@@ -96,18 +96,12 @@ pub fn status(pool: &str) -> Result<PoolInfo> {
         )));
     }
 
-    let parse_bytes = |s: &str, field: &str| -> Result<u64> {
-        s.trim()
-            .parse::<u64>()
-            .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-    };
-
     Ok(PoolInfo {
         name: fields[0].to_string(),
         health: PoolHealth::from(fields[1]),
-        size: parse_bytes(fields[2], "size")?,
-        allocated: parse_bytes(fields[3], "allocated")?,
-        free: parse_bytes(fields[4], "free")?,
+        size: super::parse_u64(fields[2], "size")?,
+        allocated: super::parse_u64(fields[3], "allocated")?,
+        free: super::parse_u64(fields[4], "free")?,
     })
 }
 

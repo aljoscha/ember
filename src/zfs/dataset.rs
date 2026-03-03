@@ -56,16 +56,10 @@ pub fn info(dataset: &str) -> Result<DatasetInfo> {
         )));
     }
 
-    let parse_bytes = |s: &str, field: &str| -> Result<u64> {
-        s.trim()
-            .parse::<u64>()
-            .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-    };
-
     Ok(DatasetInfo {
         name: fields[0].to_string(),
-        used: parse_bytes(fields[1], "used")?,
-        available: parse_bytes(fields[2], "available")?,
+        used: super::parse_u64(fields[1], "used")?,
+        available: super::parse_u64(fields[2], "available")?,
         mountpoint: fields[3].to_string(),
     })
 }
@@ -107,16 +101,10 @@ pub fn list(parent: &str) -> Result<Vec<DatasetInfo>> {
             continue;
         }
 
-        let parse_bytes = |s: &str, field: &str| -> Result<u64> {
-            s.trim()
-                .parse::<u64>()
-                .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-        };
-
         datasets.push(DatasetInfo {
             name: fields[0].to_string(),
-            used: parse_bytes(fields[1], "used")?,
-            available: parse_bytes(fields[2], "available")?,
+            used: super::parse_u64(fields[1], "used")?,
+            available: super::parse_u64(fields[2], "available")?,
             mountpoint: fields[3].to_string(),
         });
     }

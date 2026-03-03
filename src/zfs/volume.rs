@@ -62,17 +62,11 @@ pub fn info(zvol: &str) -> Result<VolumeInfo> {
         )));
     }
 
-    let parse_bytes = |s: &str, field: &str| -> Result<u64> {
-        s.trim()
-            .parse::<u64>()
-            .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-    };
-
     Ok(VolumeInfo {
         name: fields[0].to_string(),
-        volsize: parse_bytes(fields[1], "volsize")?,
-        used: parse_bytes(fields[2], "used")?,
-        referenced: parse_bytes(fields[3], "referenced")?,
+        volsize: super::parse_u64(fields[1], "volsize")?,
+        used: super::parse_u64(fields[2], "used")?,
+        referenced: super::parse_u64(fields[3], "referenced")?,
     })
 }
 
@@ -196,17 +190,11 @@ pub fn list(parent: &str) -> Result<Vec<VolumeInfo>> {
             continue;
         }
 
-        let parse_bytes = |s: &str, field: &str| -> Result<u64> {
-            s.trim()
-                .parse::<u64>()
-                .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-        };
-
         volumes.push(VolumeInfo {
             name: fields[0].to_string(),
-            volsize: parse_bytes(fields[1], "volsize")?,
-            used: parse_bytes(fields[2], "used")?,
-            referenced: parse_bytes(fields[3], "referenced")?,
+            volsize: super::parse_u64(fields[1], "volsize")?,
+            used: super::parse_u64(fields[2], "used")?,
+            referenced: super::parse_u64(fields[3], "referenced")?,
         });
     }
 

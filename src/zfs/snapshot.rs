@@ -125,18 +125,12 @@ pub fn list(dataset: &str) -> Result<Vec<SnapshotInfo>> {
             .map(|(_, s)| s.to_string())
             .unwrap_or_default();
 
-        let parse_u64 = |s: &str, field: &str| -> Result<u64> {
-            s.trim()
-                .parse::<u64>()
-                .map_err(|_| Error::Zfs(format!("cannot parse {field} value: {s}")))
-        };
-
         snapshots.push(SnapshotInfo {
             name: full_name.to_string(),
             short_name,
-            used: parse_u64(fields[1], "used")?,
-            referenced: parse_u64(fields[2], "referenced")?,
-            creation: parse_u64(fields[3], "creation")?,
+            used: super::parse_u64(fields[1], "used")?,
+            referenced: super::parse_u64(fields[2], "referenced")?,
+            creation: super::parse_u64(fields[3], "creation")?,
         });
     }
 

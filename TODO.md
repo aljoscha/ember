@@ -107,7 +107,7 @@ Findings from a full-codebase review. Work through these one at a time.
 
 ### Code Deduplication — Lower Impact
 
-- [ ] Extract `parse_zfs_u64()` helper — same closure copy-pasted 6× across `zfs/pool.rs`, `zfs/dataset.rs`, `zfs/volume.rs`, `zfs/snapshot.rs`
+- [x] Extract `parse_zfs_u64()` helper — same closure copy-pasted 6× across `zfs/pool.rs`, `zfs/dataset.rs`, `zfs/volume.rs`, `zfs/snapshot.rs`
 - [ ] Deduplicate `dataset::destroy()` and `volume::destroy()` — identical `zfs destroy` wrappers
 - [ ] Deduplicate shell-quoting — `cli/exec.rs:70-82` reimplements `ssh/copy.rs:370-372`
 - [ ] Deduplicate SSH key + resolv.conf injection in `cli/image.rs` pull vs build
