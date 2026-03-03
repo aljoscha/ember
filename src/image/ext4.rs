@@ -124,7 +124,7 @@ fn mount_loop(image_path: &Path, mount_dir: &Path) -> Result<()> {
 }
 
 /// Unmount a previously mounted filesystem.
-fn umount(mount_dir: &Path) -> Result<()> {
+pub(crate) fn umount(mount_dir: &Path) -> Result<()> {
     let output = Command::new("umount")
         .arg(mount_dir)
         .output()

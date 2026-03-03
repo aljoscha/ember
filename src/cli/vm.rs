@@ -1173,16 +1173,7 @@ fn mount_block_device(device: &Path, mount_dir: &Path) -> crate::error::Result<(
 
 /// Unmount a filesystem.
 fn umount(mount_dir: &Path) -> crate::error::Result<()> {
-    let output = ProcessCommand::new("umount")
-        .arg(mount_dir)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "umount".to_string(),
-            source: e,
-        })?;
-
-    Error::check_command("umount", output)?;
-    Ok(())
+    crate::image::ext4::umount(mount_dir)
 }
 
 /// Check ext4 filesystem consistency before resize.
