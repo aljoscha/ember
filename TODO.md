@@ -111,7 +111,7 @@ Findings from a full-codebase review. Work through these one at a time.
 - [x] Deduplicate `dataset::destroy()` and `volume::destroy()` — identical `zfs destroy` wrappers
 - [x] Deduplicate shell-quoting — `cli/exec.rs:70-82` reimplements `ssh/copy.rs:370-372`
 - [x] Deduplicate SSH key + resolv.conf injection in `cli/image.rs` pull vs build
-- [ ] Extract "require VM stopped" helper — `cli/vm.rs:874-888` and `cli/snapshot.rs:225-239`
+- [x] Extract "require VM stopped" helper — `cli/vm.rs:874-888` and `cli/snapshot.rs:225-239`
 - [ ] Add `GlobalConfig::images_dataset()` / `vms_dataset()` helpers — path formatting repeated in `cli/image.rs` and `cli/vm.rs`
 - [ ] Use `anyhow::Context` consistently instead of `map_err(|e| anyhow::anyhow!(...))` — ~5-7 sites in `firecracker/` and `cli/`
 

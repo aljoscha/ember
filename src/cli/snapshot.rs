@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Args, Subcommand};
 
 use crate::state::store::StateStore;
-use crate::state::vm::{self, VmStatus};
+use crate::state::vm;
 use crate::zfs;
 
 use super::vm::OutputFormat;
@@ -227,25 +227,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// `zfs rollback -r`, which destroys any snapshots newer than the target.
 fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, &args.vm_name)?;
-
-    // The zvol must not be in use — only allow restore when the VM is stopped
-    // or was never started.
-    match metadata.status {
-        VmStatus::Created | VmStatus::Stopped => {}
-        VmStatus::Running => {
-            anyhow::bail!(
-                "vm '{}' is running — stop it before restoring a snapshot",
-                args.vm_name
-            );
-        }
-        VmStatus::Paused => {
-            anyhow::bail!(
-                "vm '{}' is paused — stop it before restoring a snapshot",
-                args.vm_name
-            );
-        }
-    }
+    let metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
 
     // Verify the snapshot exists.
     if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {

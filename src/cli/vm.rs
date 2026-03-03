@@ -868,24 +868,7 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// → grow zvol → expand ext4 → update metadata.
 fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let mut metadata = vm::load(&store, &args.name)?;
-
-    // Enforce VM is not running or paused.
-    match metadata.status {
-        VmStatus::Created | VmStatus::Stopped => {}
-        VmStatus::Running => {
-            anyhow::bail!(
-                "vm '{}' is running — stop it before resizing",
-                args.name
-            );
-        }
-        VmStatus::Paused => {
-            anyhow::bail!(
-                "vm '{}' is paused — stop it before resizing",
-                args.name
-            );
-        }
-    }
+    let mut metadata = vm::require_stopped(&store, &args.name, "resizing")?;
 
     // Convert size with unit to GiB.
     let new_gib = args

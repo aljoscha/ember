@@ -154,6 +154,31 @@ pub fn load_running_with_network(
     Ok((metadata, network))
 }
 
+/// Load VM metadata and verify the VM is stopped (or never started).
+///
+/// Returns an error if the VM is currently running or paused.
+/// `operation` is a human-readable verb like "resizing" or "restoring a snapshot"
+/// used in the error message.
+pub fn require_stopped(store: &StateStore, name: &str, operation: &str) -> anyhow::Result<VmMetadata> {
+    let metadata = load(store, name)?;
+    match metadata.status {
+        VmStatus::Created | VmStatus::Stopped => {}
+        VmStatus::Running => {
+            anyhow::bail!(
+                "vm '{}' is running — stop it before {operation}",
+                name
+            );
+        }
+        VmStatus::Paused => {
+            anyhow::bail!(
+                "vm '{}' is paused — stop it before {operation}",
+                name
+            );
+        }
+    }
+    Ok(metadata)
+}
+
 /// Load VM metadata from the state store.
 ///
 /// Returns [`Error::VmNotFound`] if no metadata file exists for `name`.
