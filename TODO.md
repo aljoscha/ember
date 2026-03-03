@@ -92,18 +92,18 @@ Findings from a full-codebase review. Work through these one at a time.
 
 ### Bugs / Silent Misconfigurations
 
-- [ ] `--network` subnet and `network.subnet` YAML config are resolved but never wired to `start()` — silently ignored (`cli/vm.rs:251-253` resolved, `cli/vm.rs:522` uses `DEFAULT_SUBNET`)
-- [ ] `force_delete_vm` in `cli/image.rs:370-408` duplicates `cli/vm.rs::delete()` but skips network cleanup — VMs force-deleted during `image delete` leak TAP devices and iptables rules
-- [ ] `boot_args` YAML config field parsed but never consumed — silently ignored (`config/vm.rs:39`, never used in `resolve_create_config`)
+- [x] `--network` subnet and `network.subnet` YAML config are resolved but never wired to `start()` — silently ignored (`cli/vm.rs:251-253` resolved, `cli/vm.rs:522` uses `DEFAULT_SUBNET`)
+- [x] `force_delete_vm` in `cli/image.rs:370-408` duplicates `cli/vm.rs::delete()` but skips network cleanup — VMs force-deleted during `image delete` leak TAP devices and iptables rules
+- [x] `boot_args` YAML config field parsed but never consumed — silently ignored (`config/vm.rs:39`, never used in `resolve_create_config`)
 
 ### Code Deduplication — High Impact
 
-- [ ] Extract shared `force_delete_vm` function (fixes the network cleanup bug above) — `cli/image.rs:370-408` vs `cli/vm.rs:937-1001`
-- [ ] Extract shared `cleanup_network()` — identical in `cli/vm.rs:616-628` and `state/reconcile.rs:116-128`
-- [ ] Deduplicate zvol-to-image pipeline in `pull`/`build` (~25 lines each) — `cli/image.rs:141-168` and `cli/image.rs:239-266`
+- [x] Extract shared `force_delete_vm` function (fixes the network cleanup bug above) — `cli/image.rs:370-408` vs `cli/vm.rs:937-1001`
+- [x] Extract shared `cleanup_network()` — identical in `cli/vm.rs:616-628` and `state/reconcile.rs:116-128`
+- [x] Deduplicate zvol-to-image pipeline in `pull`/`build` (~25 lines each) — `cli/image.rs:141-168` and `cli/image.rs:239-266`
 - [ ] Extract "require running VM with network" helper — triplicated in `cli/vm.rs:1091-1108`, `cli/exec.rs:25-42`, `cli/cp.rs:42-59`
-- [ ] Deduplicate `now_iso8601()` — identical in `state/vm.rs:197-206` and `image/registry.rs:127-139`; also replace `date` shelling with Rust-native formatting
-- [ ] Deduplicate `umount()` — identical in `image/ext4.rs:127-137` and `cli/vm.rs:1177-1188`
+- [x] Deduplicate `now_iso8601()` — identical in `state/vm.rs:197-206` and `image/registry.rs:127-139`; also replace `date` shelling with Rust-native formatting
+- [x] Deduplicate `umount()` — identical in `image/ext4.rs:127-137` and `cli/vm.rs:1177-1188`
 
 ### Code Deduplication — Lower Impact
 
@@ -126,7 +126,7 @@ Findings from a full-codebase review. Work through these one at a time.
 
 - [ ] `Cli.log_level` and `Cli.config_file` parsed but never read (`cli/mod.rs:20-26`)
 - [ ] `VmConfig.name` parsed from YAML but never used (`config/vm.rs:23`)
-- [ ] `ResolvedVmCreate.network` resolved but never consumed (related to network bug above)
+- [x] `ResolvedVmCreate.network` resolved but never consumed (related to network bug above)
 - [ ] Several public ZFS/tap functions never called: `dataset::info/list/destroy`, `volume::info/list`, `tap::exists`
 - [ ] Redundant `gateway_ip` field — always equal to `host_ip` (`network/ip.rs:37,102`)
 

@@ -90,8 +90,6 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
 /// Uses a [`Rollback`] guard to ensure the zvol is cleaned up if any step
 /// after creation fails (e.g., writing the image or saving the registry).
 fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
-    use crate::cleanup::Rollback;
-
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let images_dataset = format!("{}/{}/images", config.pool, config.dataset);
@@ -135,26 +133,9 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     image::inject::inject_resolv_conf(&rootfs_dir)?;
     image::inject::inject_inittab(&rootfs_dir)?;
 
-    // Step 3: Create ext4 filesystem image from rootfs.
-    let size_mib = image::ext4::estimate_size_mib(&rootfs_dir)?;
-    let ext4_path = work_dir.path().join("rootfs.ext4");
-    println!("  Creating ext4 image ({size_mib} MiB)...");
-    image::ext4::create(&rootfs_dir, &ext4_path, size_mib)?;
-
-    let mut rollback = Rollback::new();
-
-    // Step 4: Create ZFS zvol and write ext4 image to it.
-    println!("  Creating zvol {zvol}...");
-    zfs::volume::create(&zvol, size_mib)?;
-    {
-        let z = zvol.clone();
-        rollback.push("ZFS zvol", move || {
-            let _ = zfs::volume::destroy(&z, true);
-        });
-    }
-
-    println!("  Writing image to zvol and creating @base snapshot...");
-    image::zvol::write_to_zvol(&ext4_path, &zvol)?;
+    // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
+    let (size_mib, rollback) =
+        create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_entry(&reference, &zvol, size_mib);
@@ -233,26 +214,9 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
     image::inject::inject_resolv_conf(&rootfs_dir)?;
 
-    // Step 3: Create ext4 filesystem image from rootfs.
-    let size_mib = image::ext4::estimate_size_mib(&rootfs_dir)?;
-    let ext4_path = work_dir.path().join("rootfs.ext4");
-    println!("  Creating ext4 image ({size_mib} MiB)...");
-    image::ext4::create(&rootfs_dir, &ext4_path, size_mib)?;
-
-    let mut rollback = crate::cleanup::Rollback::new();
-
-    // Step 4: Create ZFS zvol and write ext4 image to it.
-    println!("  Creating zvol {zvol}...");
-    zfs::volume::create(&zvol, size_mib)?;
-    {
-        let z = zvol.clone();
-        rollback.push("ZFS zvol", move || {
-            let _ = zfs::volume::destroy(&z, true);
-        });
-    }
-
-    println!("  Writing image to zvol and creating @base snapshot...");
-    image::zvol::write_to_zvol(&ext4_path, &zvol)?;
+    // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
+    let (size_mib, rollback) =
+        create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
@@ -397,6 +361,37 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Create an ext4 image from a rootfs directory and write it to a new ZFS zvol.
+///
+/// Returns `(size_mib, rollback)` — the caller must register the image in the
+/// registry and then call `rollback.commit()` to finalize.
+fn create_zvol_from_rootfs(
+    rootfs_dir: &Path,
+    work_dir: &Path,
+    zvol: &str,
+) -> anyhow::Result<(u64, crate::cleanup::Rollback)> {
+    let size_mib = image::ext4::estimate_size_mib(rootfs_dir)?;
+    let ext4_path = work_dir.join("rootfs.ext4");
+    println!("  Creating ext4 image ({size_mib} MiB)...");
+    image::ext4::create(rootfs_dir, &ext4_path, size_mib)?;
+
+    let mut rollback = crate::cleanup::Rollback::new();
+
+    println!("  Creating zvol {zvol}...");
+    zfs::volume::create(zvol, size_mib)?;
+    {
+        let z = zvol.to_string();
+        rollback.push("ZFS zvol", move || {
+            let _ = zfs::volume::destroy(&z, true);
+        });
+    }
+
+    println!("  Writing image to zvol and creating @base snapshot...");
+    image::zvol::write_to_zvol(&ext4_path, zvol)?;
+
+    Ok((size_mib, rollback))
 }
 
 /// Resolve a user-provided image name to its registry local_name.
