@@ -118,7 +118,7 @@ Findings from a full-codebase review. Work through these one at a time.
 ### Efficiency
 
 - [ ] Stream SSH file transfers instead of buffering entire files in memory — `ssh/copy.rs` upload/download/upload_dir/download_dir all read into `Vec<u8>`
-- [ ] Replace `format_epoch()` date shelling with Rust-native formatting — spawns a `date` process per snapshot row (`cli/snapshot.rs:153-162`)
+- [x] Replace `format_epoch()` date shelling with Rust-native formatting — spawns a `date` process per snapshot row (`cli/snapshot.rs:153-162`)
 - [ ] Process OCI whiteouts once after all layers instead of per-layer `find` scan — `image/pull.rs:198-201, 306-356`
 - [ ] Batch `udevadm settle` in `image delete --force` — currently called per-VM in loop (`cli/image.rs:348-387`)
 

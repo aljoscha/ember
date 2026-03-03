@@ -148,17 +148,26 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 
 /// Convert a Unix epoch timestamp to a human-readable UTC string.
 ///
-/// Shells out to `date` to avoid adding a datetime crate, consistent
-/// with the rest of the codebase.
+/// Uses the same civil date algorithm as `state::vm::now_iso8601()`.
 fn format_epoch(epoch: u64) -> String {
-    let output = std::process::Command::new("date")
-        .args(["--utc", "--date", &format!("@{epoch}"), "+%Y-%m-%d %H:%M:%S UTC"])
-        .output();
+    let day_secs = epoch % 86400;
+    let hour = day_secs / 3600;
+    let min = (day_secs % 3600) / 60;
+    let sec = day_secs % 60;
 
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => epoch.to_string(),
-    }
+    let days = epoch / 86400;
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}:{sec:02} UTC")
 }
 
 /// Format a byte count as a human-readable string (KiB, MiB, GiB).
