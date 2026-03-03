@@ -16,14 +16,6 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "/var/lib/ember")]
     pub state_dir: PathBuf,
 
-    /// Log level: trace, debug, info, warn, error
-    #[arg(long, global = true, default_value = "info")]
-    pub log_level: String,
-
-    /// Global config file override
-    #[arg(long = "config", global = true)]
-    pub config_file: Option<PathBuf>,
-
     #[command(subcommand)]
     pub command: Command,
 }

@@ -124,10 +124,10 @@ Findings from a full-codebase review. Work through these one at a time.
 
 ### Dead Code / Unused Config
 
-- [ ] `Cli.log_level` and `Cli.config_file` parsed but never read (`cli/mod.rs:20-26`)
-- [ ] `VmConfig.name` parsed from YAML but never used (`config/vm.rs:23`)
+- [x] `Cli.log_level` and `Cli.config_file` parsed but never read (`cli/mod.rs:20-26`)
+- [x] ~~`VmConfig.name` parsed from YAML but never used~~ — kept: removing it would reject YAML files that include `name:`
 - [x] `ResolvedVmCreate.network` resolved but never consumed (related to network bug above)
-- [ ] Several public ZFS/tap functions never called: `dataset::info/list/destroy`, `volume::info/list`, `tap::exists`
+- [x] Several public ZFS/tap functions never called: `dataset::info/list/destroy`, `volume::info/list`, `tap::exists`
 - [ ] Redundant `gateway_ip` field — always equal to `host_ip` (`network/ip.rs:37,102`)
 
 ### Minor Quality

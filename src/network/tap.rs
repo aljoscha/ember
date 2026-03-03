@@ -184,19 +184,6 @@ pub fn list_ember_devices() -> Result<Vec<String>> {
     Ok(devices)
 }
 
-/// Check whether a TAP device exists by name.
-pub fn exists(name: &str) -> Result<bool> {
-    let output = Command::new("ip")
-        .args(["link", "show", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "ip link show".into(),
-            source: e,
-        })?;
-
-    Ok(output.status.success())
-}
-
 /// Generate the TAP device name for a VM from its UUID.
 ///
 /// Format: `em-<first 7 hex chars of UUID>`. This fits within the
