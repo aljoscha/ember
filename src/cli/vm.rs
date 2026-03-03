@@ -199,6 +199,8 @@ struct ResolvedVmCreate {
     memory: u32,
     disk_size: u32,
     kernel: Option<crate::kernel::KernelSpec>,
+    /// Custom boot arguments from YAML config.
+    boot_args: Option<String>,
     /// Network subnet from YAML config (used during `start`, not `create`).
     network: Option<String>,
     no_start: bool,
@@ -248,6 +250,8 @@ fn resolve_create_config(
 
     let kernel = args.kernel.clone().or_else(|| yaml.and_then(|c| c.kernel.clone()));
 
+    let boot_args = yaml.and_then(|c| c.boot_args.clone());
+
     let network = args.network.clone().or_else(|| {
         yaml.and_then(|c| c.network.as_ref().and_then(|n| n.subnet.clone()))
     });
@@ -266,6 +270,7 @@ fn resolve_create_config(
         memory,
         disk_size,
         kernel,
+        boot_args,
         network,
         no_start: args.no_start,
         ssh_user,
@@ -459,6 +464,7 @@ fn create_post_clone(
         disk_size_gib: resolved.disk_size,
         kernel_path,
         zvol_path: vm_zvol.to_string(),
+        boot_args: resolved.boot_args.clone(),
         subnet: resolved.network.clone(),
         network: None,
         pid: None,
@@ -650,13 +656,16 @@ fn start_configure(
     );
 
     // Build VM configuration with networking.
-    let vm_config = firecracker::config::VmConfig::new(
+    let mut vm_config = firecracker::config::VmConfig::new(
         metadata.cpus,
         metadata.memory_mib,
         &metadata.kernel_path,
         rootfs_path,
-    )
-    .with_network(firecracker::config::VmNetworkConfig {
+    );
+    if let Some(ref boot_args) = metadata.boot_args {
+        vm_config = vm_config.with_boot_args(boot_args);
+    }
+    let vm_config = vm_config.with_network(firecracker::config::VmNetworkConfig {
         tap_device: net_info.tap_device.clone(),
         guest_ip: net_info.guest_ip.clone(),
         gateway_ip: net_info.gateway_ip.clone(),

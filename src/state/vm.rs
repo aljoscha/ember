@@ -104,6 +104,10 @@ pub struct VmMetadata {
     pub kernel_path: PathBuf,
     /// ZFS zvol path (e.g., "tank/ember/vms/myvm").
     pub zvol_path: String,
+    /// Custom kernel boot arguments. When set, replaces the default
+    /// boot args; the `ip=` networking parameter is still appended.
+    #[serde(default)]
+    pub boot_args: Option<String>,
     /// Network subnet for IP allocation (e.g., "10.100.0.0/16").
     /// Defaults to [`network::ip::DEFAULT_SUBNET`] when not set.
     #[serde(default)]
@@ -231,6 +235,7 @@ mod tests {
             disk_size_gib: 4,
             kernel_path: PathBuf::from("/var/lib/ember/kernels/vmlinux"),
             zvol_path: format!("tank/ember/vms/{name}"),
+            boot_args: None,
             subnet: None,
             network: None,
             pid: None,
