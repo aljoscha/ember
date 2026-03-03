@@ -92,7 +92,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
 fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let images_dataset = format!("{}/{}/images", config.pool, config.dataset);
+    let images_dataset = config.images_dataset();
 
     // Parse and validate the image reference.
     let reference = ImageReference::parse(&args.reference)?;
@@ -144,7 +144,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let images_dataset = format!("{}/{}/images", config.pool, config.dataset);
+    let images_dataset = config.images_dataset();
 
     // Sanitize the name for ZFS dataset use.
     let local_name = image::build::sanitize_name(&args.name)?;

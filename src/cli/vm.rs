@@ -358,8 +358,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     // Build zvol path for the VM.
-    let base_dataset = format!("{}/{}", global_config.pool, global_config.dataset);
-    let vm_zvol = format!("{base_dataset}/vms/{}", resolved.name);
+    let vm_zvol = format!("{}/{}", global_config.vms_dataset(), resolved.name);
 
     let mut rollback = Rollback::new();
 

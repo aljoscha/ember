@@ -43,6 +43,18 @@ pub struct GlobalConfig {
     pub wan_iface: Option<String>,
 }
 
+impl GlobalConfig {
+    /// Full ZFS dataset path for images (e.g. `ember/ember/images`).
+    pub fn images_dataset(&self) -> String {
+        format!("{}/{}/images", self.pool, self.dataset)
+    }
+
+    /// Full ZFS dataset path for VMs (e.g. `ember/ember/vms`).
+    pub fn vms_dataset(&self) -> String {
+        format!("{}/{}/vms", self.pool, self.dataset)
+    }
+}
+
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     let pool = &args.pool;
 
