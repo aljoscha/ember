@@ -247,13 +247,10 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
-    // Try parsing as an OCI reference first, fall back to direct local_name
-    // lookup for locally built images.
-    let local_name = resolve_local_name(&store, &args.name)?;
-
     // Look up the image entry (don't remove from registry yet — the zvol
     // destroy might fail if there are dependent clones).
     let registry = ImageRegistry::load(&store)?;
+    let local_name = resolve_local_name(&registry, &args.name)?;
     let entry = registry
         .get(&local_name)
         .ok_or_else(|| {
@@ -313,7 +310,7 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let registry = ImageRegistry::load(&store)?;
 
-    let local_name = resolve_local_name(&store, &args.name)?;
+    let local_name = resolve_local_name(&registry, &args.name)?;
     let entry = registry
         .get(&local_name)
         .ok_or_else(|| {
@@ -400,9 +397,7 @@ fn create_zvol_from_rootfs(
 /// Tries parsing as an OCI reference first (so `alpine` resolves to
 /// `library-alpine-latest`).  Falls back to a direct local_name lookup
 /// so that locally built images (e.g. `ubuntu-vm`) work too.
-fn resolve_local_name(store: &StateStore, name: &str) -> anyhow::Result<String> {
-    let registry = ImageRegistry::load(store)?;
-
+fn resolve_local_name(registry: &ImageRegistry, name: &str) -> anyhow::Result<String> {
     // Try OCI reference parse → local_name.
     let reference = ImageReference::parse(name)?;
     let oci_local = reference.local_name();
