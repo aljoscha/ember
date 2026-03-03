@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{header, Method, Request};
@@ -187,14 +188,14 @@ impl FirecrackerClient {
             .client
             .request(req)
             .await
-            .map_err(|e| anyhow::anyhow!("firecracker API request failed: {e}"))?;
+            .context("firecracker API request failed")?;
 
         let status = response.status();
         let bytes = response
             .into_body()
             .collect()
             .await
-            .map_err(|e| anyhow::anyhow!("failed to read firecracker response: {e}"))?
+            .context("failed to read firecracker response")?
             .to_bytes();
 
         if !status.is_success() {
