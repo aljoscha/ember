@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod firecracker;
 pub mod image;
+pub mod kernel;
 pub mod network;
 pub mod ssh;
 pub mod state;

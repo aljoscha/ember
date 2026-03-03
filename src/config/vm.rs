@@ -29,8 +29,8 @@ pub struct VmConfig {
     pub memory: Option<ByteSize>,
     /// Disk size (e.g., `8G`, `512M`).
     pub disk_size: Option<ByteSize>,
-    /// Path to custom kernel.
-    pub kernel: Option<PathBuf>,
+    /// Kernel preset name (`stock`, `containerd`) or file path.
+    pub kernel: Option<crate::kernel::KernelSpec>,
     /// Network configuration.
     pub network: Option<VmNetworkConfig>,
     /// SSH configuration.
@@ -107,7 +107,10 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
         assert_eq!(config.cpus, Some(2));
         assert_eq!(config.memory.unwrap().to_mib().unwrap(), 512);
         assert_eq!(config.disk_size.unwrap().to_gib().unwrap(), 4);
-        assert_eq!(config.kernel, Some(PathBuf::from("/path/to/vmlinux")));
+        assert_eq!(
+            config.kernel,
+            Some(crate::kernel::KernelSpec::Path(PathBuf::from("/path/to/vmlinux")))
+        );
         assert_eq!(
             config.network.as_ref().unwrap().subnet.as_deref(),
             Some("10.100.0.0/16")
@@ -120,6 +123,27 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
         assert_eq!(
             config.boot_args.as_deref(),
             Some("console=ttyS0 reboot=k panic=1 pci=off")
+        );
+    }
+
+    #[test]
+    fn parse_kernel_preset() {
+        let yaml = "kernel: stock\n";
+        let config: VmConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.kernel,
+            Some(crate::kernel::KernelSpec::Preset(
+                crate::kernel::KernelPreset::Stock
+            ))
+        );
+
+        let yaml = "kernel: containerd\n";
+        let config: VmConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.kernel,
+            Some(crate::kernel::KernelSpec::Preset(
+                crate::kernel::KernelPreset::Containerd
+            ))
         );
     }
 

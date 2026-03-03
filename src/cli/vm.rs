@@ -4,7 +4,7 @@ use std::process::Command as ProcessCommand;
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
-use super::init::{self, GlobalConfig};
+use super::init::GlobalConfig;
 use crate::config;
 use crate::config::size::ByteSize;
 use crate::error::Error;
@@ -70,9 +70,9 @@ pub struct CreateArgs {
     #[arg(long)]
     pub disk_size: Option<ByteSize>,
 
-    /// Path to custom kernel
+    /// Kernel preset or file path [presets: stock, containerd]
     #[arg(long)]
-    pub kernel: Option<PathBuf>,
+    pub kernel: Option<crate::kernel::KernelSpec>,
 
     /// Network subnet
     #[arg(long)]
@@ -198,7 +198,7 @@ struct ResolvedVmCreate {
     cpus: u32,
     memory: u32,
     disk_size: u32,
-    kernel: Option<PathBuf>,
+    kernel: Option<crate::kernel::KernelSpec>,
     /// Network subnet from YAML config (used during `start`, not `create`).
     network: Option<String>,
     no_start: bool,
@@ -246,9 +246,7 @@ fn resolve_create_config(
         .to_gib()
         .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
 
-    let kernel = args.kernel.clone().or_else(|| {
-        yaml.and_then(|c| c.kernel.as_ref().map(|p| config::vm::expand_tilde(p)))
-    });
+    let kernel = args.kernel.clone().or_else(|| yaml.and_then(|c| c.kernel.clone()));
 
     let network = args.network.clone().or_else(|| {
         yaml.and_then(|c| c.network.as_ref().and_then(|n| n.subnet.clone()))
@@ -275,41 +273,22 @@ fn resolve_create_config(
     })
 }
 
-const DEFAULT_KERNEL_FILENAME: &str = "vmlinux-6.1.102";
-
-fn default_kernel_url() -> String {
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "aarch64",
-        _ => "x86_64",
-    };
-    format!(
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/{arch}/{DEFAULT_KERNEL_FILENAME}"
-    )
-}
-
-/// Resolve the kernel path: CLI flag → global config → auto-download default.
+/// Resolve the kernel path: CLI/YAML spec → global config → auto-download default preset.
 fn ensure_kernel(
-    cli_kernel: &Option<PathBuf>,
+    cli_kernel: &Option<crate::kernel::KernelSpec>,
     config: &mut GlobalConfig,
     store: &StateStore,
 ) -> anyhow::Result<PathBuf> {
-    if let Some(path) = cli_kernel {
-        return Ok(path.clone());
+    if let Some(spec) = cli_kernel {
+        return spec.resolve(store);
     }
     if let Some(path) = &config.kernel_path {
         return Ok(path.clone());
     }
 
-    // No kernel configured — download the default.
-    let dest = store.kernel_dir().join(DEFAULT_KERNEL_FILENAME);
-    if dest.exists() {
-        println!("Using default kernel at {}", dest.display());
-    } else {
-        let url = default_kernel_url();
-        println!("No kernel configured — downloading default from {url}...");
-        init::download_file(&url, &dest)?;
-        println!("Kernel saved to {}", dest.display());
-    }
+    // No kernel configured — download the default preset.
+    let default_spec = crate::kernel::KernelSpec::Preset(crate::kernel::DEFAULT_PRESET);
+    let dest = default_spec.resolve(store)?;
 
     // Persist so future creates skip the download.
     config.kernel_path = Some(dest.clone());

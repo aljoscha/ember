@@ -22,9 +22,9 @@ pub struct InitArgs {
     #[arg(long, default_value = "ember")]
     pub dataset: String,
 
-    /// URL to download the kernel from
+    /// Kernel preset or file path [presets: stock, containerd]
     #[arg(long)]
-    pub kernel_url: Option<String>,
+    pub kernel: Option<crate::kernel::KernelSpec>,
 
     /// WAN interface for NAT (auto-detected if not specified)
     #[arg(long)]
@@ -80,21 +80,11 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     store.init()?;
     println!("State directory initialized at {}", state_dir.display());
 
-    // 4. Download kernel if URL provided.
-    let kernel_path = if let Some(url) = &args.kernel_url {
-        let filename = url.rsplit('/').next().unwrap_or("vmlinux");
-        let dest = store.kernel_dir().join(filename);
-
-        if dest.exists() {
-            println!("Kernel already exists at {}", dest.display());
-        } else {
-            println!("Downloading kernel from {url}...");
-            download_file(url, &dest)?;
-            println!("Kernel saved to {}", dest.display());
-        }
-        Some(dest)
+    // 4. Download kernel if preset or path provided.
+    let kernel_path = if let Some(spec) = &args.kernel {
+        Some(spec.resolve(&store)?)
     } else {
-        println!("No --kernel-url provided, skipping kernel download.");
+        println!("No --kernel provided; a default kernel will be downloaded on first 'vm create'.");
         None
     };
 
@@ -131,7 +121,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 }
 
 /// Download a file using curl.
-pub(super) fn download_file(url: &str, dest: &Path) -> crate::error::Result<()> {
+pub(crate) fn download_file(url: &str, dest: &Path) -> crate::error::Result<()> {
     let output = Command::new("curl")
         .args(["-fSL", "-o"])
         .arg(dest)
