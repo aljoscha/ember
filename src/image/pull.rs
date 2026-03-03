@@ -303,29 +303,15 @@ fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> 
 ///     contents should remain). Opaque whiteouts are not yet handled.
 ///
 /// After processing, both the marker file and the target file are removed.
+///
+/// Uses a recursive `std::fs` walk instead of shelling out to `find`.
 fn process_whiteouts(rootfs_dir: &Path) -> Result<()> {
-    // Use `find` to locate whiteout markers efficiently.
-    let output = Command::new("find")
-        .arg(rootfs_dir)
-        .args(["-name", ".wh.*", "-type", "f"])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "find".to_string(),
-            source: e,
-        })?;
+    // Collect whiteout paths first, then process — avoids modifying the
+    // directory tree while iterating over it.
+    let mut whiteouts = Vec::new();
+    collect_whiteouts(rootfs_dir, &mut whiteouts);
 
-    if !output.status.success() {
-        // find failing is not critical — just skip whiteout processing.
-        return Ok(());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let whiteout_path = Path::new(line.trim());
-        if !whiteout_path.exists() {
-            continue;
-        }
-
+    for whiteout_path in &whiteouts {
         let file_name = match whiteout_path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n,
             None => continue,
@@ -353,6 +339,25 @@ fn process_whiteouts(rootfs_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Recursively collect `.wh.*` file paths under `dir`.
+fn collect_whiteouts(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_whiteouts(&path, out);
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with(".wh.") {
+                out.push(path);
+            }
+        }
+    }
 }
 
 /// Map `std::env::consts::ARCH` to OCI platform architecture names.

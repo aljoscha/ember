@@ -43,7 +43,7 @@ pub async fn exec(client: &mut SshClient, command: &str) -> Result<u32, Error> {
                     .await
                     .map_err(|e| Error::Ssh(format!("failed to flush stdout: {e}")))?;
             }
-            ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+            ChannelMsg::ExtendedData { ref data, ext: 1 } => {
                 err.write_all(data)
                     .await
                     .map_err(|e| Error::Ssh(format!("failed to write stderr: {e}")))?;

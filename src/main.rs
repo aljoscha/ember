@@ -31,12 +31,13 @@ fn require_root() -> anyhow::Result<()> {
 /// system SSH client — no root required. Read-only queries (vm list, vm
 /// inspect) also work without elevated privileges.
 fn needs_root(command: &Command) -> bool {
-    match command {
-        Command::Version => false,
-        Command::Exec(_) | Command::Cp(_) => false,
-        Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_)) => false,
-        _ => true,
-    }
+    !matches!(
+        command,
+        Command::Version
+            | Command::Exec(_)
+            | Command::Cp(_)
+            | Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_))
+    )
 }
 
 /// Returns true for commands that should trigger state reconciliation.
@@ -44,12 +45,14 @@ fn needs_root(command: &Command) -> bool {
 /// Reconciliation cleans up after crashes (dead VMs, orphaned TAP devices)
 /// and requires root. Skip it for read-only and SSH-client commands.
 fn needs_reconcile(command: &Command) -> bool {
-    match command {
-        Command::Version | Command::Init(_) => false,
-        Command::Exec(_) | Command::Cp(_) => false,
-        Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_)) => false,
-        _ => true,
-    }
+    !matches!(
+        command,
+        Command::Version
+            | Command::Init(_)
+            | Command::Exec(_)
+            | Command::Cp(_)
+            | Command::Vm(VmCommand::Ssh(_) | VmCommand::List(_) | VmCommand::Inspect(_))
+    )
 }
 
 fn main() -> anyhow::Result<()> {

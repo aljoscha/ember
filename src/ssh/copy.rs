@@ -5,28 +5,39 @@
 //! download reads `cat <path>` output and writes it locally.
 //!
 //! Directory transfers use tar piped through an SSH channel.
+//!
+//! All transfers stream data in chunks to avoid buffering entire files in
+//! memory.
 
 use std::path::Path;
+use std::process::Stdio;
 
 use russh::ChannelMsg;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use crate::error::Error;
 use crate::ssh::client::SshClient;
 
+/// Chunk size for streaming data through SSH channels (64 KiB).
+const CHUNK_SIZE: usize = 64 * 1024;
+
 /// Copy a local file to a remote VM via SSH.
 ///
 /// Opens an SSH session channel, executes `cat > <remote_path>` on the
-/// guest, and pipes the local file data through the channel's stdin.
+/// guest, and streams the local file data through the channel's stdin
+/// in [`CHUNK_SIZE`] chunks.
 pub async fn upload(
     client: &mut SshClient,
     local_path: &Path,
     remote_path: &str,
 ) -> Result<(), Error> {
-    let data = tokio::fs::read(local_path).await.map_err(|e| Error::Io {
-        path: local_path.to_path_buf(),
-        source: e,
-    })?;
+    let mut file = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|e| Error::Io {
+            path: local_path.to_path_buf(),
+            source: e,
+        })?;
 
     let mut channel = client
         .handle_mut()
@@ -40,11 +51,21 @@ pub async fn upload(
         .await
         .map_err(|e| Error::Ssh(format!("failed to execute remote command: {e}")))?;
 
-    // Send file data through channel stdin.
-    channel
-        .data(&data[..])
-        .await
-        .map_err(|e| Error::Ssh(format!("failed to send file data: {e}")))?;
+    // Stream file data through channel stdin in chunks.
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    loop {
+        let n = file.read(&mut buf).await.map_err(|e| Error::Io {
+            path: local_path.to_path_buf(),
+            source: e,
+        })?;
+        if n == 0 {
+            break;
+        }
+        channel
+            .data(&buf[..n])
+            .await
+            .map_err(|e| Error::Ssh(format!("failed to send file data: {e}")))?;
+    }
 
     // Signal end of input so `cat` writes and exits.
     channel
@@ -85,7 +106,7 @@ pub async fn upload(
 /// Copy a file from a remote VM to the local host via SSH.
 ///
 /// Opens an SSH session channel, executes `cat <remote_path>` on the
-/// guest, collects the stdout data, and writes it to the local path.
+/// guest, and streams each data chunk directly to the local file.
 pub async fn download(
     client: &mut SshClient,
     remote_path: &str,
@@ -103,7 +124,13 @@ pub async fn download(
         .await
         .map_err(|e| Error::Ssh(format!("failed to execute remote command: {e}")))?;
 
-    let mut file_data = Vec::new();
+    let mut file = tokio::fs::File::create(local_path)
+        .await
+        .map_err(|e| Error::Io {
+            path: local_path.to_path_buf(),
+            source: e,
+        })?;
+
     let mut exit_code: Option<u32> = None;
     let mut stderr_buf = Vec::new();
 
@@ -113,7 +140,10 @@ pub async fn download(
         };
         match msg {
             ChannelMsg::Data { ref data } => {
-                file_data.extend_from_slice(data);
+                file.write_all(data).await.map_err(|e| Error::Io {
+                    path: local_path.to_path_buf(),
+                    source: e,
+                })?;
             }
             ChannelMsg::ExtendedData { ref data, ext: 1 } => {
                 stderr_buf.extend_from_slice(data);
@@ -133,20 +163,13 @@ pub async fn download(
         )));
     }
 
-    tokio::fs::write(local_path, &file_data)
-        .await
-        .map_err(|e| Error::Io {
-            path: local_path.to_path_buf(),
-            source: e,
-        })?;
-
     Ok(())
 }
 
 /// Copy a local directory to a remote VM via SSH.
 ///
-/// Creates a tar archive of the local directory and extracts it on the
-/// remote side.
+/// Creates a tar archive of the local directory and streams it to the
+/// remote side for extraction, without buffering the entire archive.
 pub async fn upload_dir(
     client: &mut SshClient,
     local_path: &Path,
@@ -159,21 +182,19 @@ pub async fn upload_dir(
         .file_name()
         .ok_or_else(|| Error::Ssh("local directory has no name".to_string()))?;
 
-    // Create tar archive from local directory.
-    let tar_output = Command::new("tar")
+    // Spawn tar and stream its stdout to the SSH channel.
+    let mut tar_child = Command::new("tar")
         .args(["-cf", "-", "-C"])
         .arg(parent)
         .arg(basename)
-        .output()
-        .await
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| Error::Ssh(format!("failed to run local tar: {e}")))?;
 
-    if !tar_output.status.success() {
-        let stderr = String::from_utf8_lossy(&tar_output.stderr);
-        return Err(Error::Ssh(format!("local tar failed: {stderr}")));
-    }
+    let mut tar_stdout = tar_child.stdout.take().expect("stdout piped");
 
-    // Extract on the remote side.
+    // Open remote extraction channel.
     let mut channel = client
         .handle_mut()
         .channel_open_session()
@@ -190,10 +211,31 @@ pub async fn upload_dir(
         .await
         .map_err(|e| Error::Ssh(format!("failed to execute remote command: {e}")))?;
 
-    channel
-        .data(&tar_output.stdout[..])
+    // Stream tar output through the SSH channel in chunks.
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    loop {
+        let n = tar_stdout
+            .read(&mut buf)
+            .await
+            .map_err(|e| Error::Ssh(format!("failed to read local tar output: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        channel
+            .data(&buf[..n])
+            .await
+            .map_err(|e| Error::Ssh(format!("failed to send tar data: {e}")))?;
+    }
+
+    // Wait for local tar to finish and check its exit status.
+    let tar_output = tar_child
+        .wait_with_output()
         .await
-        .map_err(|e| Error::Ssh(format!("failed to send tar data: {e}")))?;
+        .map_err(|e| Error::Ssh(format!("failed to wait for local tar: {e}")))?;
+    if !tar_output.status.success() {
+        let stderr = String::from_utf8_lossy(&tar_output.stderr);
+        return Err(Error::Ssh(format!("local tar failed: {stderr}")));
+    }
 
     channel
         .eof()
@@ -231,8 +273,8 @@ pub async fn upload_dir(
 
 /// Copy a directory from a remote VM to the local host via SSH.
 ///
-/// Runs tar on the remote side to pack the directory, then extracts
-/// it locally.
+/// Runs tar on the remote side to pack the directory, then streams
+/// each data chunk directly into a local tar extraction process.
 pub async fn download_dir(
     client: &mut SshClient,
     remote_path: &str,
@@ -249,6 +291,25 @@ pub async fn download_dir(
         .and_then(|n| n.to_str())
         .ok_or_else(|| Error::Ssh("remote directory has no name".to_string()))?;
 
+    // Create local destination.
+    tokio::fs::create_dir_all(local_path)
+        .await
+        .map_err(|e| Error::Io {
+            path: local_path.to_path_buf(),
+            source: e,
+        })?;
+
+    // Spawn local tar extraction process before reading remote data.
+    let mut tar_child = Command::new("tar")
+        .args(["-xf", "-", "-C"])
+        .arg(local_path)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Ssh(format!("failed to run local tar: {e}")))?;
+
+    let mut tar_stdin = tar_child.stdin.take().expect("stdin piped");
+
     // Create tar archive on the remote side.
     let mut channel = client
         .handle_mut()
@@ -262,7 +323,6 @@ pub async fn download_dir(
         .await
         .map_err(|e| Error::Ssh(format!("failed to execute remote command: {e}")))?;
 
-    let mut tar_data = Vec::new();
     let mut exit_code: Option<u32> = None;
     let mut stderr_buf = Vec::new();
 
@@ -272,7 +332,9 @@ pub async fn download_dir(
         };
         match msg {
             ChannelMsg::Data { ref data } => {
-                tar_data.extend_from_slice(data);
+                tar_stdin.write_all(data).await.map_err(|e| {
+                    Error::Ssh(format!("failed to write tar data to local tar: {e}"))
+                })?;
             }
             ChannelMsg::ExtendedData { ref data, ext: 1 } => {
                 stderr_buf.extend_from_slice(data);
@@ -292,32 +354,9 @@ pub async fn download_dir(
         )));
     }
 
-    // Create local destination and extract.
-    tokio::fs::create_dir_all(local_path)
-        .await
-        .map_err(|e| Error::Io {
-            path: local_path.to_path_buf(),
-            source: e,
-        })?;
-
-    let mut child = Command::new("tar")
-        .args(["-xf", "-", "-C"])
-        .arg(local_path)
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| Error::Ssh(format!("failed to run local tar: {e}")))?;
-
-    {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().expect("stdin piped");
-        stdin.write_all(&tar_data).await.map_err(|e| {
-            Error::Ssh(format!("failed to write tar data to local tar: {e}"))
-        })?;
-        // Drop stdin to close the pipe so tar can finish.
-    }
-
-    let output = child
+    // Close stdin so tar can finish, then wait for it.
+    drop(tar_stdin);
+    let output = tar_child
         .wait_with_output()
         .await
         .map_err(|e| Error::Ssh(format!("failed to wait for local tar: {e}")))?;
