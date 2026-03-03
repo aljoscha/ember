@@ -124,6 +124,36 @@ pub struct VmMetadata {
     pub ssh: SshConfig,
 }
 
+/// Load a running VM's metadata and network info.
+///
+/// Returns an error if the VM is not found, not in `Running` state,
+/// or has no network configured. Use this for commands that need SSH
+/// access to a running VM.
+pub fn load_running_with_network(
+    store: &StateStore,
+    name: &str,
+) -> anyhow::Result<(VmMetadata, NetworkInfo)> {
+    let metadata = load(store, name)?;
+    if metadata.status != VmStatus::Running {
+        anyhow::bail!(
+            "vm '{}' is {} — start it first with: ember vm start {}",
+            name,
+            metadata.status,
+            name
+        );
+    }
+    let network = metadata
+        .network
+        .clone()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "vm '{}' has no network configured — cannot connect via SSH",
+                name
+            )
+        })?;
+    Ok((metadata, network))
+}
+
 /// Load VM metadata from the state store.
 ///
 /// Returns [`Error::VmNotFound`] if no metadata file exists for `name`.

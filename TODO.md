@@ -101,7 +101,7 @@ Findings from a full-codebase review. Work through these one at a time.
 - [x] Extract shared `force_delete_vm` function (fixes the network cleanup bug above) — `cli/image.rs:370-408` vs `cli/vm.rs:937-1001`
 - [x] Extract shared `cleanup_network()` — identical in `cli/vm.rs:616-628` and `state/reconcile.rs:116-128`
 - [x] Deduplicate zvol-to-image pipeline in `pull`/`build` (~25 lines each) — `cli/image.rs:141-168` and `cli/image.rs:239-266`
-- [ ] Extract "require running VM with network" helper — triplicated in `cli/vm.rs:1091-1108`, `cli/exec.rs:25-42`, `cli/cp.rs:42-59`
+- [x] Extract "require running VM with network" helper — triplicated in `cli/vm.rs:1091-1108`, `cli/exec.rs:25-42`, `cli/cp.rs:42-59`
 - [x] Deduplicate `now_iso8601()` — identical in `state/vm.rs:197-206` and `image/registry.rs:127-139`; also replace `date` shelling with Rust-native formatting
 - [x] Deduplicate `umount()` — identical in `image/ext4.rs:127-137` and `cli/vm.rs:1177-1188`
 

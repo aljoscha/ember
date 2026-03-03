@@ -5,7 +5,6 @@ use clap::Args;
 use crate::ssh;
 use crate::state::store::StateStore;
 use crate::state::vm;
-use crate::state::vm::VmStatus;
 
 #[derive(Args)]
 pub struct CpArgs {
@@ -40,23 +39,7 @@ pub fn run(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, vm_name)?;
-
-    if metadata.status != VmStatus::Running {
-        anyhow::bail!(
-            "vm '{}' is {} — start it first with: ember vm start {}",
-            vm_name,
-            metadata.status,
-            vm_name
-        );
-    }
-
-    let network = metadata.network.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "vm '{}' has no network configured — cannot connect via SSH",
-            vm_name
-        )
-    })?;
+    let (metadata, network) = vm::load_running_with_network(&store, vm_name)?;
 
     let guest_ip = &network.guest_ip;
     let key_path = &metadata.ssh.key;

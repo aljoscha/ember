@@ -1087,23 +1087,7 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// is passed to ssh for non-interactive execution.
 fn ssh(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, &args.name)?;
-
-    if metadata.status != VmStatus::Running {
-        anyhow::bail!(
-            "vm '{}' is {} — start it first with: ember vm start {}",
-            args.name,
-            metadata.status,
-            args.name
-        );
-    }
-
-    let network = metadata.network.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "vm '{}' has no network configured — cannot connect via SSH",
-            args.name
-        )
-    })?;
+    let (metadata, network) = vm::load_running_with_network(&store, &args.name)?;
 
     let guest_ip = &network.guest_ip;
     let user = &metadata.ssh.user;
