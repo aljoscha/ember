@@ -10,6 +10,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
+
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 
@@ -27,12 +29,8 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 /// `/dev/null`; Firecracker writes its own operational log via `--log-path`.
 pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
     let console_log_path = log_path.with_file_name("console.log");
-    let console_log = File::create(&console_log_path).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to create console log at {}: {e}",
-            console_log_path.display()
-        )
-    })?;
+    let console_log = File::create(&console_log_path)
+        .with_context(|| format!("failed to create console log at {}", console_log_path.display()))?;
 
     let child = Command::new("firecracker")
         .arg("--api-sock")

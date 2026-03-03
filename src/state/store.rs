@@ -28,6 +28,7 @@ use crate::error::{Error, Result};
 /// │       ├── vm.json
 /// │       ├── firecracker.sock
 /// │       ├── firecracker.log
+/// │       ├── console.log
 /// │       └── firecracker.pid
 /// └── network/
 ///     └── allocations.json
