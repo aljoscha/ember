@@ -459,6 +459,7 @@ fn create_post_clone(
         disk_size_gib: resolved.disk_size,
         kernel_path,
         zvol_path: vm_zvol.to_string(),
+        subnet: resolved.network.clone(),
         network: None,
         pid: None,
         api_socket: store.vm_dir(&resolved.name).join("firecracker.sock"),
@@ -519,7 +520,7 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     };
 
     // Allocate a /30 IP block for this VM.
-    let subnet = network::ip::DEFAULT_SUBNET;
+    let subnet = metadata.subnet.as_deref().unwrap_or(network::ip::DEFAULT_SUBNET);
     println!("Allocating network address...");
     let allocation = network::ip::allocate(&store, subnet, &metadata.name)?;
     println!(

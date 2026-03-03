@@ -104,6 +104,10 @@ pub struct VmMetadata {
     pub kernel_path: PathBuf,
     /// ZFS zvol path (e.g., "tank/ember/vms/myvm").
     pub zvol_path: String,
+    /// Network subnet for IP allocation (e.g., "10.100.0.0/16").
+    /// Defaults to [`network::ip::DEFAULT_SUBNET`] when not set.
+    #[serde(default)]
+    pub subnet: Option<String>,
     /// Network configuration, if networking is set up.
     pub network: Option<NetworkInfo>,
     /// PID of the running Firecracker process.
@@ -227,6 +231,7 @@ mod tests {
             disk_size_gib: 4,
             kernel_path: PathBuf::from("/var/lib/ember/kernels/vmlinux"),
             zvol_path: format!("tank/ember/vms/{name}"),
+            subnet: None,
             network: None,
             pid: None,
             api_socket: PathBuf::from(format!("/var/lib/ember/vms/{name}/firecracker.sock")),
