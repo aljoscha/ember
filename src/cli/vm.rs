@@ -350,7 +350,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let image_size_mib = image_entry.size_mib;
 
     // Verify @base snapshot exists on the image zvol.
-    if !zfs::snapshot::exists(&image_zvol, "base")? {
+    if !zfs::snapshot::exists(&image_zvol, zfs::BASE_SNAPSHOT_NAME)? {
         anyhow::bail!(
             "image zvol '{}' has no @base snapshot — the image may be corrupted",
             image_zvol
@@ -364,7 +364,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let mut rollback = Rollback::new();
 
     // Clone @base snapshot → per-VM zvol (instant, copy-on-write).
-    let snapshot = format!("{image_zvol}@base");
+    let snapshot = format!("{image_zvol}@{}", zfs::BASE_SNAPSHOT_NAME);
     println!("Cloning {} → {}...", snapshot, vm_zvol);
     zfs::volume::clone(&snapshot, &vm_zvol)?;
     {

@@ -132,6 +132,6 @@ Findings from a full-codebase review. Work through these one at a time.
 
 ### Minor Quality
 
-- [ ] Extract `BASE_SNAPSHOT_NAME` constant for magic string `"base"` used in 5+ locations
+- [x] Extract `BASE_SNAPSHOT_NAME` constant for magic string `"base"` used in 5+ locations
 - [ ] Add `From<NetworkInfo>` for `VmNetworkConfig` to eliminate manual field copying (`cli/vm.rs:658-665`)
 - [ ] Avoid double-loading `ImageRegistry` in image commands (`cli/image.rs`)

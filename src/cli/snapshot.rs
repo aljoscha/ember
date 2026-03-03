@@ -78,7 +78,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow the reserved @base snapshot name.
-    if args.snapshot_name == "base" {
+    if args.snapshot_name == zfs::BASE_SNAPSHOT_NAME {
         anyhow::bail!("snapshot name 'base' is reserved for image cloning");
     }
 
@@ -111,7 +111,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let snapshots: Vec<_> = zfs::snapshot::list(&metadata.zvol_path)?
         .into_iter()
-        .filter(|s| s.short_name != "base")
+        .filter(|s| s.short_name != zfs::BASE_SNAPSHOT_NAME)
         .collect();
 
     match args.format {
@@ -196,7 +196,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow deleting the reserved @base snapshot.
-    if args.snapshot_name == "base" {
+    if args.snapshot_name == zfs::BASE_SNAPSHOT_NAME {
         anyhow::bail!("snapshot 'base' is reserved for image cloning and cannot be deleted");
     }
 

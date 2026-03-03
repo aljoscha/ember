@@ -44,7 +44,7 @@ pub fn write_to_zvol(image_path: &Path, zvol: &str) -> Result<()> {
     dd_image(image_path, &dev_path)?;
 
     // Create the @base snapshot for cloning.
-    zfs::snapshot::create(zvol, "base")?;
+    zfs::snapshot::create(zvol, zfs::BASE_SNAPSHOT_NAME)?;
 
     Ok(())
 }

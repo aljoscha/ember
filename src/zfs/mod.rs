@@ -7,6 +7,13 @@ use std::process::Command;
 
 use crate::error::{Error, Result};
 
+/// The reserved snapshot name used for image cloning.
+///
+/// Every image zvol has a `@base` snapshot that serves as the clone source
+/// for per-VM zvols. This name is checked in snapshot create/delete commands
+/// and filtered from user-facing snapshot listings.
+pub const BASE_SNAPSHOT_NAME: &str = "base";
+
 /// Run `zfs destroy` on a dataset, volume, or snapshot.
 ///
 /// With `recursive: true`, passes `-r` to also destroy children and snapshots.
