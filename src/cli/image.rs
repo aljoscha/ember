@@ -118,20 +118,8 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("  Downloading and unpacking layers...");
     let rootfs_dir = image::pull::pull(&reference, work_dir.path())?;
 
-    // Step 2: Inject SSH authorized_keys and resolv.conf into rootfs.
-    if let Some(pubkey_path) = image::inject::default_ssh_pubkey_path() {
-        if pubkey_path.exists() {
-            println!("  Injecting SSH public key from {}...", pubkey_path.display());
-            image::inject::inject_ssh_authorized_keys(&rootfs_dir, &pubkey_path)?;
-        } else {
-            println!(
-                "  Warning: SSH public key not found at {}, skipping injection.",
-                pubkey_path.display()
-            );
-        }
-    }
-    image::inject::inject_resolv_conf(&rootfs_dir)?;
-    image::inject::inject_inittab(&rootfs_dir)?;
+    // Step 2: Inject SSH authorized_keys, resolv.conf, and inittab into rootfs.
+    inject_image_config(&rootfs_dir, true)?;
 
     // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
     let (size_mib, rollback) =
@@ -201,18 +189,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Step 2: Inject SSH authorized_keys and resolv.conf into rootfs.
     // Skip inittab — systemd-based images handle init and CtrlAltDel natively.
-    if let Some(pubkey_path) = image::inject::default_ssh_pubkey_path() {
-        if pubkey_path.exists() {
-            println!("  Injecting SSH public key from {}...", pubkey_path.display());
-            image::inject::inject_ssh_authorized_keys(&rootfs_dir, &pubkey_path)?;
-        } else {
-            println!(
-                "  Warning: SSH public key not found at {}, skipping injection.",
-                pubkey_path.display()
-            );
-        }
-    }
-    image::inject::inject_resolv_conf(&rootfs_dir)?;
+    inject_image_config(&rootfs_dir, false)?;
 
     // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
     let (size_mib, rollback) =
@@ -360,6 +337,30 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Inject SSH public key and resolv.conf into a rootfs directory.
+///
+/// If `inject_inittab` is true, also injects an inittab for lightweight
+/// init-based images (e.g., Alpine from OCI pull). Systemd-based images
+/// (from `image build`) skip inittab injection.
+fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Result<()> {
+    if let Some(pubkey_path) = image::inject::default_ssh_pubkey_path() {
+        if pubkey_path.exists() {
+            println!("  Injecting SSH public key from {}...", pubkey_path.display());
+            image::inject::inject_ssh_authorized_keys(rootfs_dir, &pubkey_path)?;
+        } else {
+            println!(
+                "  Warning: SSH public key not found at {}, skipping injection.",
+                pubkey_path.display()
+            );
+        }
+    }
+    image::inject::inject_resolv_conf(rootfs_dir)?;
+    if inject_inittab {
+        image::inject::inject_inittab(rootfs_dir)?;
+    }
     Ok(())
 }
 
