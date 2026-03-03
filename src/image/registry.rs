@@ -125,17 +125,7 @@ pub fn new_build_entry(name: &str, local_name: &str, zvol: &str, size_mib: u64) 
 
 /// Current UTC time as an ISO 8601 string (second precision).
 fn now_iso8601() -> String {
-    // Use `date` to avoid pulling in a datetime crate.
-    let output = std::process::Command::new("date")
-        .args(["--utc", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
-        _ => "unknown".to_string(),
-    }
+    crate::state::vm::now_iso8601()
 }
 
 /// Load the registry, remove an entry by local name, save, and return

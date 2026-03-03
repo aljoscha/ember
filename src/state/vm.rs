@@ -201,16 +201,35 @@ pub fn delete(store: &StateStore, name: &str) -> Result<()> {
 
 /// Current UTC time as an ISO 8601 string (second precision).
 ///
-/// Uses `date` to avoid pulling in a datetime crate.
+/// Format: `YYYY-MM-DDTHH:MM:SSZ` (always UTC).
 pub fn now_iso8601() -> String {
-    let output = std::process::Command::new("date")
-        .args(["--utc", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output();
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => "unknown".to_string(),
-    }
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Break epoch seconds into date/time components.
+    let days = secs / 86400;
+    let day_secs = secs % 86400;
+    let hour = day_secs / 3600;
+    let min = (day_secs % 3600) / 60;
+    let sec = day_secs % 60;
+
+    // Civil date from day count (algorithm from Howard Hinnant).
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
 #[cfg(test)]
