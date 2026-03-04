@@ -1,4 +1,4 @@
-# ember VM base image: Ubuntu 24.04 with systemd, sshd, serial console.
+# ember VM base image: Ubuntu 26.04 with systemd, sshd, serial console.
 #
 # Built with:  ember image build ubuntu-vm
 # Or manually:  docker build -t ember-ubuntu-vm -f images/Dockerfile.ubuntu-vm images/
@@ -10,7 +10,7 @@
 # The primary user is `ubuntu` (uid 1000) with passwordless sudo.
 # SSH connects as ubuntu by default; root is available via `sudo`.
 
-FROM ubuntu:24.04
+FROM ubuntu:resolute-20251101
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -66,7 +66,7 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # ---------- ubuntu user with passwordless sudo ----------
-# The ubuntu:24.04 base image may already include an `ubuntu` user;
+# The ubuntu base image may already include an `ubuntu` user;
 # create it only if missing, then ensure group membership and home dir.
 RUN id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu; \
     usermod -aG sudo -s /bin/bash ubuntu \
