@@ -12,7 +12,7 @@
 #   make clean        # remove build artifacts (keeps source and base config)
 #   make distclean    # remove everything including source
 
-KERNEL_TAG    := microvm-kernel-6.1.102-1.182.amzn2023
+KERNEL_TAG    := microvm-kernel-6.1.163-20.299.amzn2023
 KERNEL_REPO   := https://github.com/amazonlinux/linux.git
 KERNEL_DIR    := linux
 BASE_CONFIG   := base.config
