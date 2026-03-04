@@ -12,7 +12,7 @@ use std::process::Command;
 use crate::error::{Error, Result};
 
 /// Built-in Dockerfile for a VM-ready Ubuntu 24.04 image.
-pub const DEFAULT_DOCKERFILE: &str = include_str!("../../images/Dockerfile.ubuntu-vm");
+pub const DEFAULT_DOCKERFILE: &str = include_str!("../../images/Dockerfile.ubuntu-dev");
 
 // ---------------------------------------------------------------------------
 // Name sanitisation
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn default_dockerfile_is_nonempty() {
-        assert!(DEFAULT_DOCKERFILE.contains("FROM ubuntu:24.04"));
+        assert!(DEFAULT_DOCKERFILE.contains("FROM ubuntu:"));
         assert!(DEFAULT_DOCKERFILE.contains("systemd"));
     }
 }

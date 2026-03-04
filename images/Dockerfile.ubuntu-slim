@@ -1,11 +1,11 @@
-# ember VM base image: Ubuntu 26.04 with systemd, sshd, serial console.
+# ember VM slim image: Ubuntu 26.04 with systemd, sshd, serial console.
 #
-# Built with:  ember image build ubuntu-vm
-# Or manually:  docker build -t ember-ubuntu-vm -f images/Dockerfile.ubuntu-vm images/
+# Built with:  ember image build ubuntu-slim
+# Or manually:  docker build -t ember-ubuntu-slim -f images/Dockerfile.ubuntu-slim images/
 #
-# Designed to run as a Firecracker microVM root filesystem with a proper
-# init system.  systemd handles process supervision, graceful shutdown
-# (CtrlAltDel), and service management (sshd, serial console getty).
+# Minimal VM image for Firecracker microVMs.  Includes only the core
+# plumbing (systemd, SSH, networking) and a handful of useful tools.
+# For a full developer environment see Dockerfile.ubuntu-dev.
 #
 # The primary user is `ubuntu` (uid 1000) with passwordless sudo.
 # SSH connects as ubuntu by default; root is available via `sudo`.
@@ -36,29 +36,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# ---------- development tools ----------
-# No --no-install-recommends: we want man pages and bash completions.
+# ---------- useful tools ----------
 RUN apt-get update && apt-get install -y \
         git \
-        build-essential \
-        cmake \
-        libclang-dev \
-        llvm \
         python3 \
         jq \
-        neovim \
-        stow \
-        tmux \
+        vim \
         less \
         htop \
         file \
         unzip \
-        ncdu \
-        tig \
         man-db \
         bash-completion \
         locales \
-        golang-go \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- locale ----------
@@ -79,47 +69,6 @@ RUN id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu; \
 # Allow all users to create ICMP sockets without cap_net_raw.
 # Applied at boot by systemd-sysctl.
 RUN echo 'net.ipv4.ping_group_range = 0 2147483647' > /etc/sysctl.d/50-ping.conf
-
-# ---------- GitHub CLI (gh) ----------
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update && apt-get install -y gh \
-    && rm -rf /var/lib/apt/lists/*
-
-# ---------- Buildkite CLI (bk) ----------
-ARG BK_VERSION=3.31.1
-RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION}/bk_${BK_VERSION}_linux_amd64.deb" -o /tmp/bk.deb \
-    && dpkg -i /tmp/bk.deb \
-    && rm /tmp/bk.deb
-
-# ---------- jujutsu (jj) — system-wide ----------
-ARG JJ_VERSION=0.38.0
-RUN curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v${JJ_VERSION}/jj-v${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    | tar -xz -C /usr/local/bin ./jj
-
-# ---------- per-user tools (installed as ubuntu) ----------
-USER ubuntu
-WORKDIR /home/ubuntu
-
-# Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/home/ubuntu/.cargo/bin:${PATH}"
-
-# uv (Python package manager, replaces pip/venv)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/ubuntu/.local/bin:${PATH}"
-
-# Claude Code
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
-USER root
-
-# ---------- PATH for SSH sessions ----------
-# /etc/environment is read by PAM on SSH login, covering non-interactive
-# SSH commands as well as interactive sessions.
-RUN echo 'PATH="/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
 
 # ---------- SSH ----------
 RUN mkdir -p /run/sshd \

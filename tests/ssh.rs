@@ -4,7 +4,7 @@
 //! - Root privileges
 //! - Working ZFS installation
 //! - `firecracker` binary in PATH + `/dev/kvm`
-//! - `docker` for building the `ubuntu-vm` image (systemd + sshd)
+//! - `docker` for building the `ubuntu-slim` image (systemd + sshd)
 //! - Bootable kernel (auto-downloaded or `EMBER_TEST_KERNEL`)
 //! - SSH key pair for the invoking user
 //! - Network access
@@ -121,18 +121,21 @@ fn setup_pool_init_and_build_ubuntu(
         "init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
+    let dockerfile = format!("{}/images/Dockerfile.ubuntu-slim", env!("CARGO_MANIFEST_DIR"));
     let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
         "build",
-        "ubuntu-vm",
+        "ubuntu-slim",
+        "-f",
+        &dockerfile,
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "image build ubuntu-vm failed.\nstdout: {stdout}\nstderr: {stderr}"
+        "image build ubuntu-slim failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     (pool, state_dir, cleanup)
@@ -292,7 +295,7 @@ struct RunningVm {
     _tmp: tempfile::TempDir,
 }
 
-/// Spin up a running ubuntu-vm. Returns the state_dir and guest_ip.
+/// Spin up a running ubuntu-slim. Returns the state_dir and guest_ip.
 ///
 /// Skips (returns None) if prerequisites are missing.
 fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
@@ -300,7 +303,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
         return None;
     }
     if !docker_available() {
-        eprintln!("Skipping: docker not available (needed to build ubuntu-vm image)");
+        eprintln!("Skipping: docker not available (needed to build ubuntu-slim image)");
         return None;
     }
     let kernel_path = ensure_kernel()?;
@@ -319,7 +322,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
     let output = ember(&[
         "--state-dir", state,
         "vm", "create", vm_name,
-        "--image", "ubuntu-vm",
+        "--image", "ubuntu-slim",
         "--cpus", "1",
         "--memory", "512M",
         "--kernel", kernel,

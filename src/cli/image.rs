@@ -37,7 +37,7 @@ pub struct PullArgs {
 
 #[derive(Args)]
 pub struct BuildArgs {
-    /// Image name (e.g. ubuntu-vm, my-image:v1)
+    /// Image name (e.g. ubuntu-dev, my-image:v1)
     pub name: String,
 
     /// Path to Dockerfile (default: built-in Ubuntu 24.04 VM image)

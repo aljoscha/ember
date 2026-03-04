@@ -200,13 +200,13 @@ fn docker_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Set up a ZFS pool, run `ember init`, and build the ubuntu-vm image.
+/// Set up a ZFS pool, run `ember init`, and build the ubuntu-slim image.
 ///
-/// The ubuntu-vm image includes systemd, sshd, and networking tools —
+/// The ubuntu-slim image includes systemd, sshd, and networking tools —
 /// everything needed for SSH and internet connectivity tests.
 /// Requires Docker for the image build step.
 ///
-/// Uses an 8 GB sparse file for the ZFS pool (ubuntu-vm zvol is ~4 GB).
+/// Uses an 8 GB sparse file for the ZFS pool (ubuntu-slim zvol is ~4 GB).
 fn setup_pool_init_and_build_ubuntu(
     test_name: &str,
     tmp: &tempfile::TempDir,
@@ -237,19 +237,22 @@ fn setup_pool_init_and_build_ubuntu(
         "init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Build ubuntu-vm image (includes systemd + sshd).
+    // Build ubuntu-slim image (includes systemd + sshd, no dev tooling).
+    let dockerfile = format!("{}/images/Dockerfile.ubuntu-slim", env!("CARGO_MANIFEST_DIR"));
     let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
         "build",
-        "ubuntu-vm",
+        "ubuntu-slim",
+        "-f",
+        &dockerfile,
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "image build ubuntu-vm failed.\nstdout: {stdout}\nstderr: {stderr}"
+        "image build ubuntu-slim failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     (pool, state_dir, cleanup)
@@ -894,13 +897,13 @@ fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
 /// Full networking test: start VM → verify TAP + iptables + host-to-guest ping
 /// → SSH into guest → verify internet from guest → stop → delete.
 ///
-/// Uses the `ubuntu-vm` image (built via Docker) which includes systemd,
+/// Uses the `ubuntu-slim` image (built via Docker) which includes systemd,
 /// openssh-server, and networking tools — everything needed for proper SSH
 /// and internet connectivity testing.
 ///
 /// Requires:
 /// - `firecracker` in PATH, `/dev/kvm` available
-/// - `docker` for building the ubuntu-vm image
+/// - `docker` for building the ubuntu-slim image
 /// - Bootable kernel (auto-downloaded or `EMBER_TEST_KERNEL`)
 /// - SSH key pair for the invoking user
 /// - Network access (host must be able to reach the internet)
@@ -914,7 +917,7 @@ fn networking_ssh_and_internet() {
     }
 
     if !docker_available() {
-        eprintln!("Skipping: docker not available (needed to build ubuntu-vm image)");
+        eprintln!("Skipping: docker not available (needed to build ubuntu-slim image)");
         return;
     }
 
@@ -945,7 +948,7 @@ fn networking_ssh_and_internet() {
         "create",
         "netvm",
         "--image",
-        "ubuntu-vm",
+        "ubuntu-slim",
         "--cpus",
         "1",
         "--memory",
