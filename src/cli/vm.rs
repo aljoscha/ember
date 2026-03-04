@@ -12,6 +12,7 @@ use crate::firecracker;
 use crate::image;
 use crate::image::registry::ImageRegistry;
 use crate::network;
+use crate::ssh;
 use crate::state::store::StateStore;
 use crate::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
 use crate::zfs;
@@ -656,10 +657,11 @@ fn start_configure(
     })
 }
 
-/// Stop a running VM: graceful shutdown via SendCtrlAltDel, then SIGKILL fallback.
+/// Stop a running VM: graceful shutdown via SSH poweroff, then SIGKILL fallback.
 ///
-/// Workflow: validate state → send CtrlAltDel (or skip if --force) → wait for exit
-/// → SIGKILL if still alive → clean up network + socket → update metadata.
+/// Workflow: validate state → SSH poweroff (or SendCtrlAltDel fallback, or skip
+/// if --force) → wait for exit → SIGKILL if still alive → clean up network +
+/// socket → update metadata.
 fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
@@ -696,36 +698,23 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         firecracker::process::kill(pid)?;
         firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
     } else {
-        // Graceful shutdown: send CtrlAltDel via the API, then wait.
+        // Graceful shutdown: try SSH poweroff first, then SendCtrlAltDel fallback.
         println!("Sending shutdown signal to VM '{}'...", args.name);
-        let socket_path = &metadata.api_socket;
+        let rt = tokio::runtime::Runtime::new()?;
 
-        let send_result = if socket_path.exists() {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                let client = firecracker::api::FirecrackerClient::new(socket_path);
-                client
-                    .put_action(&firecracker::api::InstanceAction::send_ctrl_alt_del())
-                    .await
-            })
-        } else {
-            Err(anyhow::anyhow!("API socket not found, falling back to SIGKILL"))
-        };
+        let shutdown_sent = try_ssh_poweroff(&rt, &metadata);
+        if !shutdown_sent {
+            try_ctrl_alt_del(&rt, &metadata);
+        }
 
-        if let Err(e) = send_result {
-            eprintln!("Graceful shutdown failed ({e}), sending SIGKILL...");
+        // Wait up to 10 seconds for the process to exit.
+        println!("Waiting for VM to shut down (up to 10s)...");
+        let exited =
+            firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
+        if !exited {
+            println!("VM did not exit in time, sending SIGKILL...");
             firecracker::process::kill(pid)?;
             firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
-        } else {
-            // Wait up to 10 seconds for the process to exit.
-            println!("Waiting for VM to shut down (up to 10s)...");
-            let exited =
-                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
-            if !exited {
-                println!("VM did not exit in time, sending SIGKILL...");
-                firecracker::process::kill(pid)?;
-                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
-            }
         }
     }
 
@@ -748,6 +737,71 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     println!("VM '{}' stopped.", args.name);
     Ok(())
+}
+
+/// Attempt graceful shutdown via SSH `poweroff` command.
+///
+/// Returns `true` if the command was sent successfully. Uses a short
+/// connect timeout (3s) since the VM should already be running.
+fn try_ssh_poweroff(rt: &tokio::runtime::Runtime, metadata: &vm::VmMetadata) -> bool {
+    let network = match &metadata.network {
+        Some(net) => net,
+        None => {
+            eprintln!("No network configured, skipping SSH shutdown.");
+            return false;
+        }
+    };
+
+    let guest_ip = &network.guest_ip;
+    let key_path = &metadata.ssh.key;
+    let user = &metadata.ssh.user;
+
+    rt.block_on(async {
+        let timeout = std::time::Duration::from_secs(3);
+        let mut client =
+            match ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("SSH connect failed ({e}), will try SendCtrlAltDel.");
+                    return false;
+                }
+            };
+
+        // Send reboot — Firecracker has no ACPI, so `poweroff` just halts
+        // the vCPU in a loop and the VMM hangs forever.  `reboot` triggers
+        // a CPU reset (via reboot=k boot arg), which KVM reports as
+        // KVM_EXIT_SHUTDOWN, causing the Firecracker process to exit cleanly.
+        //
+        // Use sudo: the SSH user may be non-root (e.g., "ubuntu").
+        // Ignore exec errors — the connection drops as the VM goes down.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ssh::exec::exec(&mut client, "sudo reboot"),
+        )
+        .await;
+
+        true
+    })
+}
+
+/// Attempt graceful shutdown via Firecracker SendCtrlAltDel API.
+fn try_ctrl_alt_del(rt: &tokio::runtime::Runtime, metadata: &vm::VmMetadata) {
+    let socket_path = &metadata.api_socket;
+    if !socket_path.exists() {
+        eprintln!("API socket not found, skipping SendCtrlAltDel.");
+        return;
+    }
+
+    let result = rt.block_on(async {
+        let client = firecracker::api::FirecrackerClient::new(socket_path);
+        client
+            .put_action(&firecracker::api::InstanceAction::send_ctrl_alt_del())
+            .await
+    });
+
+    if let Err(e) = result {
+        eprintln!("SendCtrlAltDel failed: {e}");
+    }
 }
 
 /// Pause a running VM via the Firecracker PATCH /vm API.
