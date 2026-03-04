@@ -45,6 +45,9 @@ pub enum VmCommand {
 
     /// Show detailed VM information
     Inspect(InspectArgs),
+
+    /// Fork an existing VM into a new independent VM
+    Fork(ForkArgs),
 }
 
 #[derive(Args)]
@@ -141,6 +144,39 @@ pub struct ListArgs {
 }
 
 #[derive(Args)]
+pub struct ForkArgs {
+    /// Source VM to fork from
+    pub source: String,
+
+    /// New VM name
+    pub name: String,
+
+    /// Number of vCPUs
+    #[arg(long)]
+    pub cpus: Option<u32>,
+
+    /// Memory size, e.g. 512M, 16G
+    #[arg(long)]
+    pub memory: Option<ByteSize>,
+
+    /// Disk size, e.g. 8G (must be >= source)
+    #[arg(long)]
+    pub disk_size: Option<ByteSize>,
+
+    /// Kernel preset or file path [presets: stock]
+    #[arg(long)]
+    pub kernel: Option<crate::kernel::KernelSpec>,
+
+    /// Network subnet
+    #[arg(long)]
+    pub network: Option<String>,
+
+    /// Don't start the VM after forking
+    #[arg(long)]
+    pub no_start: bool,
+}
+
+#[derive(Args)]
 pub struct InspectArgs {
     /// VM name
     pub name: String,
@@ -167,6 +203,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
+        VmCommand::Fork(args) => fork(args, state_dir),
     }
 }
 
@@ -460,11 +497,140 @@ fn create_post_clone(
             user: ssh_user,
             key: ssh_key,
         },
+        forked_from: None,
     };
 
     vm::save(store, &metadata)?;
 
     println!("VM '{}' created successfully.", resolved.name);
+
+    Ok(())
+}
+
+/// Fork an existing VM into a new independent VM.
+///
+/// Workflow: validate source is stopped → snapshot source zvol → COW clone into
+/// new VM → optionally grow disk → resolve kernel → save metadata → optionally start.
+///
+/// No SSH key injection — the forked disk already has keys from the source VM.
+fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
+    use crate::cleanup::Rollback;
+
+    let store = StateStore::new(state_dir.to_path_buf());
+    let mut global_config: GlobalConfig = store.read(&store.config_path())?;
+
+    // Source must exist and be stopped.
+    let source = vm::require_stopped(&store, &args.source, "forking")?;
+
+    // Target must not exist.
+    if vm::exists(&store, &args.name) {
+        anyhow::bail!("vm '{}' already exists", args.name);
+    }
+
+    // Resolve config: source as defaults, CLI flags override.
+    let cpus = args.cpus.unwrap_or(source.cpus);
+
+    let memory_mib = match args.memory {
+        Some(m) => m.to_mib().map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?,
+        None => source.memory_mib,
+    };
+
+    let disk_size_gib = match args.disk_size {
+        Some(d) => {
+            let gib = d.to_gib().map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
+            if gib < source.disk_size_gib {
+                anyhow::bail!(
+                    "cannot shrink disk: requested {} GiB but source is {} GiB",
+                    gib,
+                    source.disk_size_gib
+                );
+            }
+            gib
+        }
+        None => source.disk_size_gib,
+    };
+
+    let subnet = args.network.clone().or(source.subnet.clone());
+
+    // Snapshot the source VM's zvol.
+    let fork_snap_name = format!("fork-{}", args.name);
+    println!("Snapshotting {}@{fork_snap_name}...", source.zvol_path);
+    zfs::snapshot::create(&source.zvol_path, &fork_snap_name)?;
+
+    let fork_snap_full = format!("{}@{fork_snap_name}", source.zvol_path);
+
+    // Clone the snapshot into the new VM's zvol.
+    let vm_zvol = format!("{}/{}", global_config.vms_dataset(), args.name);
+    println!("Cloning {fork_snap_full} → {vm_zvol}...");
+    zfs::volume::clone(&fork_snap_full, &vm_zvol)?;
+
+    let mut rollback = Rollback::new();
+    {
+        let zvol = vm_zvol.clone();
+        let snap_dataset = source.zvol_path.clone();
+        let snap_name = fork_snap_name.clone();
+        let sd = state_dir.to_path_buf();
+        let name = args.name.clone();
+        rollback.push("fork clone + snapshot", move || {
+            let _ = zfs::volume::destroy(&zvol, true);
+            let _ = zfs::snapshot::destroy(&snap_dataset, &snap_name);
+            let _ = vm::delete(&StateStore::new(sd), &name);
+        });
+    }
+
+    // Grow disk if requested.
+    let needs_resize = disk_size_gib > source.disk_size_gib;
+    if needs_resize {
+        println!("Growing zvol to {} GiB...", disk_size_gib);
+        zfs::volume::set_volsize(&vm_zvol, disk_size_gib)?;
+    }
+
+    let dev_path = zfs::volume::device_path(&vm_zvol);
+    image::zvol::wait_for_device(&dev_path)?;
+
+    if needs_resize {
+        println!("Expanding ext4 filesystem...");
+        e2fsck(&dev_path)?;
+        resize2fs(&dev_path)?;
+    }
+
+    // Resolve kernel: CLI override or inherit from source.
+    let kernel_path = if args.kernel.is_some() {
+        ensure_kernel(&args.kernel, &mut global_config, &store)?
+    } else {
+        source.kernel_path.clone()
+    };
+
+    // Build metadata inheriting from source.
+    let metadata = VmMetadata {
+        name: args.name.clone(),
+        id: Uuid::new_v4(),
+        status: VmStatus::Created,
+        image: source.image.clone(),
+        cpus,
+        memory_mib,
+        disk_size_gib,
+        kernel_path,
+        zvol_path: vm_zvol,
+        boot_args: source.boot_args.clone(),
+        subnet,
+        network: None,
+        pid: None,
+        api_socket: store.vm_dir(&args.name).join("firecracker.sock"),
+        created_at: vm::now_iso8601(),
+        ssh: source.ssh.clone(),
+        forked_from: Some(fork_snap_full),
+    };
+
+    vm::save(&store, &metadata)?;
+
+    rollback.commit();
+
+    println!("VM '{}' forked from '{}'.", args.name, args.source);
+
+    if !args.no_start {
+        start(&StartArgs { name: args.name.clone() }, state_dir)?;
+    }
 
     Ok(())
 }
@@ -1009,6 +1175,17 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         Ok(()) => {}
         Err(e) => {
             eprintln!("Warning: failed to destroy zvol '{}': {e}", metadata.zvol_path);
+        }
+    }
+
+    // Clean up fork origin snapshot if this VM was forked.
+    // The clone is destroyed above, so the snapshot is now deletable.
+    if let Some(ref fork_snap) = metadata.forked_from {
+        if let Some((dataset, snap_name)) = fork_snap.split_once('@') {
+            match zfs::snapshot::destroy(dataset, snap_name) {
+                Ok(()) => {}
+                Err(e) => eprintln!("Warning: failed to clean up fork snapshot '{fork_snap}': {e}"),
+            }
         }
     }
 

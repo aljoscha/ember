@@ -120,6 +120,11 @@ pub struct VmMetadata {
     pub created_at: String,
     /// SSH connection configuration.
     pub ssh: SshConfig,
+    /// Origin snapshot path if this VM was forked from another VM.
+    /// e.g. "tank/ember/vms/source@fork-newname"
+    /// Used to clean up the fork snapshot when deleting.
+    #[serde(default)]
+    pub forked_from: Option<String>,
 }
 
 /// Load a running VM's metadata and network info.
@@ -314,6 +319,7 @@ mod tests {
             api_socket: PathBuf::from(format!("/var/lib/ember/vms/{name}/firecracker.sock")),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             ssh: SshConfig::default(),
+            forked_from: None,
         }
     }
 
