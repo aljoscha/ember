@@ -291,8 +291,16 @@ fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
 
 struct RunningVm {
     state_dir: PathBuf,
+    vm_name: String,
+    // Fields are dropped in declaration order: vm first, then pool, then tmpdir.
     _cleanup: PoolCleanup,
     _tmp: tempfile::TempDir,
+}
+
+impl Drop for RunningVm {
+    fn drop(&mut self) {
+        stop_and_delete_vm(&self.state_dir, &self.vm_name);
+    }
 }
 
 /// Spin up a running ubuntu-slim. Returns the state_dir and guest_ip.
@@ -368,6 +376,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
 
     Some(RunningVm {
         state_dir,
+        vm_name: vm_name.to_string(),
         _cleanup: cleanup,
         _tmp: tmp,
     })
@@ -442,7 +451,6 @@ fn exec_command_returns_stdout() {
         "expected 'false' command to return non-zero exit code"
     );
 
-    stop_and_delete_vm(&vm.state_dir, "execvm");
     eprintln!("exec test complete.");
 }
 
@@ -518,7 +526,6 @@ fn cp_upload_and_download() {
     );
     eprintln!("Download verified: content matches locally");
 
-    stop_and_delete_vm(&vm.state_dir, "cpvm");
     eprintln!("cp test complete.");
 }
 
@@ -592,7 +599,7 @@ fn exec_on_stopped_vm_fails() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("running"),
+        stderr.contains("created"),
         "expected error about VM not running: {stderr}"
     );
 
@@ -611,7 +618,7 @@ fn exec_on_stopped_vm_fails() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("running"),
+        stderr.contains("created"),
         "expected error about VM not running: {stderr}"
     );
 }
