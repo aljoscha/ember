@@ -1,0 +1,31 @@
+# Kernel config fragment: Docker networking support
+#
+# These options are missing from the Firecracker CI kernel config and are
+# needed for Docker to work with bridge networking inside guest VMs.
+#
+# Apply on top of the Firecracker CI base config using:
+#   scripts/kconfig/merge_config.sh base.config docker.fragment
+
+# iptables raw table — required for Docker bridge networking.
+# Without this, container creation fails with "Table does not exist (do you
+# need to insmod the ip_tables module?)".
+CONFIG_IP_NF_RAW=y
+CONFIG_IP6_NF_RAW=y
+
+# nftables — modern Docker defaults to the nftables backend. Without these,
+# dockerd fails to create NAT chains on startup (requiring the iptables-legacy
+# workaround).
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NFT_REJECT=y
+CONFIG_NFT_COMPAT=y
+CONFIG_NFT_CHAIN_NAT=y
+
+# Dummy network interface (used by some container networking setups).
+CONFIG_DUMMY=y
