@@ -24,6 +24,9 @@ cargo run -- --help
 # Run tests
 cargo test
 
+# Format
+cargo fmt
+
 # Check without building
 cargo check
 
@@ -45,7 +48,7 @@ sudo ./target/debug/ember vm create testvm --image alpine:latest
 
 ## Rust Compilation
 
-- Always run `cargo build` after making edits before reporting success.
+- Always run `cargo fmt` and `cargo build` after making edits before reporting success.
 - When refactoring function signatures or types, grep for all call sites and update them in the same pass.
 - Check visibility (`pub`) before accessing fields/methods from other modules.
 
