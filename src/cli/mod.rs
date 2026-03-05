@@ -50,6 +50,9 @@ pub enum Command {
     /// Copy files between host and VM
     Cp(cp::CpArgs),
 
+    /// Reconcile internal state with actual Firecracker process state
+    Reconcile,
+
     /// Print version information
     Version,
 }
