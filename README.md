@@ -24,6 +24,9 @@ cargo build --release
 
 The binary is at `./target/release/ember`.
 
+> [!NOTE]
+> If you need to run Docker inside a VM, you'll need a custom kernel with additional networking modules. See [Building a custom kernel](#building-a-custom-kernel) below.
+
 ## Quick start
 
 Initialize ember with a ZFS pool:
