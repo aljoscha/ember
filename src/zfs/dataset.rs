@@ -28,11 +28,7 @@ pub fn exists(dataset: &str) -> Result<bool> {
 /// Creates parent datasets as needed (`-p` flag).
 pub fn create(dataset: &str) -> Result<()> {
     let output = Command::new("zfs")
-        .args([
-            "create", "-p",
-            "-o", "mountpoint=none",
-            dataset,
-        ])
+        .args(["create", "-p", "-o", "mountpoint=none", dataset])
         .output()
         .map_err(|e| Error::CommandExec {
             command: "zfs create".to_string(),

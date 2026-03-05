@@ -35,7 +35,11 @@ fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
         .arg(&file)
         .output()
         .expect("failed to run losetup");
-    assert!(output.status.success(), "losetup failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "losetup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
@@ -48,9 +52,7 @@ fn detach_loop_device(dev: &str) {
 
 /// Destroy a ZFS pool (best-effort cleanup).
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 /// Path to the ember binary built by cargo.
@@ -89,7 +91,10 @@ fn assert_dataset_exists(dataset: &str) {
         .args(["list", "-H", dataset])
         .output()
         .expect("failed to run zfs");
-    assert!(output.status.success(), "expected dataset '{dataset}' to exist");
+    assert!(
+        output.status.success(),
+        "expected dataset '{dataset}' to exist"
+    );
 }
 
 #[test]
@@ -212,7 +217,10 @@ fn init_idempotent_with_existing_pool() {
     );
 
     // Should report existing pool and datasets.
-    assert!(stdout2.contains("already exists"), "expected 'already exists' in: {stdout2}");
+    assert!(
+        stdout2.contains("already exists"),
+        "expected 'already exists' in: {stdout2}"
+    );
 
     // Everything should still be intact.
     assert_pool_exists(&pool);

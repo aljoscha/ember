@@ -276,11 +276,10 @@ impl FileLock {
                 source: e,
             })?;
 
-        let flock =
-            Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Io {
-                path: lock_path,
-                source: errno.into(),
-            })?;
+        let flock = Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Io {
+            path: lock_path,
+            source: errno.into(),
+        })?;
 
         Ok(Self { _flock: flock })
     }
@@ -304,10 +303,7 @@ mod tests {
     fn lock_path_has_lock_extension() {
         let path = Path::new("/var/lib/ember/config.json");
         let lock = lock_path_for(path);
-        assert_eq!(
-            lock,
-            PathBuf::from("/var/lib/ember/config.json.lock")
-        );
+        assert_eq!(lock, PathBuf::from("/var/lib/ember/config.json.lock"));
     }
 
     #[test]
@@ -315,8 +311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().to_path_buf());
 
-        let data: HashMap<String, String> =
-            [("key".to_string(), "value".to_string())].into();
+        let data: HashMap<String, String> = [("key".to_string(), "value".to_string())].into();
 
         let path = dir.path().join("test.json");
         store.write(&path, &data).unwrap();
@@ -331,8 +326,7 @@ mod tests {
         let store = StateStore::new(dir.path().to_path_buf());
 
         let path = dir.path().join("nonexistent.json");
-        let result: Option<HashMap<String, String>> =
-            store.read_optional(&path).unwrap();
+        let result: Option<HashMap<String, String>> = store.read_optional(&path).unwrap();
         assert!(result.is_none());
     }
 
@@ -411,7 +405,10 @@ mod tests {
     fn path_helpers() {
         let store = StateStore::new(PathBuf::from("/var/lib/ember"));
 
-        assert_eq!(store.vm_dir("myvm"), PathBuf::from("/var/lib/ember/vms/myvm"));
+        assert_eq!(
+            store.vm_dir("myvm"),
+            PathBuf::from("/var/lib/ember/vms/myvm")
+        );
         assert_eq!(
             store.vm_metadata_path("myvm"),
             PathBuf::from("/var/lib/ember/vms/myvm/vm.json")
@@ -428,9 +425,6 @@ mod tests {
             store.config_path(),
             PathBuf::from("/var/lib/ember/config.json")
         );
-        assert_eq!(
-            store.kernel_dir(),
-            PathBuf::from("/var/lib/ember/kernels")
-        );
+        assert_eq!(store.kernel_dir(), PathBuf::from("/var/lib/ember/kernels"));
     }
 }

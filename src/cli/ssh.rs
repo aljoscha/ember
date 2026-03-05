@@ -31,10 +31,14 @@ pub fn run(args: &SshArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let mut cmd = Command::new("ssh");
     cmd.args([
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-i", &key_path.to_string_lossy(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-i",
+        &key_path.to_string_lossy(),
         &format!("{user}@{guest_ip}"),
     ]);
 

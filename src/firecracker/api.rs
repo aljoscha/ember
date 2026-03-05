@@ -143,7 +143,9 @@ impl FirecrackerClient {
 
     /// `GET /machine-config` — retrieve current machine configuration.
     pub async fn get_machine_config(&self) -> anyhow::Result<MachineConfig> {
-        let bytes = self.send::<()>(Method::GET, "/machine-config", None).await?;
+        let bytes = self
+            .send::<()>(Method::GET, "/machine-config", None)
+            .await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -202,9 +204,7 @@ impl FirecrackerClient {
             let message = serde_json::from_slice::<FaultResponse>(&bytes)
                 .map(|f| f.fault_message)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&bytes).into_owned());
-            anyhow::bail!(
-                "firecracker {method} {path} returned {status}: {message}"
-            );
+            anyhow::bail!("firecracker {method} {path} returned {status}: {message}");
         }
 
         Ok(bytes)

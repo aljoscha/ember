@@ -109,7 +109,9 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
         assert_eq!(config.disk_size.unwrap().to_gib().unwrap(), 4);
         assert_eq!(
             config.kernel,
-            Some(crate::kernel::KernelSpec::Path(PathBuf::from("/path/to/vmlinux")))
+            Some(crate::kernel::KernelSpec::Path(PathBuf::from(
+                "/path/to/vmlinux"
+            )))
         );
         assert_eq!(
             config.network.as_ref().unwrap().subnet.as_deref(),

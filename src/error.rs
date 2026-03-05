@@ -93,7 +93,10 @@ impl Error {
     /// Create a `Command` error from a finished `std::process::Output`.
     ///
     /// Returns `Ok(output)` if the command succeeded.
-    pub fn check_command(command: &str, output: std::process::Output) -> Result<std::process::Output> {
+    pub fn check_command(
+        command: &str,
+        output: std::process::Output,
+    ) -> Result<std::process::Output> {
         if output.status.success() {
             return Ok(output);
         }

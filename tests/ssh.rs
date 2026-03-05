@@ -46,10 +46,7 @@ fn create_loop_device_sized(dir: &Path, size: &str) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -58,9 +55,7 @@ fn detach_loop_device(dev: &str) {
 }
 
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 fn ember_bin() -> PathBuf {
@@ -121,7 +116,10 @@ fn setup_pool_init_and_build_ubuntu(
         "init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let dockerfile = format!("{}/images/Dockerfile.ubuntu-slim", env!("CARGO_MANIFEST_DIR"));
+    let dockerfile = format!(
+        "{}/images/Dockerfile.ubuntu-slim",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
@@ -236,11 +234,16 @@ fn ssh_private_key_path() -> Option<PathBuf> {
 fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, String> {
     let output = Command::new("ssh")
         .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=5",
-            "-o", "BatchMode=yes",
-            "-o", "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "LogLevel=ERROR",
             "-i",
         ])
         .arg(key_path)
@@ -258,8 +261,8 @@ fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, St
 
 fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
     let delays_ms = [
-        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000,
-        5000, 5000, 5000, 5000, 5000, 5000,
+        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000,
+        5000,
     ];
 
     for (i, delay) in delays_ms.iter().enumerate() {
@@ -328,12 +331,19 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
 
     // Create VM.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "create", vm_name,
-        "--image", "ubuntu-slim",
-        "--cpus", "1",
-        "--memory", "512M",
-        "--kernel", kernel,
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        vm_name,
+        "--image",
+        "ubuntu-slim",
+        "--cpus",
+        "1",
+        "--memory",
+        "512M",
+        "--kernel",
+        kernel,
         "--no-start",
     ]);
     assert!(
@@ -353,14 +363,17 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
 
     // Extract guest IP from inspect.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", vm_name,
-        "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        vm_name,
+        "--format",
+        "json",
     ]);
     assert!(output.status.success());
-    let json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
-            .expect("failed to parse inspect JSON");
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .expect("failed to parse inspect JSON");
     let guest_ip = json["network"]["guest_ip"]
         .as_str()
         .expect("expected guest_ip")
@@ -405,9 +418,13 @@ fn exec_command_returns_stdout() {
 
     // Run a simple command via `ember exec`.
     let output = ember(&[
-        "--state-dir", state,
-        "exec", "execvm",
-        "--", "echo", "hello-from-ember",
+        "--state-dir",
+        state,
+        "exec",
+        "execvm",
+        "--",
+        "echo",
+        "hello-from-ember",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -422,11 +439,7 @@ fn exec_command_returns_stdout() {
     eprintln!("ember exec echo: {}", stdout.trim());
 
     // Run a command that produces meaningful output.
-    let output = ember(&[
-        "--state-dir", state,
-        "exec", "execvm",
-        "--", "uname", "-r",
-    ]);
+    let output = ember(&["--state-dir", state, "exec", "execvm", "--", "uname", "-r"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -441,11 +454,7 @@ fn exec_command_returns_stdout() {
     eprintln!("Guest kernel: {kernel_version}");
 
     // Run a command that fails — verify non-zero exit code is propagated.
-    let output = ember(&[
-        "--state-dir", state,
-        "exec", "execvm",
-        "--", "false",
-    ]);
+    let output = ember(&["--state-dir", state, "exec", "execvm", "--", "false"]);
     assert!(
         !output.status.success(),
         "expected 'false' command to return non-zero exit code"
@@ -472,7 +481,8 @@ fn cp_upload_and_download() {
 
     // Upload: local → VM.
     let output = ember(&[
-        "--state-dir", state,
+        "--state-dir",
+        state,
         "cp",
         local_src.to_str().unwrap(),
         "cpvm:/tmp/uploaded.txt",
@@ -486,9 +496,13 @@ fn cp_upload_and_download() {
 
     // Verify the file arrived on the guest via exec.
     let output = ember(&[
-        "--state-dir", state,
-        "exec", "cpvm",
-        "--", "cat", "/tmp/uploaded.txt",
+        "--state-dir",
+        state,
+        "exec",
+        "cpvm",
+        "--",
+        "cat",
+        "/tmp/uploaded.txt",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -506,7 +520,8 @@ fn cp_upload_and_download() {
     // Download: VM → local.
     let local_dst = tmp_dir.path().join("downloaded.txt");
     let output = ember(&[
-        "--state-dir", state,
+        "--state-dir",
+        state,
         "cp",
         "cpvm:/tmp/uploaded.txt",
         local_dst.to_str().unwrap(),
@@ -520,10 +535,7 @@ fn cp_upload_and_download() {
 
     // Verify downloaded content matches.
     let downloaded = std::fs::read_to_string(&local_dst).unwrap();
-    assert_eq!(
-        downloaded, test_content,
-        "downloaded file content mismatch"
-    );
+    assert_eq!(downloaded, test_content, "downloaded file content mismatch");
     eprintln!("Download verified: content matches locally");
 
     eprintln!("cp test complete.");
@@ -546,10 +558,13 @@ fn exec_on_stopped_vm_fails() {
 
     // Init.
     let output = ember(&[
-        "--state-dir", state_dir.to_str().unwrap(),
+        "--state-dir",
+        state_dir.to_str().unwrap(),
         "init",
-        "--pool", &pool,
-        "--device", &loop_dev,
+        "--pool",
+        &pool,
+        "--device",
+        &loop_dev,
     ]);
     assert!(
         output.status.success(),
@@ -559,8 +574,11 @@ fn exec_on_stopped_vm_fails() {
 
     // Pull alpine.
     let output = ember(&[
-        "--state-dir", state_dir.to_str().unwrap(),
-        "image", "pull", "alpine:latest",
+        "--state-dir",
+        state_dir.to_str().unwrap(),
+        "image",
+        "pull",
+        "alpine:latest",
     ]);
     assert!(
         output.status.success(),
@@ -575,10 +593,15 @@ fn exec_on_stopped_vm_fails() {
     // Create VM (not started).
     let state = state_dir.to_str().unwrap();
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "create", "stoppedvm",
-        "--image", "alpine:latest",
-        "--kernel", kernel.to_str().unwrap(),
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "stoppedvm",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel.to_str().unwrap(),
         "--no-start",
     ]);
     assert!(
@@ -589,9 +612,13 @@ fn exec_on_stopped_vm_fails() {
 
     // Try exec on a non-running VM — should fail.
     let output = ember(&[
-        "--state-dir", state,
-        "exec", "stoppedvm",
-        "--", "echo", "hello",
+        "--state-dir",
+        state,
+        "exec",
+        "stoppedvm",
+        "--",
+        "echo",
+        "hello",
     ]);
     assert!(
         !output.status.success(),
@@ -607,7 +634,8 @@ fn exec_on_stopped_vm_fails() {
     let local_file = tmp.path().join("test.txt");
     std::fs::write(&local_file, "test").unwrap();
     let output = ember(&[
-        "--state-dir", state,
+        "--state-dir",
+        state,
         "cp",
         local_file.to_str().unwrap(),
         "stoppedvm:/tmp/test.txt",

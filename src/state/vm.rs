@@ -145,15 +145,12 @@ pub fn load_running_with_network(
             name
         );
     }
-    let network = metadata
-        .network
-        .clone()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "vm '{}' has no network configured — cannot connect via SSH",
-                name
-            )
-        })?;
+    let network = metadata.network.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "vm '{}' has no network configured — cannot connect via SSH",
+            name
+        )
+    })?;
     Ok((metadata, network))
 }
 
@@ -162,21 +159,19 @@ pub fn load_running_with_network(
 /// Returns an error if the VM is currently running or paused.
 /// `operation` is a human-readable verb like "resizing" or "restoring a snapshot"
 /// used in the error message.
-pub fn require_stopped(store: &StateStore, name: &str, operation: &str) -> anyhow::Result<VmMetadata> {
+pub fn require_stopped(
+    store: &StateStore,
+    name: &str,
+    operation: &str,
+) -> anyhow::Result<VmMetadata> {
     let metadata = load(store, name)?;
     match metadata.status {
         VmStatus::Created | VmStatus::Stopped => {}
         VmStatus::Running => {
-            anyhow::bail!(
-                "vm '{}' is running — stop it before {operation}",
-                name
-            );
+            anyhow::bail!("vm '{}' is running — stop it before {operation}", name);
         }
         VmStatus::Paused => {
-            anyhow::bail!(
-                "vm '{}' is paused — stop it before {operation}",
-                name
-            );
+            anyhow::bail!("vm '{}' is paused — stop it before {operation}", name);
         }
     }
     Ok(metadata)
@@ -447,10 +442,7 @@ mod tests {
         save(&store, &vm).unwrap();
         let loaded = load(&store, "netvm").unwrap();
         assert_eq!(loaded, vm);
-        assert_eq!(
-            loaded.network.as_ref().unwrap().guest_ip,
-            "10.100.0.2"
-        );
+        assert_eq!(loaded.network.as_ref().unwrap().guest_ip, "10.100.0.2");
     }
 
     #[test]

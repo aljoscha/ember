@@ -90,8 +90,13 @@ pub fn rollback(dataset: &str, name: &str) -> Result<()> {
 pub fn list(dataset: &str) -> Result<Vec<SnapshotInfo>> {
     let output = Command::new("zfs")
         .args([
-            "list", "-Hp", "-r", "-t", "snapshot",
-            "-o", "name,used,refer,creation",
+            "list",
+            "-Hp",
+            "-r",
+            "-t",
+            "snapshot",
+            "-o",
+            "name,used,refer,creation",
             dataset,
         ])
         .output()
@@ -164,10 +169,7 @@ mod tests {
         let dataset = "tank/ember/images/library-alpine-latest";
         let name = "base";
         let snapshot = format!("{dataset}@{name}");
-        assert_eq!(
-            snapshot,
-            "tank/ember/images/library-alpine-latest@base"
-        );
+        assert_eq!(snapshot, "tank/ember/images/library-alpine-latest@base");
     }
 
     #[test]

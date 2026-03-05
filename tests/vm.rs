@@ -55,10 +55,7 @@ fn create_loop_device_sized(dir: &std::path::Path, size: &str) -> (String, PathB
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -69,9 +66,7 @@ fn detach_loop_device(dev: &str) {
 
 /// Destroy a ZFS pool (best-effort cleanup).
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 /// Path to the ember binary built by cargo.
@@ -112,7 +107,10 @@ fn assert_dataset_exists(dataset: &str) {
         .args(["list", "-H", dataset])
         .output()
         .expect("failed to run zfs");
-    assert!(output.status.success(), "expected dataset '{dataset}' to exist");
+    assert!(
+        output.status.success(),
+        "expected dataset '{dataset}' to exist"
+    );
 }
 
 /// Assert that a ZFS dataset does NOT exist.
@@ -238,7 +236,10 @@ fn setup_pool_init_and_build_ubuntu(
     );
 
     // Build ubuntu-slim image (includes systemd + sshd, no dev tooling).
-    let dockerfile = format!("{}/images/Dockerfile.ubuntu-slim", env!("CARGO_MANIFEST_DIR"));
+    let dockerfile = format!(
+        "{}/images/Dockerfile.ubuntu-slim",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let output = ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
@@ -660,14 +661,7 @@ fn full_vm_lifecycle_start_stop_delete() {
     );
 
     // -- Stop --
-    let stop_output = ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "stop",
-        "lifecyclevm",
-        "--force",
-    ]);
+    let stop_output = ember(&["--state-dir", state, "vm", "stop", "lifecyclevm", "--force"]);
     let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
     let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
     assert!(
@@ -786,14 +780,7 @@ fn delete_running_vm_requires_force() {
     );
 
     // Delete with --force — should succeed and kill the process.
-    let force_output = ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "delete",
-        "runningvm",
-        "--force",
-    ]);
+    let force_output = ember(&["--state-dir", state, "vm", "delete", "runningvm", "--force"]);
     let force_stdout = String::from_utf8_lossy(&force_output.stdout);
     let force_stderr = String::from_utf8_lossy(&force_output.stderr);
     assert!(
@@ -841,11 +828,16 @@ fn ssh_private_key_path() -> Option<PathBuf> {
 fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, String> {
     let output = Command::new("ssh")
         .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=5",
-            "-o", "BatchMode=yes",
-            "-o", "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "LogLevel=ERROR",
             "-i",
         ])
         .arg(key_path)
@@ -867,8 +859,8 @@ fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, St
 /// Returns `true` if SSH became reachable, `false` on timeout.
 fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
     let delays_ms = [
-        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000,
-        5000, 5000, 5000, 5000, 5000, 5000,
+        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000,
+        5000,
     ];
 
     for (i, delay) in delays_ms.iter().enumerate() {
@@ -1011,14 +1003,8 @@ fn networking_ssh_and_internet() {
         tap_device.starts_with("em-"),
         "TAP device should start with 'em-', got: {tap_device}"
     );
-    assert!(
-        !guest_ip.is_empty(),
-        "guest_ip should not be empty"
-    );
-    assert!(
-        !host_ip.is_empty(),
-        "host_ip should not be empty"
-    );
+    assert!(!guest_ip.is_empty(), "guest_ip should not be empty");
+    assert!(!host_ip.is_empty(), "host_ip should not be empty");
 
     eprintln!("Network info: TAP={tap_device} host={host_ip} guest={guest_ip}");
 
@@ -1138,14 +1124,7 @@ fn networking_ssh_and_internet() {
     eprintln!("Guest internet access verified (curl http://example.com → {http_code})");
 
     // -- Stop VM --
-    let stop_output = ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "stop",
-        "netvm",
-        "--force",
-    ]);
+    let stop_output = ember(&["--state-dir", state, "vm", "stop", "netvm", "--force"]);
     let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
     let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
     assert!(
@@ -1344,9 +1323,8 @@ fn pause_resume_lifecycle() {
         "json",
     ]);
     assert!(inspect1.status.success());
-    let json1: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect1.stdout))
-            .expect("failed to parse inspect JSON");
+    let json1: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect1.stdout))
+        .expect("failed to parse inspect JSON");
     assert_eq!(json1["status"], "running");
     let pid = json1["pid"]
         .as_u64()
@@ -1376,9 +1354,8 @@ fn pause_resume_lifecycle() {
         "json",
     ]);
     assert!(inspect2.status.success());
-    let json2: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-            .expect("failed to parse inspect JSON after pause");
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after pause");
     assert_eq!(
         json2["status"], "paused",
         "expected status 'paused', got: {}",
@@ -1432,9 +1409,8 @@ fn pause_resume_lifecycle() {
         "json",
     ]);
     assert!(inspect3.status.success());
-    let json3: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect3.stdout))
-            .expect("failed to parse inspect JSON after resume");
+    let json3: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect3.stdout))
+        .expect("failed to parse inspect JSON after resume");
     assert_eq!(
         json3["status"], "running",
         "expected status 'running' after resume, got: {}",
@@ -1459,14 +1435,7 @@ fn pause_resume_lifecycle() {
     );
 
     // -- Stop and cleanup --
-    let stop_output = ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "stop",
-        "prvm",
-        "--force",
-    ]);
+    let stop_output = ember(&["--state-dir", state, "vm", "stop", "prvm", "--force"]);
     assert!(
         stop_output.status.success(),
         "vm stop failed: {}",
@@ -1544,9 +1513,8 @@ fn stop_paused_vm() {
         "--format",
         "json",
     ]);
-    let json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
-            .expect("failed to parse inspect JSON");
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
     let pid = json["pid"].as_u64().expect("expected numeric PID");
 
     // Pause the VM.
@@ -1558,14 +1526,7 @@ fn stop_paused_vm() {
     );
 
     // Stop the paused VM with --force.
-    let stop_output = ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "stop",
-        "spvm",
-        "--force",
-    ]);
+    let stop_output = ember(&["--state-dir", state, "vm", "stop", "spvm", "--force"]);
     let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
     let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
     assert!(
@@ -1590,9 +1551,8 @@ fn stop_paused_vm() {
         "json",
     ]);
     assert!(inspect2.status.success());
-    let json2: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-            .expect("failed to parse inspect JSON after stop");
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after stop");
     assert_eq!(json2["status"], "stopped");
 
     // Cleanup.

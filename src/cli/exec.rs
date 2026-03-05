@@ -53,7 +53,10 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn shell_escape_join(args: &[String]) -> String {
     args.iter()
         .map(|arg| {
-            if arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c)) {
+            if arg.is_empty()
+                || arg
+                    .contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c))
+            {
                 crate::ssh::copy::shell_quote(arg)
             } else {
                 arg.clone()
@@ -87,7 +90,11 @@ mod tests {
 
     #[test]
     fn command_with_special_chars() {
-        let args = vec!["bash".to_string(), "-c".to_string(), "echo $HOME".to_string()];
+        let args = vec![
+            "bash".to_string(),
+            "-c".to_string(),
+            "echo $HOME".to_string(),
+        ];
         assert_eq!(shell_escape_join(&args), "bash -c 'echo $HOME'");
     }
 

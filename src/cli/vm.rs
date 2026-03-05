@@ -272,13 +272,17 @@ fn resolve_create_config(
         .to_gib()
         .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
 
-    let kernel = args.kernel.clone().or_else(|| yaml.and_then(|c| c.kernel.clone()));
+    let kernel = args
+        .kernel
+        .clone()
+        .or_else(|| yaml.and_then(|c| c.kernel.clone()));
 
     let boot_args = yaml.and_then(|c| c.boot_args.clone());
 
-    let network = args.network.clone().or_else(|| {
-        yaml.and_then(|c| c.network.as_ref().and_then(|n| n.subnet.clone()))
-    });
+    let network = args
+        .network
+        .clone()
+        .or_else(|| yaml.and_then(|c| c.network.as_ref().and_then(|n| n.subnet.clone())));
 
     let ssh_user = yaml.and_then(|c| c.ssh.as_ref().and_then(|s| s.user.clone()));
     let ssh_key = yaml.and_then(|c| {
@@ -412,7 +416,12 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     rollback.commit();
 
     if !resolved.no_start {
-        start(&StartArgs { name: resolved.name.clone() }, state_dir)?;
+        start(
+            &StartArgs {
+                name: resolved.name.clone(),
+            },
+            state_dir,
+        )?;
     }
 
     Ok(())
@@ -467,10 +476,7 @@ fn create_post_clone(
     let kernel_path = ensure_kernel(&resolved.kernel, global_config, store)?;
 
     // Use YAML SSH overrides if provided, otherwise use auto-detected values.
-    let ssh_user = resolved
-        .ssh_user
-        .clone()
-        .unwrap_or(detected_ssh_user);
+    let ssh_user = resolved.ssh_user.clone().unwrap_or(detected_ssh_user);
     let ssh_key = resolved.ssh_key.clone().unwrap_or_else(|| {
         image::inject::default_ssh_privkey_path()
             .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519"))
@@ -531,13 +537,17 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     let cpus = args.cpus.unwrap_or(source.cpus);
 
     let memory_mib = match args.memory {
-        Some(m) => m.to_mib().map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?,
+        Some(m) => m
+            .to_mib()
+            .map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?,
         None => source.memory_mib,
     };
 
     let disk_size_gib = match args.disk_size {
         Some(d) => {
-            let gib = d.to_gib().map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
+            let gib = d
+                .to_gib()
+                .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
             if gib < source.disk_size_gib {
                 anyhow::bail!(
                     "cannot shrink disk: requested {} GiB but source is {} GiB",
@@ -629,7 +639,12 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("VM '{}' forked from '{}'.", args.name, args.source);
 
     if !args.no_start {
-        start(&StartArgs { name: args.name.clone() }, state_dir)?;
+        start(
+            &StartArgs {
+                name: args.name.clone(),
+            },
+            state_dir,
+        )?;
     }
 
     Ok(())
@@ -678,7 +693,10 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     };
 
     // Allocate a /30 IP block for this VM.
-    let subnet = metadata.subnet.as_deref().unwrap_or(network::ip::DEFAULT_SUBNET);
+    let subnet = metadata
+        .subnet
+        .as_deref()
+        .unwrap_or(network::ip::DEFAULT_SUBNET);
     println!("Allocating network address...");
     let allocation = network::ip::allocate(&store, subnet, &metadata.name)?;
     println!(
@@ -791,10 +809,7 @@ fn start_configure(
     // so we only get servers reachable through the VM's NAT path.
     let wan_iface = net_info.wan_iface.as_deref().unwrap_or("eth0");
     let dns_servers = network::dns::detect_nameservers(wan_iface);
-    println!(
-        "Using DNS servers: {}",
-        dns_servers.join(", ")
-    );
+    println!("Using DNS servers: {}", dns_servers.join(", "));
 
     // Build VM configuration with networking.
     let mut vm_config = firecracker::config::VmConfig::new(
@@ -875,8 +890,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
         // Wait up to 10 seconds for the process to exit.
         println!("Waiting for VM to shut down (up to 10s)...");
-        let exited =
-            firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
+        let exited = firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
         if !exited {
             println!("VM did not exit in time, sending SIGKILL...");
             firecracker::process::kill(pid)?;
@@ -1165,16 +1179,17 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
     }
 
     // Wait for udev to finish processing device events.
-    let _ = ProcessCommand::new("udevadm")
-        .arg("settle")
-        .status();
+    let _ = ProcessCommand::new("udevadm").arg("settle").status();
 
     // Destroy the ZFS zvol and all snapshots under it.
     println!("Destroying ZFS zvol '{}'...", metadata.zvol_path);
     match zfs::volume::destroy(&metadata.zvol_path, true) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("Warning: failed to destroy zvol '{}': {e}", metadata.zvol_path);
+            eprintln!(
+                "Warning: failed to destroy zvol '{}': {e}",
+                metadata.zvol_path
+            );
         }
     }
 
@@ -1218,12 +1233,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             for vm in &vms {
                 println!(
                     "{:<20} {:<10} {:<40} {:>4} {:>4}Mi {:>3}Gi",
-                    vm.name,
-                    vm.status,
-                    vm.image,
-                    vm.cpus,
-                    vm.memory_mib,
-                    vm.disk_size_gib,
+                    vm.name, vm.status, vm.image, vm.cpus, vm.memory_mib, vm.disk_size_gib,
                 );
             }
         }
@@ -1292,7 +1302,10 @@ fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<String> {
 
     let (user, home_relative) = image::inject::detect_ssh_user(rootfs_dir);
 
-    println!("Injecting SSH key from {} (user: {user})...", pubkey_path.display());
+    println!(
+        "Injecting SSH key from {} (user: {user})...",
+        pubkey_path.display()
+    );
     image::inject::inject_ssh_authorized_keys_for_home(rootfs_dir, &pubkey_path, home_relative)?;
 
     Ok(user.to_string())

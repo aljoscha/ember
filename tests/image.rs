@@ -43,10 +43,7 @@ fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -57,9 +54,7 @@ fn detach_loop_device(dev: &str) {
 
 /// Destroy a ZFS pool (best-effort cleanup).
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 /// Path to the ember binary built by cargo.
@@ -100,7 +95,10 @@ fn assert_dataset_exists(dataset: &str) {
         .args(["list", "-H", dataset])
         .output()
         .expect("failed to run zfs");
-    assert!(output.status.success(), "expected dataset '{dataset}' to exist");
+    assert!(
+        output.status.success(),
+        "expected dataset '{dataset}' to exist"
+    );
 }
 
 /// Assert that a ZFS snapshot exists.
@@ -128,10 +126,7 @@ fn assert_dataset_absent(dataset: &str) {
 }
 
 /// Set up a ZFS pool and run `ember init`. Returns (pool_name, state_dir, cleanup_guard).
-fn setup_pool_and_init(
-    test_name: &str,
-    tmp: &tempfile::TempDir,
-) -> (String, PathBuf, PoolCleanup) {
+fn setup_pool_and_init(test_name: &str, tmp: &tempfile::TempDir) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
     let state_dir = tmp.path().join("state");
     let (loop_dev, _img) = create_loop_device(tmp.path());
@@ -214,12 +209,7 @@ fn list_shows_pulled_image() {
     );
 
     // Table output should contain the image.
-    let list_output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "image",
-        "list",
-    ]);
+    let list_output = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(
         list_output.status.success(),
@@ -254,10 +244,7 @@ fn list_shows_pulled_image() {
         .expect("expected 'images' array in JSON output");
     assert_eq!(images.len(), 1, "expected exactly one image in list");
     assert_eq!(images[0]["local_name"], "library-alpine-latest");
-    assert_eq!(
-        images[0]["reference"],
-        "docker.io/library/alpine:latest"
-    );
+    assert_eq!(images[0]["reference"], "docker.io/library/alpine:latest");
 }
 
 #[test]
@@ -302,12 +289,7 @@ fn delete_removes_image_and_zvol() {
     assert_dataset_absent(&zvol);
 
     // Image list should be empty.
-    let list_output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "image",
-        "list",
-    ]);
+    let list_output = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(
         list_stdout.contains("No images found"),

@@ -136,9 +136,7 @@ pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAll
         })?;
 
     let allocation = block_ips(base, block_index);
-    allocs
-        .allocations
-        .insert(block_index, vm_name.to_string());
+    allocs.allocations.insert(block_index, vm_name.to_string());
     store.write(&path, &allocs)?;
 
     Ok(allocation)

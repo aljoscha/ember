@@ -14,18 +14,10 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 
 /// Common SSH public key filenames, in preference order.
-const SSH_PUBKEY_NAMES: &[&str] = &[
-    "id_ed25519.pub",
-    "id_ecdsa.pub",
-    "id_rsa.pub",
-];
+const SSH_PUBKEY_NAMES: &[&str] = &["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"];
 
 /// Common SSH private key filenames, in preference order.
-const SSH_PRIVKEY_NAMES: &[&str] = &[
-    "id_ed25519",
-    "id_ecdsa",
-    "id_rsa",
-];
+const SSH_PRIVKEY_NAMES: &[&str] = &["id_ed25519", "id_ecdsa", "id_rsa"];
 
 /// Return the default SSH public key path.
 ///
@@ -109,13 +101,11 @@ pub fn inject_ssh_authorized_keys_for_home(
         path: authorized_keys_path.clone(),
         source: e,
     })?;
-    fs::set_permissions(
-        &authorized_keys_path,
-        fs::Permissions::from_mode(0o600),
-    )
-    .map_err(|e| Error::Io {
-        path: authorized_keys_path.clone(),
-        source: e,
+    fs::set_permissions(&authorized_keys_path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+        Error::Io {
+            path: authorized_keys_path.clone(),
+            source: e,
+        }
     })?;
 
     // For non-root users, chown .ssh/ and authorized_keys to match the home
@@ -152,11 +142,15 @@ pub fn detect_ssh_user(rootfs_dir: &Path) -> (&'static str, &'static str) {
 
 /// Set ownership of a path (file or directory).
 fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
-    nix::unistd::chown(path, Some(nix::unistd::Uid::from_raw(uid)), Some(nix::unistd::Gid::from_raw(gid)))
-        .map_err(|e| Error::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::from_raw_os_error(e as i32),
-        })
+    nix::unistd::chown(
+        path,
+        Some(nix::unistd::Uid::from_raw(uid)),
+        Some(nix::unistd::Gid::from_raw(gid)),
+    )
+    .map_err(|e| Error::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::from_raw_os_error(e as i32),
+    })
 }
 
 /// Inject `/etc/resolv.conf` into the rootfs for DNS resolution.
@@ -283,7 +277,10 @@ mod tests {
 
         let ak = rootfs.path().join("root/.ssh/authorized_keys");
         assert!(ak.exists());
-        assert_eq!(fs::read_to_string(&ak).unwrap(), "ssh-ed25519 AAAA... user@host\n");
+        assert_eq!(
+            fs::read_to_string(&ak).unwrap(),
+            "ssh-ed25519 AAAA... user@host\n"
+        );
     }
 
     #[test]

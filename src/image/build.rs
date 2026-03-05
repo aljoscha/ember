@@ -82,9 +82,7 @@ fn detect_container_tool() -> Result<String> {
 pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> {
     let tool = detect_container_tool()?;
     let tag = format!("ember-build-{name}");
-    let context_dir = dockerfile
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let context_dir = dockerfile.parent().unwrap_or_else(|| Path::new("."));
 
     // Step 1: Build the container image.
     let output = Command::new(&tool)

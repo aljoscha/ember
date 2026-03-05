@@ -91,9 +91,7 @@ pub fn status(pool: &str) -> Result<PoolInfo> {
     let fields: Vec<&str> = line.split('\t').collect();
 
     if fields.len() < 5 {
-        return Err(Error::Zfs(format!(
-            "unexpected zpool list output: {line}"
-        )));
+        return Err(Error::Zfs(format!("unexpected zpool list output: {line}")));
     }
 
     Ok(PoolInfo {
@@ -114,8 +112,10 @@ pub fn create(pool: &str, device: &str) -> Result<()> {
         .args([
             "create",
             "-f",
-            "-o", "ashift=12",
-            "-O", "mountpoint=none",
+            "-o",
+            "ashift=12",
+            "-O",
+            "mountpoint=none",
             pool,
             device,
         ])
@@ -149,9 +149,6 @@ mod tests {
     fn pool_health_display() {
         assert_eq!(PoolHealth::Online.to_string(), "ONLINE");
         assert_eq!(PoolHealth::Degraded.to_string(), "DEGRADED");
-        assert_eq!(
-            PoolHealth::Unknown("FOO".to_string()).to_string(),
-            "FOO"
-        );
+        assert_eq!(PoolHealth::Unknown("FOO".to_string()).to_string(), "FOO");
     }
 }

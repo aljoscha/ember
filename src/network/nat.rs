@@ -146,13 +146,14 @@ fn iptables(args: &[&str]) -> Result<()> {
 /// Silently ignores "rule doesn't exist" errors for idempotent cleanup.
 fn iptables_delete(args: &[&str]) -> Result<()> {
     loop {
-        let output = Command::new("iptables")
-            .args(args)
-            .output()
-            .map_err(|e| Error::CommandExec {
-                command: "iptables".into(),
-                source: e,
-            })?;
+        let output =
+            Command::new("iptables")
+                .args(args)
+                .output()
+                .map_err(|e| Error::CommandExec {
+                    command: "iptables".into(),
+                    source: e,
+                })?;
 
         if output.status.success() {
             // Deleted one instance — loop to catch duplicates.
@@ -160,8 +161,7 @@ fn iptables_delete(args: &[&str]) -> Result<()> {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does a matching rule exist")
-            || stderr.contains("No chain/target/match")
+        if stderr.contains("does a matching rule exist") || stderr.contains("No chain/target/match")
         {
             // No more matching rules — done.
             return Ok(());

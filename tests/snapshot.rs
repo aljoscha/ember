@@ -44,10 +44,7 @@ fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -56,9 +53,7 @@ fn detach_loop_device(dev: &str) {
 }
 
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 fn ember_bin() -> PathBuf {
@@ -225,7 +220,11 @@ where
         .arg(mount_path)
         .status()
         .expect("failed to run umount");
-    assert!(status.success(), "failed to unmount {}", mount_path.display());
+    assert!(
+        status.success(),
+        "failed to unmount {}",
+        mount_path.display()
+    );
 
     result
 }
@@ -245,8 +244,12 @@ fn snapshot_create_list_delete() {
 
     // -- Create snapshot --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "snapvm1", "snap1",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "snapvm1",
+        "snap1",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -258,8 +261,12 @@ fn snapshot_create_list_delete() {
 
     // -- Create a second snapshot --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "snapvm1", "snap2",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "snapvm1",
+        "snap2",
     ]);
     assert!(
         output.status.success(),
@@ -269,10 +276,7 @@ fn snapshot_create_list_delete() {
     assert_snapshot_exists(&format!("{vm_zvol}@snap2"));
 
     // -- List snapshots --
-    let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "list", "snapvm1",
-    ]);
+    let output = ember(&["--state-dir", state, "snapshot", "list", "snapvm1"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     assert!(
@@ -291,17 +295,19 @@ fn snapshot_create_list_delete() {
 
     // -- JSON list --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "list", "snapvm1",
-        "--format", "json",
+        "--state-dir",
+        state,
+        "snapshot",
+        "list",
+        "snapvm1",
+        "--format",
+        "json",
     ]);
     let json_stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     let parsed: serde_json::Value = serde_json::from_str(&json_stdout)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {json_stdout}"));
-    let snapshots = parsed
-        .as_array()
-        .expect("expected JSON array of snapshots");
+    let snapshots = parsed.as_array().expect("expected JSON array of snapshots");
     assert_eq!(
         snapshots.len(),
         2,
@@ -310,8 +316,12 @@ fn snapshot_create_list_delete() {
 
     // -- Delete snap1 --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "delete", "snapvm1", "snap1",
+        "--state-dir",
+        state,
+        "snapshot",
+        "delete",
+        "snapvm1",
+        "snap1",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -325,8 +335,12 @@ fn snapshot_create_list_delete() {
 
     // -- Delete snap2 --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "delete", "snapvm1", "snap2",
+        "--state-dir",
+        state,
+        "snapshot",
+        "delete",
+        "snapvm1",
+        "snap2",
     ]);
     assert!(
         output.status.success(),
@@ -361,8 +375,12 @@ fn snapshot_restore_reverts_changes() {
 
     // -- Create snapshot --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "restorevm", "checkpoint",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "restorevm",
+        "checkpoint",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -394,8 +412,12 @@ fn snapshot_restore_reverts_changes() {
 
     // -- Restore snapshot --
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "restore", "restorevm", "checkpoint",
+        "--state-dir",
+        state,
+        "snapshot",
+        "restore",
+        "restorevm",
+        "checkpoint",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -433,8 +455,12 @@ fn snapshot_create_duplicate_fails() {
 
     // Create first snapshot.
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "dupvm", "mysnap",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "dupvm",
+        "mysnap",
     ]);
     assert!(
         output.status.success(),
@@ -444,8 +470,12 @@ fn snapshot_create_duplicate_fails() {
 
     // Creating with the same name should fail.
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "dupvm", "mysnap",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "dupvm",
+        "mysnap",
     ]);
     assert!(
         !output.status.success(),
@@ -466,10 +496,7 @@ fn snapshot_create_base_name_rejected() {
     let (_pool, state_dir, _cleanup) = setup_pool_and_vm("snapbase", "basevm", &tmp);
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "basevm", "base",
-    ]);
+    let output = ember(&["--state-dir", state, "snapshot", "create", "basevm", "base"]);
     assert!(
         !output.status.success(),
         "expected snapshot create 'base' to be rejected"
@@ -490,8 +517,12 @@ fn snapshot_delete_base_rejected() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "delete", "delbasevm", "base",
+        "--state-dir",
+        state,
+        "snapshot",
+        "delete",
+        "delbasevm",
+        "base",
     ]);
     assert!(
         !output.status.success(),
@@ -538,8 +569,12 @@ fn snapshot_on_nonexistent_vm_fails() {
 
     // snapshot create on non-existent VM.
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "create", "nosuchvm", "snap1",
+        "--state-dir",
+        state,
+        "snapshot",
+        "create",
+        "nosuchvm",
+        "snap1",
     ]);
     assert!(
         !output.status.success(),
@@ -547,10 +582,7 @@ fn snapshot_on_nonexistent_vm_fails() {
     );
 
     // snapshot list on non-existent VM.
-    let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "list", "nosuchvm",
-    ]);
+    let output = ember(&["--state-dir", state, "snapshot", "list", "nosuchvm"]);
     assert!(
         !output.status.success(),
         "expected snapshot list on non-existent VM to fail"
@@ -558,8 +590,12 @@ fn snapshot_on_nonexistent_vm_fails() {
 
     // snapshot restore on non-existent VM.
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "restore", "nosuchvm", "snap1",
+        "--state-dir",
+        state,
+        "snapshot",
+        "restore",
+        "nosuchvm",
+        "snap1",
     ]);
     assert!(
         !output.status.success(),
@@ -568,8 +604,12 @@ fn snapshot_on_nonexistent_vm_fails() {
 
     // snapshot delete on non-existent VM.
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "delete", "nosuchvm", "snap1",
+        "--state-dir",
+        state,
+        "snapshot",
+        "delete",
+        "nosuchvm",
+        "snap1",
     ]);
     assert!(
         !output.status.success(),
@@ -586,8 +626,12 @@ fn snapshot_restore_nonexistent_fails() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "restore", "novm", "nosuchsnap",
+        "--state-dir",
+        state,
+        "snapshot",
+        "restore",
+        "novm",
+        "nosuchsnap",
     ]);
     assert!(
         !output.status.success(),
@@ -609,8 +653,12 @@ fn snapshot_delete_nonexistent_fails() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "delete", "delnovm", "nosuchsnap",
+        "--state-dir",
+        state,
+        "snapshot",
+        "delete",
+        "delnovm",
+        "nosuchsnap",
     ]);
     assert!(
         !output.status.success(),
@@ -631,10 +679,7 @@ fn snapshot_list_empty() {
     let (_pool, state_dir, _cleanup) = setup_pool_and_vm("snapempty", "emptyvm", &tmp);
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
-        "--state-dir", state,
-        "snapshot", "list", "emptyvm",
-    ]);
+    let output = ember(&["--state-dir", state, "snapshot", "list", "emptyvm"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     // With no user snapshots (@base is hidden), should indicate no snapshots.

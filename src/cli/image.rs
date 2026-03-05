@@ -6,7 +6,7 @@ use super::init::GlobalConfig;
 use super::vm::OutputFormat;
 use crate::image;
 use crate::image::pull::ImageReference;
-use crate::image::registry::{ImageRegistry, new_build_entry, new_entry};
+use crate::image::registry::{new_build_entry, new_entry, ImageRegistry};
 use crate::state::store::StateStore;
 use crate::state::vm::{self, VmMetadata};
 use crate::zfs;
@@ -122,8 +122,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     inject_image_config(&rootfs_dir, true)?;
 
     // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
-    let (size_mib, rollback) =
-        create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
+    let (size_mib, rollback) = create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_entry(&reference, &zvol, size_mib);
@@ -174,11 +173,12 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
         None => {
             let default_path = work_dir.path().join("Dockerfile");
-            std::fs::write(&default_path, image::build::DEFAULT_DOCKERFILE)
-                .map_err(|e| crate::error::Error::Io {
+            std::fs::write(&default_path, image::build::DEFAULT_DOCKERFILE).map_err(|e| {
+                crate::error::Error::Io {
                     path: default_path.clone(),
                     source: e,
-                })?;
+                }
+            })?;
             default_path
         }
     };
@@ -192,8 +192,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     inject_image_config(&rootfs_dir, false)?;
 
     // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
-    let (size_mib, rollback) =
-        create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
+    let (size_mib, rollback) = create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
 
     // Step 5: Register in local image registry.
     let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
@@ -311,15 +310,13 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     let registry = ImageRegistry::load(&store)?;
 
     let local_name = resolve_local_name(&registry, &args.name)?;
-    let entry = registry
-        .get(&local_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "image '{}' not found locally\n\
+    let entry = registry.get(&local_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "image '{}' not found locally\n\
                  Hint: run 'ember image list' to see available images",
-                args.name,
-            )
-        })?;
+            args.name,
+        )
+    })?;
 
     match args.format {
         OutputFormat::Json => {
@@ -345,7 +342,10 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Result<()> {
     if let Some(pubkey_path) = image::inject::default_ssh_pubkey_path() {
         if pubkey_path.exists() {
-            println!("  Injecting SSH public key from {}...", pubkey_path.display());
+            println!(
+                "  Injecting SSH public key from {}...",
+                pubkey_path.display()
+            );
             image::inject::inject_ssh_authorized_keys(rootfs_dir, &pubkey_path)?;
         } else {
             println!(

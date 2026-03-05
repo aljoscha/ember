@@ -55,10 +55,7 @@ pub fn detect_nameservers(wan_iface: &str) -> Vec<String> {
     }
 
     // Last resort: hardcoded public DNS.
-    FALLBACK_NAMESERVERS
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    FALLBACK_NAMESERVERS.iter().map(|s| s.to_string()).collect()
 }
 
 /// Query DNS servers for a specific interface via `resolvectl dns`.

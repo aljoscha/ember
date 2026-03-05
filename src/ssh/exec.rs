@@ -5,7 +5,7 @@
 //! process exit code.
 
 use russh::ChannelMsg;
-use tokio::io::{AsyncWriteExt, stderr, stdout};
+use tokio::io::{stderr, stdout, AsyncWriteExt};
 
 use crate::error::Error;
 use crate::ssh::client::SshClient;

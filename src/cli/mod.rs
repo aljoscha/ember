@@ -10,7 +10,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "ember", about = "Lightweight Firecracker VM manager with ZFS-backed storage")]
+#[command(
+    name = "ember",
+    about = "Lightweight Firecracker VM manager with ZFS-backed storage"
+)]
 #[command(version)]
 pub struct Cli {
     /// Override state directory (default: /var/lib/ember)

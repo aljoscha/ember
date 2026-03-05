@@ -44,10 +44,7 @@ fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -56,9 +53,7 @@ fn detach_loop_device(dev: &str) {
 }
 
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 fn ember_bin() -> PathBuf {
@@ -240,22 +235,28 @@ where
 #[ignore]
 fn resize_stopped_vm_grows_disk() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresize", "resizevm", "1G", &tmp);
+    let (pool, state_dir, _cleanup) = setup_pool_and_vm("vmresize", "resizevm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/resizevm");
     let zvol_device = format!("/dev/zvol/{vm_zvol}");
 
     // Verify initial metadata shows 1 GiB.
     let inspect = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", "resizevm", "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "resizevm",
+        "--format",
+        "json",
     ]);
     assert!(inspect.status.success());
-    let json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
-            .expect("failed to parse inspect JSON");
-    assert_eq!(json["disk_size_gib"], 1, "initial metadata should show 1 GiB");
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
+    assert_eq!(
+        json["disk_size_gib"], 1,
+        "initial metadata should show 1 GiB"
+    );
 
     // Verify initial ZFS volsize.
     let initial_bytes = get_zvol_size_bytes(&vm_zvol);
@@ -267,9 +268,13 @@ fn resize_stopped_vm_grows_disk() {
 
     // -- Resize to 2 GiB --
     let resize_output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "resizevm",
-        "--disk-size", "2G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "resizevm",
+        "--disk-size",
+        "2G",
     ]);
     let stdout = String::from_utf8_lossy(&resize_output.stdout);
     let stderr = String::from_utf8_lossy(&resize_output.stderr);
@@ -292,13 +297,17 @@ fn resize_stopped_vm_grows_disk() {
 
     // -- Verify metadata updated --
     let inspect2 = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", "resizevm", "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "resizevm",
+        "--format",
+        "json",
     ]);
     assert!(inspect2.status.success());
-    let json2: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-            .expect("failed to parse inspect JSON after resize");
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after resize");
     assert_eq!(
         json2["disk_size_gib"], 2,
         "metadata should show 2 GiB after resize"
@@ -344,15 +353,18 @@ fn resize_stopped_vm_grows_disk() {
 #[ignore]
 fn resize_shrink_fails() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresizeshrink", "shrinkvm", "2G", &tmp);
+    let (_pool, state_dir, _cleanup) = setup_pool_and_vm("vmresizeshrink", "shrinkvm", "2G", &tmp);
     let state = state_dir.to_str().unwrap();
 
     // Try to shrink from 2 GiB to 1 GiB.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "shrinkvm",
-        "--disk-size", "1G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "shrinkvm",
+        "--disk-size",
+        "1G",
     ]);
     assert!(
         !output.status.success(),
@@ -366,9 +378,13 @@ fn resize_shrink_fails() {
 
     // Try same size.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "shrinkvm",
-        "--disk-size", "2G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "shrinkvm",
+        "--disk-size",
+        "2G",
     ]);
     assert!(
         !output.status.success(),
@@ -414,9 +430,13 @@ fn resize_nonexistent_vm_fails() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "nosuchvm",
-        "--disk-size", "16G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "nosuchvm",
+        "--disk-size",
+        "16G",
     ]);
     assert!(
         !output.status.success(),
@@ -429,16 +449,19 @@ fn resize_nonexistent_vm_fails() {
 #[ignore]
 fn resize_multiple_grows() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) =
-        setup_pool_and_vm("vmresizemulti", "multivm", "1G", &tmp);
+    let (pool, state_dir, _cleanup) = setup_pool_and_vm("vmresizemulti", "multivm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/multivm");
 
     // Resize 1 GiB → 2 GiB.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "multivm",
-        "--disk-size", "2G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "multivm",
+        "--disk-size",
+        "2G",
     ]);
     assert!(
         output.status.success(),
@@ -449,9 +472,13 @@ fn resize_multiple_grows() {
 
     // Resize 2 GiB → 4 GiB.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "resize", "multivm",
-        "--disk-size", "4G",
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "multivm",
+        "--disk-size",
+        "4G",
     ]);
     assert!(
         output.status.success(),
@@ -462,12 +489,16 @@ fn resize_multiple_grows() {
 
     // Verify metadata tracks the latest size.
     let inspect = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", "multivm", "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "multivm",
+        "--format",
+        "json",
     ]);
     assert!(inspect.status.success());
-    let json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
-            .expect("failed to parse inspect JSON");
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
     assert_eq!(json["disk_size_gib"], 4, "metadata should show 4 GiB");
 }

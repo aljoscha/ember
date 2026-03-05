@@ -282,10 +282,7 @@ pub async fn download_dir(
 ) -> Result<(), Error> {
     // Split remote path into parent and basename for tar -C.
     let remote = Path::new(remote_path);
-    let parent = remote
-        .parent()
-        .and_then(|p| p.to_str())
-        .unwrap_or("/");
+    let parent = remote.parent().and_then(|p| p.to_str()).unwrap_or("/");
     let basename = remote
         .file_name()
         .and_then(|n| n.to_str())
@@ -317,7 +314,11 @@ pub async fn download_dir(
         .await
         .map_err(|e| Error::Ssh(format!("failed to open session channel: {e}")))?;
 
-    let command = format!("tar -cf - -C {} {}", shell_quote(parent), shell_quote(basename));
+    let command = format!(
+        "tar -cf - -C {} {}",
+        shell_quote(parent),
+        shell_quote(basename)
+    );
     channel
         .exec(true, command.as_str())
         .await

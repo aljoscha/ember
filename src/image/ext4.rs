@@ -66,12 +66,13 @@ pub fn estimate_size_mib(rootfs_dir: &Path) -> Result<u64> {
     let output = Error::check_command("du -sm", output)?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let size_str = stdout.split_whitespace().next().ok_or_else(|| {
-        Error::Image("failed to parse du output".to_string())
-    })?;
-    let size_mib: u64 = size_str.parse().map_err(|_| {
-        Error::Image(format!("failed to parse rootfs size from du: {size_str}"))
-    })?;
+    let size_str = stdout
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| Error::Image("failed to parse du output".to_string()))?;
+    let size_mib: u64 = size_str
+        .parse()
+        .map_err(|_| Error::Image(format!("failed to parse rootfs size from du: {size_str}")))?;
 
     // 50% overhead for ext4 metadata + breathing room, minimum 64 MiB.
     Ok((size_mib * 3 / 2).max(64))

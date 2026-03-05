@@ -15,10 +15,7 @@ use crate::state::vm::NetworkInfo;
 pub fn cleanup(store: &StateStore, vm_name: &str, net_info: &NetworkInfo) {
     // Use the stored WAN interface (matches what was used to create the rules),
     // falling back to re-detection for backwards compatibility with older metadata.
-    let wan_iface = net_info
-        .wan_iface
-        .clone()
-        .or_else(|| wan::detect().ok());
+    let wan_iface = net_info.wan_iface.clone().or_else(|| wan::detect().ok());
     if let Some(wan_iface) = wan_iface {
         let _ = nat::remove_rules(&net_info.tap_device, &net_info.guest_ip, &wan_iface);
     }

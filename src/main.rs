@@ -11,8 +11,8 @@ pub mod state;
 pub mod zfs;
 
 use clap::Parser;
-use cli::{Cli, Command};
 use cli::vm::VmCommand;
+use cli::{Cli, Command};
 
 /// Check that the process is running as root (euid 0).
 fn require_root() -> anyhow::Result<()> {

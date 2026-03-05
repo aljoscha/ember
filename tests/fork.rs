@@ -43,10 +43,7 @@ fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -55,9 +52,7 @@ fn detach_loop_device(dev: &str) {
 }
 
 fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 fn ember_bin() -> PathBuf {
@@ -116,10 +111,7 @@ fn assert_zvol_exists(zvol: &str) {
         .args(["list", "-H", zvol])
         .output()
         .expect("failed to run zfs");
-    assert!(
-        output.status.success(),
-        "expected zvol '{zvol}' to exist"
-    );
+    assert!(output.status.success(), "expected zvol '{zvol}' to exist");
 }
 
 fn assert_zvol_absent(zvol: &str) {
@@ -225,8 +217,12 @@ fn fork_basic() {
 
     // Fork the source VM.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "source", "child",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "source",
+        "child",
         "--no-start",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -244,9 +240,13 @@ fn fork_basic() {
 
     // Inspect the forked VM — verify it inherited source's image and has forked_from set.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", "child",
-        "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "child",
+        "--format",
+        "json",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
@@ -255,10 +255,7 @@ fn fork_basic() {
 
     assert_eq!(meta["image"], "docker.io/library/alpine:latest");
     assert_eq!(meta["status"], "created");
-    assert_eq!(
-        meta["forked_from"],
-        format!("{source_zvol}@fork-child"),
-    );
+    assert_eq!(meta["forked_from"], format!("{source_zvol}@fork-child"),);
 
     eprintln!("Basic fork verified.");
 }
@@ -272,10 +269,16 @@ fn fork_with_overrides() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "src", "dst",
-        "--cpus", "4",
-        "--memory", "1G",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "src",
+        "dst",
+        "--cpus",
+        "4",
+        "--memory",
+        "1G",
         "--no-start",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -287,9 +290,13 @@ fn fork_with_overrides() {
 
     // Inspect and verify overrides took effect.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "inspect", "dst",
-        "--format", "json",
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "dst",
+        "--format",
+        "json",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
@@ -315,8 +322,12 @@ fn fork_delete_cleans_up_snapshot() {
 
     // Fork the VM.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "base", "forked",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "base",
+        "forked",
         "--no-start",
     ]);
     assert!(
@@ -330,10 +341,7 @@ fn fork_delete_cleans_up_snapshot() {
     assert_zvol_exists(&forked_zvol);
 
     // Delete the forked VM.
-    let output = ember(&[
-        "--state-dir", state,
-        "vm", "delete", "forked",
-    ]);
+    let output = ember(&["--state-dir", state, "vm", "delete", "forked"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -366,8 +374,12 @@ fn fork_delete_source_with_dependent_snapshot() {
 
     // Fork the VM.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "origin", "clone1",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "origin",
+        "clone1",
         "--no-start",
     ]);
     assert!(
@@ -377,10 +389,7 @@ fn fork_delete_source_with_dependent_snapshot() {
     );
 
     // Delete the forked VM first (to remove the clone dependency).
-    let output = ember(&[
-        "--state-dir", state,
-        "vm", "delete", "clone1",
-    ]);
+    let output = ember(&["--state-dir", state, "vm", "delete", "clone1"]);
     assert!(
         output.status.success(),
         "vm delete clone1 failed: {}",
@@ -388,10 +397,7 @@ fn fork_delete_source_with_dependent_snapshot() {
     );
 
     // Now delete the source VM — should succeed since fork snapshot was cleaned.
-    let output = ember(&[
-        "--state-dir", state,
-        "vm", "delete", "origin",
-    ]);
+    let output = ember(&["--state-dir", state, "vm", "delete", "origin"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -413,8 +419,12 @@ fn fork_nonexistent_source_fails() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "nosuchvm", "child",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "nosuchvm",
+        "child",
         "--no-start",
     ]);
     assert!(
@@ -432,8 +442,12 @@ fn fork_duplicate_name_fails() {
     let state = state_dir.to_str().unwrap();
 
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "existing", "existing",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "existing",
+        "existing",
         "--no-start",
     ]);
     assert!(
@@ -457,9 +471,14 @@ fn fork_shrink_disk_fails() {
 
     // Default disk size is 8G, try to shrink to 1G.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "bigvm", "smallvm",
-        "--disk-size", "1G",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "bigvm",
+        "smallvm",
+        "--disk-size",
+        "1G",
         "--no-start",
     ]);
     assert!(
@@ -521,8 +540,12 @@ fn fork_preserves_disk_data() {
 
     // Fork the VM.
     let output = ember(&[
-        "--state-dir", state,
-        "vm", "fork", "datavm", "datachild",
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "datavm",
+        "datachild",
         "--no-start",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -553,8 +576,7 @@ fn fork_preserves_disk_data() {
         .expect("mount failed");
     assert!(status.success(), "failed to mount forked zvol");
 
-    let content =
-        std::fs::read_to_string(fork_mount.path().join("fork-test-marker.txt")).unwrap();
+    let content = std::fs::read_to_string(fork_mount.path().join("fork-test-marker.txt")).unwrap();
     assert_eq!(
         content, "hello from source\n",
         "forked VM should have data from source"

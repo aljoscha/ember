@@ -28,9 +28,7 @@ pub fn run(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
             )
         }
         (None, None) => {
-            anyhow::bail!(
-                "neither path specifies a VM — prefix with <vm-name>: for remote paths"
-            )
+            anyhow::bail!("neither path specifies a VM — prefix with <vm-name>: for remote paths")
         }
     };
 

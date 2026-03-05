@@ -64,9 +64,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!("Pool '{pool}' already exists (health: {})", info.health);
     } else {
         let device = args.device.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "pool '{pool}' does not exist — provide --device to create it"
-            )
+            anyhow::anyhow!("pool '{pool}' does not exist — provide --device to create it")
         })?;
         println!("Creating ZFS pool '{pool}' on {device}...");
         zfs::pool::create(pool, device)?;

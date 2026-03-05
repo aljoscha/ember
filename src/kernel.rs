@@ -183,7 +183,11 @@ mod tests {
     #[test]
     fn preset_urls_contain_arch() {
         let arch = std::env::consts::ARCH;
-        let expected_arch = if arch == "aarch64" { "aarch64" } else { "x86_64" };
+        let expected_arch = if arch == "aarch64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
         assert!(KernelPreset::Stock.url().contains(expected_arch));
     }
 

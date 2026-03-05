@@ -39,9 +39,7 @@ impl ImageReference {
         // Split off the tag (after the last ':'). Guard against port numbers
         // in the registry (e.g. localhost:5000/foo) by checking for '/'.
         let (name_part, tag) = match reference.rsplit_once(':') {
-            Some((name, tag)) if !tag.is_empty() && !tag.contains('/') => {
-                (name, tag.to_string())
-            }
+            Some((name, tag)) if !tag.is_empty() && !tag.contains('/') => (name, tag.to_string()),
             _ => (reference, "latest".to_string()),
         };
 
@@ -242,9 +240,7 @@ fn resolve_layers(oci_dir: &Path) -> Result<Vec<String>> {
                     .as_ref()
                     .is_some_and(|p| p.os == "linux" && p.architecture == arch)
             })
-            .ok_or_else(|| {
-                Error::Image(format!("no manifest found for linux/{arch}"))
-            })?;
+            .ok_or_else(|| Error::Image(format!("no manifest found for linux/{arch}")))?;
 
         let manifest_blob = read_blob(oci_dir, &platform_desc.digest)?;
         parse_manifest_layers(&manifest_blob)
@@ -269,9 +265,9 @@ fn read_blob(oci_dir: &Path, digest: &str) -> Result<String> {
 
 /// Compute the filesystem path for a blob given its `algo:hash` digest.
 fn blob_path(oci_dir: &Path, digest: &str) -> Result<PathBuf> {
-    let (algo, hash) = digest.split_once(':').ok_or_else(|| {
-        Error::Image(format!("invalid digest format: {digest}"))
-    })?;
+    let (algo, hash) = digest
+        .split_once(':')
+        .ok_or_else(|| Error::Image(format!("invalid digest format: {digest}")))?;
     Ok(oci_dir.join("blobs").join(algo).join(hash))
 }
 
