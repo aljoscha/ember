@@ -35,7 +35,7 @@ sudo ember init --pool mypool --device /dev/sdb
 Build an image:
 
 ```bash
-sudo ember image build ubuntu
+sudo ember image build ubuntu-dev
 ```
 
 Or pull from an OCI registry:
@@ -47,7 +47,7 @@ sudo ember image pull docker.io/library/alpine:latest
 Create and boot a VM:
 
 ```bash
-sudo ember vm create myvm --image ubuntu
+sudo ember vm create myvm --image ubuntu-dev
 ```
 
 SSH in:
@@ -72,7 +72,7 @@ sudo ember vm stop myvm
 
 ```bash
 # Create (starts by default, use --no-start to skip)
-sudo ember vm create myvm --image ubuntu --cpus 2 --memory 4G --disk-size 16G
+sudo ember vm create myvm --image ubuntu-dev --cpus 2 --memory 4G --disk-size 16G
 
 # Start / stop
 sudo ember vm start myvm
@@ -107,7 +107,7 @@ sudo ember vm create myvm --vm-config vm.yaml
 ```yaml
 # vm.yaml
 name: myvm
-image: ubuntu
+image: ubuntu-dev
 cpus: 2
 memory: 4G
 disk_size: 16G
@@ -129,7 +129,7 @@ Set up a base VM, then fork as many copies as you need:
 
 ```bash
 # Build your golden image
-sudo ember vm create base --image ubuntu
+sudo ember vm create base --image ubuntu-dev
 ember ssh base
 # ... install your apps, configure everything ...
 sudo ember vm stop base
@@ -171,9 +171,11 @@ sudo ember snapshot delete myvm before-upgrade
 
 ## Images
 
+The default Dockerfile builds an Ubuntu 26.04 image with systemd, sshd, and a developer toolchain (Rust, Go, Claude Code, gh, jj, etc.). Use `-f` to build from a custom Dockerfile instead.
+
 ```bash
-# Build from the default Dockerfile (Ubuntu 24.04 + systemd + sshd)
-sudo ember image build ubuntu
+# Build from the default Dockerfile (Ubuntu 26.04 + systemd + sshd + dev toolchain)
+sudo ember image build ubuntu-dev
 
 # Build from a custom Dockerfile
 sudo ember image build myimage -f ./Dockerfile
@@ -183,9 +185,9 @@ sudo ember image pull docker.io/library/alpine:latest
 
 # List / inspect / delete
 ember image list
-ember image inspect ubuntu
-sudo ember image delete ubuntu
-sudo ember image delete ubuntu --force   # cascade-deletes dependent VMs
+ember image inspect ubuntu-dev
+sudo ember image delete ubuntu-dev
+sudo ember image delete ubuntu-dev --force   # cascade-deletes dependent VMs
 ```
 
 ## Guest access
@@ -250,7 +252,7 @@ make distclean    # remove everything including source
 Pass the kernel path when creating a VM:
 
 ```bash
-sudo ember vm create myvm --image ubuntu --kernel ./kernel/vmlinux
+sudo ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
 ```
 
 In a YAML config:
