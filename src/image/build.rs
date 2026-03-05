@@ -11,7 +11,7 @@ use std::process::Command;
 
 use crate::error::{Error, Result};
 
-/// Built-in Dockerfile for a VM-ready Ubuntu 24.04 image.
+/// Built-in Dockerfile for a VM-ready Ubuntu image.
 pub const DEFAULT_DOCKERFILE: &str = include_str!("../../images/Dockerfile.ubuntu-dev");
 
 // ---------------------------------------------------------------------------

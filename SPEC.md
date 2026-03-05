@@ -26,10 +26,12 @@ ember
 │   ├── resize <name> --disk-size <SIZE>
 │   ├── delete <name> [--force]
 │   ├── list [--format table|json]
-│   └── inspect <name> [--format table|json]
+│   ├── inspect <name> [--format table|json]
+│   └── fork <source> <name> [--cpus N] [--memory SIZE] [--disk-size SIZE]
+│              [--kernel <preset|path>] [--network <subnet>] [--no-start]
 │
 ├── image
-│   ├── pull <reference>           # e.g. docker.io/library/ubuntu:22.04
+│   ├── pull <reference>           # e.g. docker.io/library/alpine:latest
 │   ├── build <name> [-f|--file <dockerfile>]
 │   ├── list [--format table|json]
 │   ├── delete <name> [--force]
@@ -47,6 +49,8 @@ ember
 │
 ├── cp <src> <dst>                 # prefix with <vm-name>: for remote paths
 │
+├── reconcile                      # manually trigger state reconciliation
+│
 └── version
 ```
 
@@ -54,15 +58,13 @@ ember
 
 ```
 --state-dir <path>     # Override state directory (default: /var/lib/ember)
---log-level <level>    # trace, debug, info, warn, error (default: info)
---config <file>        # Global config file override
 ```
 
 ### YAML Config (for `vm create --vm-config`)
 
 ```yaml
 name: myvm
-image: docker.io/library/ubuntu:22.04
+image: ubuntu
 cpus: 2
 memory: 512M
 disk_size: 4G
@@ -88,6 +90,7 @@ src/
 │   ├── vm.rs            # ember vm *
 │   ├── image.rs         # ember image *
 │   ├── snapshot.rs      # ember snapshot *
+│   ├── ssh.rs           # ember ssh
 │   ├── exec.rs          # ember exec
 │   └── cp.rs            # ember cp
 ├── zfs/
@@ -128,7 +131,8 @@ src/
 │   └── reconcile.rs     # Crash recovery reconciliation
 ├── config/
 │   ├── mod.rs
-│   └── vm.rs            # YAML config parsing + merge
+│   ├── vm.rs            # YAML config parsing + merge
+│   └── size.rs          # ByteSize parsing (512M, 16G, etc.)
 ├── kernel.rs            # Named kernel presets (stock) + resolution
 ├── cleanup.rs           # RAII rollback guard for multi-step operations
 └── error.rs             # Unified thiserror-based error types
@@ -195,7 +199,7 @@ ZFS snapshot: <pool>/images/<name>-<tag>@base
 ember image build <name> [-f|--file <dockerfile>]
 ```
 
-Builds a VM image from a Dockerfile using Docker or Podman. If no Dockerfile is given, uses a built-in Ubuntu 24.04 VM image with systemd, sshd, and an `ubuntu` user with passwordless sudo.
+Builds a VM image from a Dockerfile using Docker or Podman. If no Dockerfile is given, uses a built-in Ubuntu 26.04 VM image with systemd, sshd, and an `ubuntu` user with passwordless sudo.
 
 ```
 Dockerfile
@@ -258,6 +262,30 @@ ember snapshot restore myvm snap1  →  zfs rollback <pool>/vms/myvm@snap1  (VM 
 ember snapshot list myvm           →  zfs list -t snapshot -r <pool>/vms/myvm
 ember snapshot delete myvm snap1   →  zfs destroy <pool>/vms/myvm@snap1
 ```
+
+### VM Fork (Instant Clone)
+
+```
+ember vm fork <source> <name> [--cpus N] [--memory SIZE] [--disk-size SIZE]
+                               [--kernel <preset|path>] [--network <subnet>] [--no-start]
+```
+
+Fork creates an independent copy-on-write clone of an existing VM. The source VM must be stopped.
+
+1. Snapshot the source zvol: `zfs snapshot <pool>/vms/<source>@fork-<name>`
+2. Clone the snapshot: `zfs clone <pool>/vms/<source>@fork-<name> <pool>/vms/<name>`
+3. If `--disk-size` is larger than source, grow the zvol and `resize2fs`
+4. Loop-mount the clone and re-inject the invoking user's SSH key
+5. Start the forked VM (unless `--no-start`)
+
+The fork inherits the source VM's configuration (cpus, memory, disk size, kernel, subnet, SSH config). CLI flags override inherited values. Disk can grow but not shrink below the source size.
+
+The `forked_from` field in VM metadata tracks the origin snapshot path (e.g., `<pool>/vms/source@fork-newname`).
+
+**Cleanup:**
+
+- Deleting a forked VM destroys its zvol and the fork snapshot on the source.
+- Deleting a source VM that still has fork snapshots (i.e., forks depend on it) is refused — the dependent VMs are listed. Use `--force` to cascade-delete the dependent VMs first.
 
 ## Firecracker Integration
 
@@ -413,11 +441,14 @@ pub struct VmMetadata {
     pub disk_size_gib: u32,
     pub kernel_path: PathBuf,
     pub zvol_path: String,
-    pub network: Option<NetworkConfig>,
+    pub boot_args: Option<String>,    // Custom boot args (replaces defaults, ip= still appended)
+    pub subnet: Option<String>,       // Network subnet for IP allocation
+    pub network: Option<NetworkInfo>,
     pub pid: Option<u32>,
     pub api_socket: PathBuf,
     pub created_at: String,
     pub ssh: SshConfig,
+    pub forked_from: Option<String>,  // Origin snapshot path if forked
 }
 ```
 
@@ -433,6 +464,8 @@ On every privileged command invocation (skipped for `init`, `version`, read-only
 - For each VM in Running or Paused state, check if PID is alive (`kill(pid, 0)`)
 - Dead process → mark Stopped, cleanup TAP + iptables + IP allocation
 - Orphaned `em-*` TAP devices without running VM → delete
+
+Reconciliation can also be triggered manually via `ember reconcile`.
 
 All reconciliation operations are best-effort: errors are logged but never propagated, so reconciliation never blocks normal CLI operation.
 

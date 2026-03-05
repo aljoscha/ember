@@ -40,7 +40,7 @@ pub struct BuildArgs {
     /// Image name (e.g. ubuntu-dev, my-image:v1)
     pub name: String,
 
-    /// Path to Dockerfile (default: built-in Ubuntu 24.04 VM image)
+    /// Path to Dockerfile (default: built-in Ubuntu VM image)
     #[arg(long = "file", short = 'f')]
     pub dockerfile: Option<PathBuf>,
 }
