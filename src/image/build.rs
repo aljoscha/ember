@@ -85,7 +85,10 @@ pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> 
     let context_dir = dockerfile.parent().unwrap_or_else(|| Path::new("."));
 
     // Step 1: Build the container image.
+    // Set DOCKER_BUILDKIT=1 so Docker uses BuildKit instead of the deprecated
+    // legacy builder.  Harmless for Podman (which ignores it).
     let output = Command::new(&tool)
+        .env("DOCKER_BUILDKIT", "1")
         .args(["build", "-t", &tag, "-f"])
         .arg(dockerfile)
         .arg(context_dir)
