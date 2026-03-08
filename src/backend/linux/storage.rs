@@ -199,7 +199,7 @@ impl StorageBackend for LinuxStorage {
 
     /// Unmount a filesystem and remove the mount point directory.
     fn unmount(&self, mount_point: &Path) -> Result<()> {
-        crate::image::ext4::umount(mount_point)?;
+        super::image::umount(mount_point)?;
         let _ = std::fs::remove_dir(mount_point);
         Ok(())
     }

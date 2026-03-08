@@ -1,5 +1,6 @@
 //! Linux backend implementations: Firecracker + ZFS + TAP/iptables.
 
+pub mod image;
 pub mod network;
 pub mod storage;
 pub mod vm;
