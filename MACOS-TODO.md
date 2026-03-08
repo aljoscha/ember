@@ -1,5 +1,10 @@
 # macOS Support TODO
 
+> **Note:** "Test:" items are **integration tests** (`tests/*.rs`), not manual testing.
+> They should be implemented as `#[test] #[ignore]` functions following the
+> same patterns as the existing Linux integration tests.  Use
+> `#[cfg(target_os = "macos")]` to restrict them to macOS builds.
+
 ## Phase 0: Backend Trait Extraction (Linux-only, no behavior change)
 
 - [x] Define `VmBackend`, `StorageBackend`, `NetworkBackend` traits in `src/backend/mod.rs`
