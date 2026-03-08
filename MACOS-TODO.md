@@ -30,7 +30,20 @@
 - [ ] Implement resize: `truncate` + `resize2fs`
 - [ ] Implement mount/unmount via `hdiutil attach`/`hdiutil detach`
 - [ ] Implement destroy (remove files)
+- [ ] Validate APFS volume during `ember init` (`diskutil info` check)
+- [ ] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)
+- [ ] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
 - [ ] Test: create image, clone for VM, snapshot, restore, resize
+- [ ] Test: verify `cp -c` clone doesn't reduce free space (df check)
+- [ ] Test: verify `cp -c` fails gracefully on non-APFS volume
+
+## Phase 2.5: Storage Efficiency Diagnostics
+
+- [ ] Implement `ember debug storage-efficiency` command
+- [ ] Report logical size (sum of all .img file sizes via stat)
+- [ ] Report actual disk usage (df / diskutil apfs list)
+- [ ] Report CoW efficiency ratio
+- [ ] Test: create base image + multiple clones, verify efficiency report shows savings
 
 ## Phase 3: macOS VM Backend (AVF via ember-vz)
 

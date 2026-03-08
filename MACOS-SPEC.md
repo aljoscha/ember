@@ -213,6 +213,70 @@ truncate -s <new-size> vms/<vm-name>/rootfs.img
 | Resize | `zfs set volsize=XG` + `resize2fs` | `truncate -s XG` + `resize2fs` |
 | Fork | `zfs clone pool/vms/a@fork-b pool/vms/b` | `cp -c vms/a/rootfs.img vms/b/rootfs.img` |
 
+## Verifying CoW Storage Efficiency
+
+### The Problem
+
+Unlike ZFS (where `zfs list -o used,refer` clearly shows per-dataset space usage and CoW savings), APFS has no per-file way to measure clone savings. Both `du` and Finder report clones as if they occupy full space. This means a user with 10 VMs cloned from a 2GB image would see `du` report 20GB even though actual disk usage is ~2GB.
+
+### `ember debug storage-efficiency`
+
+A built-in diagnostic command that reports CoW savings:
+
+```
+$ ember debug storage-efficiency
+
+Storage Efficiency Report
+─────────────────────────
+Images:        2 (3.2 GB logical)
+VMs:           8 (25.6 GB logical)
+Snapshots:    12 (38.4 GB logical)
+                  ──────────────────
+Total logical:    67.2 GB
+Actual disk used:  4.1 GB  (via df)
+CoW efficiency:   16.4x space savings
+```
+
+**How it works:**
+
+1. **Logical size**: Sum of all `.img` file sizes via `stat` (what `du` would report)
+2. **Actual disk usage**: Measure free space on the APFS volume via `df` or `diskutil apfs list`, subtract from total capacity. Compare with a baseline taken during `ember init` or by subtracting non-ember usage
+3. **Alternative**: Use `diskutil apfs listVolumeGroups` to get the container-level "Used" metric before and after operations
+
+### `cp -c` Failure Detection
+
+`cp -c` **fails with an error** rather than silently falling back to a full copy when CoW isn't possible:
+- Cross-volume copy: `"clonefile failed: Cross-device link"`
+- Non-APFS filesystem: `"clonefile failed: Not supported"`
+
+Ember catches these errors and reports a clear message:
+
+```
+Error: VM storage must be on an APFS volume.
+The state directory ~/Library/Application Support/ember/ is on a non-APFS
+filesystem, which doesn't support copy-on-write clones.
+```
+
+### `ember init` APFS Validation
+
+During `ember init` on macOS, verify that the state directory resides on an APFS volume:
+
+```bash
+diskutil info -plist "$(df /path/to/state-dir | tail -1 | awk '{print $1}')"
+# Check FilesystemType == "apfs"
+```
+
+If not APFS, warn the user that cloning will be slow and use full disk space.
+
+### Timing-Based Sanity Check
+
+As an additional safeguard, `ember vm create` measures the wall-clock time of the `cp -c` operation. A CoW clone completes in milliseconds regardless of file size. If the clone takes longer than 1 second for a multi-GB image, log a warning:
+
+```
+Warning: disk clone took 3.2s — this may indicate copy-on-write is not working.
+Run `ember debug storage-efficiency` to check.
+```
+
 ## Networking: vmnet (Shared Mode)
 
 ### Why vmnet
