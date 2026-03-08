@@ -28,7 +28,7 @@
 - [x] Implement VM clone: `cp -c` (APFS CoW clone)
 - [x] Implement snapshot create/restore/delete using `cp -c`
 - [x] Implement resize: `truncate` + `resize2fs`
-- [ ] Implement mount/unmount via `hdiutil attach`/`hdiutil detach`
+- [x] Implement mount/unmount via `hdiutil attach`/`hdiutil detach`
 - [ ] Implement destroy (remove files)
 - [ ] Validate APFS volume during `ember init` (`diskutil info` check)
 - [ ] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)

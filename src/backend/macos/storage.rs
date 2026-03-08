@@ -396,12 +396,58 @@ impl StorageBackend for MacosStorage {
         todo!("macOS: destroy_fork_origin")
     }
 
-    fn mount(&self, _path: &Path) -> Result<PathBuf> {
-        todo!("macOS: mount")
+    /// Mount a raw ext4 disk image using `hdiutil attach`.
+    ///
+    /// Returns the mount point path chosen by hdiutil. The `-plist` flag
+    /// gives us structured output to reliably extract the mount point.
+    /// `-nobrowse` prevents the volume from appearing in Finder.
+    fn mount(&self, path: &Path) -> Result<PathBuf> {
+        let output = Command::new("hdiutil")
+            .args(["attach", "-plist", "-nobrowse"])
+            .arg(path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "hdiutil attach".to_string(),
+                source: e,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Image(format!(
+                "hdiutil attach failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        // Parse the plist output to find the mount point. hdiutil outputs
+        // an array of "system-entities", each with a "mount-point" key for
+        // mounted partitions.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mount_point = parse_hdiutil_mount_point(&stdout).ok_or_else(|| {
+            Error::Image(format!(
+                "hdiutil attach succeeded but no mount point found in output for {}",
+                path.display()
+            ))
+        })?;
+
+        Ok(PathBuf::from(mount_point))
     }
 
-    fn unmount(&self, _mount_point: &Path) -> Result<()> {
-        todo!("macOS: unmount")
+    /// Unmount a disk image using `hdiutil detach`.
+    ///
+    /// This is the macOS equivalent of `umount`. The path should be the
+    /// mount point returned by [`mount`].
+    fn unmount(&self, mount_point: &Path) -> Result<()> {
+        let output = Command::new("hdiutil")
+            .args(["detach"])
+            .arg(mount_point)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "hdiutil detach".to_string(),
+                source: e,
+            })?;
+        Error::check_command("hdiutil detach", output)?;
+        Ok(())
     }
 }
 
@@ -452,4 +498,30 @@ fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse the mount point from `hdiutil attach -plist` XML output.
+///
+/// The plist contains a `system-entities` array. Each entity dict may have
+/// a `mount-point` key. We look for the first one (the main partition).
+/// This is a simple string search to avoid pulling in a plist crate.
+fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
+    // Look for:
+    //   <key>mount-point</key>
+    //   <string>/Volumes/something</string>
+    let marker = "<key>mount-point</key>";
+    let idx = plist_xml.find(marker)?;
+    let after = &plist_xml[idx + marker.len()..];
+
+    // Find the <string>...</string> that follows.
+    let start_tag = "<string>";
+    let end_tag = "</string>";
+    let s_start = after.find(start_tag)? + start_tag.len();
+    let s_end = after.find(end_tag)?;
+
+    if s_start <= s_end {
+        Some(after[s_start..s_end].to_string())
+    } else {
+        None
+    }
 }
