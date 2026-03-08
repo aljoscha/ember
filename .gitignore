@@ -1,6 +1,10 @@
 # Rust build artifacts
 /target
 
+# Swift build artifacts
+/ember-vz/.build
+/ember-vz/.swiftpm
+
 # Backup files
 **/*.rs.bk
 
