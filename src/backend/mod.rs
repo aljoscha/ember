@@ -15,13 +15,12 @@ use crate::error::Result;
 use crate::state::vm::{NetworkInfo, VmMetadata};
 
 // Platform-specific implementations.
-// Uncomment as each platform module is created:
-//
-// #[cfg(target_os = "linux")]
-// pub mod linux;
-// #[cfg(target_os = "linux")]
-// pub use linux::{LinuxVm as Vm, LinuxStorage as Storage, LinuxNetwork as Network};
-//
+// Both modules are compiled unconditionally for now (the existing firecracker/,
+// zfs/, network/ modules they depend on also compile on all platforms).
+// When the macOS backend is added, #[cfg(target_os)] type aliases will select
+// which implementation to use.
+pub mod linux;
+
 // #[cfg(target_os = "macos")]
 // pub mod macos;
 // #[cfg(target_os = "macos")]
