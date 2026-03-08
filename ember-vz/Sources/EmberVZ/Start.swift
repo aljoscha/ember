@@ -139,13 +139,8 @@ struct Start: ParsableCommand {
     private func startVM(config: VZVirtualMachineConfiguration) throws {
         let vm = VZVirtualMachine(configuration: config)
 
-        // Report the guest MAC address so ember can discover the IP via DHCP.
-        // Written to ready-fd if provided, otherwise to stderr.
+        // Capture MAC address for reporting after boot
         let mac = config.networkDevices.first!.macAddress.string
-        if let fd = readyFd {
-            let readyHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            readyHandle.write(Data("\(mac)\n".utf8))
-        }
         fputs("MAC=\(mac)\n", stderr)
 
         // Delegate handles guest stop / error → process exit
@@ -220,10 +215,22 @@ struct Start: ParsableCommand {
         sigusr2Source.resume()
         _sigusr2SourceRef = sigusr2Source
 
+        // Capture ready-fd for use in the start callback
+        let readyFd = self.readyFd
+
         vm.start { result in
             switch result {
             case .success:
                 fputs("vm started\n", stderr)
+
+                // Report MAC address to ready-fd now that the VM is booted.
+                // The parent process (ember) reads this to discover the guest IP
+                // via DHCP lease matching.
+                if let fd = readyFd {
+                    let readyHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                    readyHandle.write(Data("\(mac)\n".utf8))
+                }
+
             case .failure(let error):
                 fputs("error: vm failed to start: \(error.localizedDescription)\n", stderr)
                 Darwin.exit(1)
