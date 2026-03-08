@@ -314,8 +314,61 @@ impl StorageBackend for MacosStorage {
         Ok(snapshots)
     }
 
-    fn resize(&self, _vm_name: &str, _new_size: ByteSize) -> Result<()> {
-        todo!("macOS: resize")
+    /// Resize a VM's rootfs image.
+    ///
+    /// 1. Grow the raw `.img` file with `truncate` to the new size.
+    /// 2. Run `e2fsck -f` to ensure filesystem consistency before resize.
+    /// 3. Run `resize2fs` to expand the ext4 filesystem to fill the image.
+    ///
+    /// Only growing is supported — the CLI layer prevents shrink attempts.
+    /// Requires `e2fsprogs` from Homebrew (`brew install e2fsprogs`).
+    fn resize(&self, vm_name: &str, new_size: ByteSize) -> Result<()> {
+        let rootfs = self.vm_rootfs(vm_name);
+        if !rootfs.exists() {
+            return Err(Error::Image(format!(
+                "VM rootfs not found: {}",
+                rootfs.display()
+            )));
+        }
+
+        // Grow the raw image file to the new size.
+        let output = Command::new("truncate")
+            .arg("-s")
+            .arg(new_size.bytes().to_string())
+            .arg(&rootfs)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "truncate".to_string(),
+                source: e,
+            })?;
+        Error::check_command("truncate", output)?;
+
+        // Check filesystem consistency before resizing (resize2fs requires this).
+        let output = Command::new("e2fsck")
+            .arg("-f") // force check even if clean
+            .arg("-y") // auto-fix errors
+            .arg(&rootfs)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "e2fsck".to_string(),
+                source: e,
+            })?;
+        // e2fsck returns exit code 1 if it fixed errors, which is OK.
+        if !output.status.success() && output.status.code() != Some(1) {
+            Error::check_command("e2fsck", output)?;
+        }
+
+        // Expand the ext4 filesystem to fill the (now larger) image file.
+        let output = Command::new("resize2fs")
+            .arg(&rootfs)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "resize2fs".to_string(),
+                source: e,
+            })?;
+        Error::check_command("resize2fs", output)?;
+
+        Ok(())
     }
 
     fn destroy_vm_storage(&self, _vm_name: &str) -> Result<()> {
