@@ -15,6 +15,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::backend::{InitConfig, SnapshotInfo, StorageBackend};
 use crate::config::size::ByteSize;
@@ -134,8 +135,37 @@ impl StorageBackend for MacosStorage {
         Ok(dest)
     }
 
-    fn clone_for_vm(&self, _image_name: &str, _vm_name: &str) -> Result<PathBuf> {
-        todo!("macOS: clone_for_vm")
+    /// Clone a base image for a new VM using APFS copy-on-write.
+    ///
+    /// `cp -c` creates an instant CoW clone — the VM's rootfs shares blocks
+    /// with the base image until written to. This is the macOS equivalent of
+    /// `zfs clone pool/.../images/name@base pool/.../vms/vm_name`.
+    fn clone_for_vm(&self, image_name: &str, vm_name: &str) -> Result<PathBuf> {
+        let src = self.image_path(image_name);
+        if !src.exists() {
+            return Err(Error::Image(format!(
+                "base image not found: {}",
+                src.display()
+            )));
+        }
+
+        let vm_dir = self.vm_dir(vm_name);
+        fs::create_dir_all(&vm_dir).map_err(|e| Error::Io {
+            path: vm_dir.clone(),
+            source: e,
+        })?;
+
+        // Create snapshots directory for this VM.
+        let snap_dir = self.vm_snapshots_dir(vm_name);
+        fs::create_dir_all(&snap_dir).map_err(|e| Error::Io {
+            path: snap_dir,
+            source: e,
+        })?;
+
+        let dest = self.vm_rootfs(vm_name);
+        apfs_clone(&src, &dest)?;
+
+        Ok(dest)
     }
 
     fn snapshot(&self, _vm_name: &str, _snap_name: &str) -> Result<()> {
@@ -190,4 +220,48 @@ impl StorageBackend for MacosStorage {
     fn unmount(&self, _mount_point: &Path) -> Result<()> {
         todo!("macOS: unmount")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Create an APFS copy-on-write clone using `cp -c`.
+///
+/// This is instant regardless of file size — APFS shares the underlying
+/// blocks between source and destination. Only blocks that are subsequently
+/// modified will be allocated separately.
+///
+/// `cp -c` fails with a clear error (rather than silently falling back to
+/// a full copy) if CoW isn't possible:
+/// - Cross-volume: "clonefile failed: Cross-device link"
+/// - Non-APFS: "clonefile failed: Not supported"
+fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
+    let output = Command::new("cp")
+        .arg("-c")
+        .arg(src)
+        .arg(dest)
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "cp -c".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Provide a clear error message for common APFS clone failures.
+        let msg = if stderr.contains("Cross-device link") || stderr.contains("Not supported") {
+            format!(
+                "APFS clone failed: {}. \
+                 VM storage must be on an APFS volume. The state directory may be on \
+                 a non-APFS filesystem or the source and destination are on different volumes.",
+                stderr.trim()
+            )
+        } else {
+            format!("cp -c {} → {} failed: {}", src.display(), dest.display(), stderr.trim())
+        };
+        return Err(Error::Image(msg));
+    }
+
+    Ok(())
 }
