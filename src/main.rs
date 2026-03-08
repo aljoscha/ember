@@ -3,20 +3,27 @@ mod cleanup;
 mod cli;
 pub mod config;
 pub mod error;
+#[cfg(target_os = "linux")]
 pub mod firecracker;
 pub mod image;
 pub mod kernel;
+#[cfg(target_os = "linux")]
 pub mod network;
 pub mod ssh;
 pub mod state;
+#[cfg(target_os = "linux")]
 pub mod zfs;
 
 use clap::Parser;
+#[cfg(target_os = "linux")]
 use cli::kernel::KernelCommand;
+#[cfg(target_os = "linux")]
 use cli::vm::VmCommand;
 use cli::{Cli, Command};
 
 /// Check that the process is running as root (euid 0).
+/// Only needed on Linux where ZFS, TAP, and iptables require root.
+#[cfg(target_os = "linux")]
 fn require_root() -> anyhow::Result<()> {
     if !nix::unistd::geteuid().is_root() {
         anyhow::bail!(
@@ -32,6 +39,7 @@ fn require_root() -> anyhow::Result<()> {
 /// SSH-based commands (ssh, exec, cp) only read VM state and invoke the
 /// system SSH client — no root required. Read-only queries (vm list, vm
 /// inspect) also work without elevated privileges.
+#[cfg(target_os = "linux")]
 fn needs_root(command: &Command) -> bool {
     !matches!(
         command,
@@ -49,6 +57,7 @@ fn needs_root(command: &Command) -> bool {
 ///
 /// Reconciliation cleans up after crashes (dead VMs, orphaned TAP devices)
 /// and requires root. Skip it for read-only and SSH-client commands.
+#[cfg(target_os = "linux")]
 fn needs_reconcile(command: &Command) -> bool {
     !matches!(
         command,
@@ -67,12 +76,17 @@ fn needs_reconcile(command: &Command) -> bool {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Linux requires root for ZFS, TAP, and iptables operations.
+    // macOS runs entirely without root (vmnet, APFS clones).
+    #[cfg(target_os = "linux")]
     if needs_root(&cli.command) {
         require_root()?;
     }
 
     // Lightweight state reconciliation on every privileged command.
     // Cleans up after crashes: marks dead VMs stopped, removes orphaned TAP devices.
+    // Linux-only: depends on firecracker process checks and TAP device cleanup.
+    #[cfg(target_os = "linux")]
     if needs_reconcile(&cli.command) {
         state::reconcile::run(&cli.state_dir);
     }
@@ -88,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         Command::Cp(args) => cli::cp::run(args, &cli.state_dir),
         Command::Info => cli::info::run(&cli.state_dir),
         Command::Reconcile => {
+            #[cfg(target_os = "linux")]
             state::reconcile::run(&cli.state_dir);
             Ok(())
         }

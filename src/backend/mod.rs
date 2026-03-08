@@ -15,27 +15,26 @@ use crate::error::Result;
 use crate::state::vm::{NetworkInfo, VmMetadata};
 
 // Platform-specific implementations.
-// Both modules are compiled unconditionally for now (the existing firecracker/,
-// zfs/, network/ modules they depend on also compile on all platforms).
-// When the macOS backend is added, #[cfg(target_os)] type aliases will select
-// which implementation to use.
+#[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 // Type aliases for the active platform backend.
-// Currently always Linux; when macOS support is added these become
-// #[cfg(target_os)] gated.
+// Selected at compile time based on target OS.
+#[cfg(target_os = "linux")]
 pub type Vm = linux::LinuxVm;
+#[cfg(target_os = "linux")]
 pub type Storage = linux::LinuxStorage;
+#[cfg(target_os = "linux")]
 pub type Network = linux::LinuxNetwork;
 
-// #[cfg(target_os = "macos")]
-// pub mod macos;
-// #[cfg(target_os = "macos")]
-// pub type Vm = macos::MacosVm;
-// #[cfg(target_os = "macos")]
-// pub type Storage = macos::MacosStorage;
-// #[cfg(target_os = "macos")]
-// pub type Network = macos::MacosNetwork;
+#[cfg(target_os = "macos")]
+pub type Vm = macos::MacosVm;
+#[cfg(target_os = "macos")]
+pub type Storage = macos::MacosStorage;
+#[cfg(target_os = "macos")]
+pub type Network = macos::MacosNetwork;
 
 // ---------------------------------------------------------------------------
 // Common types returned by backend traits

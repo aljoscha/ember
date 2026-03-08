@@ -8,4 +8,8 @@
 //! call sites (`image::ext4::create`, `image::ext4::estimate_size_mib`)
 //! continue to work unchanged.
 
+#[cfg(target_os = "linux")]
 pub use crate::backend::linux::image::*;
+
+#[cfg(target_os = "macos")]
+pub use crate::backend::macos::image::*;

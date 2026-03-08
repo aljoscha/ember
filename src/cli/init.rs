@@ -41,6 +41,10 @@ pub struct GlobalConfig {
     /// Auto-detected during `ember init`, overridable via `--wan-iface`.
     #[serde(default)]
     pub wan_iface: Option<String>,
+    /// State directory path. Used by macOS backend to derive storage paths.
+    /// Populated during `ember init`; defaults to empty path for backwards compat.
+    #[serde(default)]
+    pub state_dir: PathBuf,
 }
 
 impl GlobalConfig {
@@ -79,6 +83,8 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     };
 
     // 5. Detect or use provided WAN interface.
+    // On macOS, vmnet handles networking — no WAN interface detection needed.
+    #[cfg(target_os = "linux")]
     let wan_iface = if let Some(iface) = &args.wan_iface {
         println!("Using WAN interface '{iface}' (from --wan-iface).");
         Some(iface.clone())
@@ -95,6 +101,8 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
             }
         }
     };
+    #[cfg(target_os = "macos")]
+    let wan_iface: Option<String> = None;
 
     // 6. Write config.
     let config = GlobalConfig {
@@ -102,6 +110,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         dataset: args.dataset.clone(),
         kernel_path,
         wan_iface,
+        state_dir: state_dir.to_path_buf(),
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
@@ -137,6 +146,7 @@ mod tests {
             dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/var/lib/ember/kernels/vmlinux")),
             wan_iface: Some("eth0".to_string()),
+            state_dir: PathBuf::from("/var/lib/ember"),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -151,6 +161,7 @@ mod tests {
             dataset: "mydata".to_string(),
             kernel_path: None,
             wan_iface: None,
+            state_dir: PathBuf::default(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -165,6 +176,7 @@ mod tests {
             dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
             wan_iface: Some("wlp2s0".to_string()),
+            state_dir: PathBuf::default(),
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
@@ -181,6 +193,7 @@ mod tests {
             dataset: "ember".to_string(),
             kernel_path: None,
             wan_iface: None,
+            state_dir: PathBuf::default(),
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
@@ -198,6 +211,7 @@ mod tests {
             dataset: "ember".to_string(),
             kernel_path: None,
             wan_iface: Some("eth0".to_string()),
+            state_dir: dir.path().to_path_buf(),
         };
         store.write(&store.config_path(), &config).unwrap();
 
@@ -220,6 +234,7 @@ mod tests {
             dataset: "ds1".to_string(),
             kernel_path: None,
             wan_iface: Some("eth0".to_string()),
+            state_dir: dir.path().to_path_buf(),
         };
         store.write(&store.config_path(), &config1).unwrap();
 
@@ -229,6 +244,7 @@ mod tests {
             dataset: "ds2".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
             wan_iface: Some("wlp2s0".to_string()),
+            state_dir: dir.path().to_path_buf(),
         };
         store.write(&store.config_path(), &config2).unwrap();
 

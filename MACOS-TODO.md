@@ -23,7 +23,7 @@
 
 ## Phase 2: macOS Storage Backend (APFS Clones)
 
-- [ ] Implement `StorageBackend` for macOS: init (create directories)
+- [x] Implement `StorageBackend` for macOS: init (create directories)
 - [ ] Implement image volume creation: raw ext4 `.img` file
 - [ ] Implement VM clone: `cp -c` (APFS CoW clone)
 - [ ] Implement snapshot create/restore/delete using `cp -c`

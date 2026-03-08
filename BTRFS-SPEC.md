@@ -93,7 +93,7 @@ ember init --storage btrfs --device /dev/sdb
 
 1. Format: `mkfs.btrfs -f /dev/sdb`
 2. Create mount point: `mkdir -p /var/lib/ember/btrfs`
-3. Mount: `mount /dev/sdb /var/lib/ember/btrfs`
+3. Mount: `mount -o compress=zstd:3 /dev/sdb /var/lib/ember/btrfs`
 4. Create directories: `mkdir -p /var/lib/ember/btrfs/{images,vms}`
 5. Record device in config for remounting on next use
 
@@ -106,7 +106,7 @@ ember init --storage btrfs --device /var/lib/ember/btrfs.img --size 50G
 1. Create sparse file: `truncate -s 50G /var/lib/ember/btrfs.img`
 2. Format: `mkfs.btrfs /var/lib/ember/btrfs.img`
 3. Create mount point: `mkdir -p /var/lib/ember/btrfs`
-4. Mount: `mount -o loop /var/lib/ember/btrfs.img /var/lib/ember/btrfs`
+4. Mount: `mount -o loop,compress=zstd:3 /var/lib/ember/btrfs.img /var/lib/ember/btrfs`
 5. Create directories: `mkdir -p /var/lib/ember/btrfs/{images,vms}`
 6. Record file path in config for remounting on next use
 
