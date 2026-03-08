@@ -14,7 +14,7 @@
 
 - [x] Create Swift Package Manager project for `ember-vz`
 - [x] Implement `ember-vz start`: boot Linux VM with VZLinuxBootLoader, virtio-blk, virtio-net (shared vmnet), virtio-console
-- [ ] Implement graceful shutdown on SIGTERM (VZVirtualMachine.stop)
+- [x] Implement graceful shutdown on SIGTERM (VZVirtualMachine.stop)
 - [ ] Implement SIGKILL handling (force stop)
 - [ ] Implement pause (SIGUSR1) and resume (SIGUSR2)
 - [ ] Implement `--ready-fd` to report guest MAC address when VM is booted

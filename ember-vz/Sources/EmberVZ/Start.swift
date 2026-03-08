@@ -156,6 +156,26 @@ struct Start: ParsableCommand {
         _vmRef = vm
         _delegateRef = delegate
 
+        // Install SIGTERM handler: graceful shutdown via VZVirtualMachine.stop().
+        // We must ignore the default SIGTERM behavior first, then use a DispatchSource
+        // to receive the signal and call stop() on the main queue.
+        signal(SIGTERM, SIG_IGN)
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigtermSource.setEventHandler {
+            fputs("received SIGTERM, stopping VM gracefully...\n", stderr)
+            guard let vm = _vmRef else { Darwin.exit(0) }
+            vm.stop { error in
+                if let error = error {
+                    fputs("warning: graceful stop failed: \(error.localizedDescription)\n", stderr)
+                }
+                // The delegate's guestDidStop will handle exit, but if stop() fails
+                // we exit here as a fallback.
+                Darwin.exit(0)
+            }
+        }
+        sigtermSource.resume()
+        _sigtermSourceRef = sigtermSource
+
         vm.start { result in
             switch result {
             case .success:
@@ -168,10 +188,12 @@ struct Start: ParsableCommand {
     }
 }
 
-// Strong references to keep the VM and delegate alive for the process lifetime.
-// These live at module scope since dispatchMain() never returns.
+// Strong references to keep the VM, delegate, and signal sources alive
+// for the process lifetime. These live at module scope since dispatchMain()
+// never returns.
 nonisolated(unsafe) var _vmRef: VZVirtualMachine?
 nonisolated(unsafe) var _delegateRef: VMDelegate?
+nonisolated(unsafe) var _sigtermSourceRef: DispatchSourceSignal?
 
 // MARK: - VM Delegate
 
