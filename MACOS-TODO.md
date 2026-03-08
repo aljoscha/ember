@@ -31,8 +31,8 @@
 - [x] Implement mount/unmount via `hdiutil attach`/`hdiutil detach`
 - [x] Implement destroy (remove files)
 - [x] Validate APFS volume during `ember init` (`diskutil info` check)
-- [ ] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)
-- [ ] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
+- [x] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)
+- [x] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
 - [ ] Test: create image, clone for VM, snapshot, restore, resize
 - [ ] Test: verify `cp -c` clone doesn't reduce free space (df check)
 - [ ] Test: verify `cp -c` fails gracefully on non-APFS volume

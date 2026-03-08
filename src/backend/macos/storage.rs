@@ -16,6 +16,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use crate::backend::{InitConfig, SnapshotInfo, StorageBackend};
 use crate::config::size::ByteSize;
@@ -540,6 +541,8 @@ impl StorageBackend for MacosStorage {
 /// - Cross-volume: "clonefile failed: Cross-device link"
 /// - Non-APFS: "clonefile failed: Not supported"
 fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
+    let start = Instant::now();
+
     let output = Command::new("cp")
         .arg("-c")
         .arg(src)
@@ -569,6 +572,18 @@ fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
             )
         };
         return Err(Error::Image(msg));
+    }
+
+    // A CoW clone completes in milliseconds regardless of file size.
+    // If it takes over 1 second, something may be wrong (e.g., falling
+    // back to a full copy on a non-APFS volume that doesn't error).
+    let elapsed = start.elapsed();
+    if elapsed.as_secs() >= 1 {
+        eprintln!(
+            "Warning: disk clone took {:.1}s — this may indicate copy-on-write is not working. \
+             Run `ember debug storage-efficiency` to check.",
+            elapsed.as_secs_f64()
+        );
     }
 
     Ok(())
