@@ -168,20 +168,150 @@ impl StorageBackend for MacosStorage {
         Ok(dest)
     }
 
-    fn snapshot(&self, _vm_name: &str, _snap_name: &str) -> Result<()> {
-        todo!("macOS: snapshot")
+    /// Create a snapshot by APFS-cloning the VM's current rootfs.
+    ///
+    /// `cp -c vms/<vm>/rootfs.img → vms/<vm>/snapshots/<snap>.img`
+    /// This is instant (CoW) and costs no additional disk space until
+    /// the VM's rootfs diverges from the snapshot.
+    fn snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+        let src = self.vm_rootfs(vm_name);
+        if !src.exists() {
+            return Err(Error::Image(format!(
+                "VM rootfs not found: {}",
+                src.display()
+            )));
+        }
+
+        let snap_dir = self.vm_snapshots_dir(vm_name);
+        fs::create_dir_all(&snap_dir).map_err(|e| Error::Io {
+            path: snap_dir.clone(),
+            source: e,
+        })?;
+
+        let dest = snap_dir.join(format!("{snap_name}.img"));
+        if dest.exists() {
+            return Err(Error::Image(format!(
+                "snapshot '{snap_name}' already exists for VM '{vm_name}'"
+            )));
+        }
+
+        apfs_clone(&src, &dest)?;
+        Ok(())
     }
 
-    fn restore_snapshot(&self, _vm_name: &str, _snap_name: &str) -> Result<()> {
-        todo!("macOS: restore_snapshot")
+    /// Restore a snapshot by replacing the VM's rootfs with an APFS clone
+    /// of the snapshot file.
+    ///
+    /// `cp -c vms/<vm>/snapshots/<snap>.img → vms/<vm>/rootfs.img`
+    /// The old rootfs is removed first, then replaced with a fresh CoW clone
+    /// of the snapshot.
+    fn restore_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+        let snap_path = self
+            .vm_snapshots_dir(vm_name)
+            .join(format!("{snap_name}.img"));
+        if !snap_path.exists() {
+            return Err(Error::Image(format!(
+                "snapshot '{snap_name}' not found for VM '{vm_name}'"
+            )));
+        }
+
+        let rootfs = self.vm_rootfs(vm_name);
+
+        // Remove current rootfs before cloning, so cp -c doesn't fail on
+        // an existing destination file.
+        if rootfs.exists() {
+            fs::remove_file(&rootfs).map_err(|e| Error::Io {
+                path: rootfs.clone(),
+                source: e,
+            })?;
+        }
+
+        apfs_clone(&snap_path, &rootfs)?;
+        Ok(())
     }
 
-    fn delete_snapshot(&self, _vm_name: &str, _snap_name: &str) -> Result<()> {
-        todo!("macOS: delete_snapshot")
+    /// Delete a snapshot by removing its image file.
+    ///
+    /// APFS reference-counts the underlying blocks — deleting a snapshot only
+    /// frees blocks that are not shared with other clones (rootfs or other
+    /// snapshots).
+    fn delete_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+        let snap_path = self
+            .vm_snapshots_dir(vm_name)
+            .join(format!("{snap_name}.img"));
+        if !snap_path.exists() {
+            return Err(Error::Image(format!(
+                "snapshot '{snap_name}' not found for VM '{vm_name}'"
+            )));
+        }
+
+        fs::remove_file(&snap_path).map_err(|e| Error::Io {
+            path: snap_path,
+            source: e,
+        })?;
+        Ok(())
     }
 
-    fn list_snapshots(&self, _vm_name: &str) -> Result<Vec<SnapshotInfo>> {
-        todo!("macOS: list_snapshots")
+    /// List all snapshots for a VM by reading the `snapshots/` directory.
+    ///
+    /// Each `.img` file in the directory is a snapshot. Metadata (creation
+    /// time, size) comes from `fs::metadata` on each file.
+    fn list_snapshots(&self, vm_name: &str) -> Result<Vec<SnapshotInfo>> {
+        let snap_dir = self.vm_snapshots_dir(vm_name);
+        if !snap_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut snapshots = Vec::new();
+        let entries = fs::read_dir(&snap_dir).map_err(|e| Error::Io {
+            path: snap_dir.clone(),
+            source: e,
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::Io {
+                path: snap_dir.clone(),
+                source: e,
+            })?;
+            let path = entry.path();
+
+            // Only consider .img files as snapshots.
+            if path.extension().and_then(|e| e.to_str()) != Some("img") {
+                continue;
+            }
+
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let meta = fs::metadata(&path).map_err(|e| Error::Io {
+                path: path.clone(),
+                source: e,
+            })?;
+
+            // Use file modification time as creation timestamp. On macOS,
+            // the birth time (created) would be more accurate, but mtime
+            // is portable and close enough — the file is created once and
+            // never modified.
+            let created_at = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            snapshots.push(SnapshotInfo {
+                name,
+                created_at,
+                size: meta.len(),
+            });
+        }
+
+        // Sort by creation time (oldest first) for consistent output.
+        snapshots.sort_by_key(|s| s.created_at);
+        Ok(snapshots)
     }
 
     fn resize(&self, _vm_name: &str, _new_size: ByteSize) -> Result<()> {
@@ -258,7 +388,12 @@ fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
                 stderr.trim()
             )
         } else {
-            format!("cp -c {} → {} failed: {}", src.display(), dest.display(), stderr.trim())
+            format!(
+                "cp -c {} → {} failed: {}",
+                src.display(),
+                dest.display(),
+                stderr.trim()
+            )
         };
         return Err(Error::Image(msg));
     }
