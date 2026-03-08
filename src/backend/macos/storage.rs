@@ -83,6 +83,10 @@ impl StorageBackend for MacosStorage {
     fn init(config: &InitConfig) -> Result<()> {
         let state_dir = &config.state_dir;
 
+        // Validate that the state directory resides on an APFS volume.
+        // Warn (don't error) if not — the user might know what they're doing.
+        check_apfs_volume(state_dir);
+
         let dirs = [
             state_dir.join("images").join("data"),
             state_dir.join("vms"),
@@ -593,5 +597,57 @@ fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
         Some(after[s_start..s_end].to_string())
     } else {
         None
+    }
+}
+
+/// Check whether the given path resides on an APFS volume.
+///
+/// Runs `diskutil info <path>` and looks for `File System Personality: APFS`
+/// in the output. Prints a warning if the volume is not APFS (cloning will
+/// fail or be slow). Silently returns if the check can't be performed
+/// (e.g., `diskutil` not available or path doesn't exist yet).
+fn check_apfs_volume(path: &Path) {
+    // Use the path itself (or its nearest existing ancestor) for the check.
+    let check_path = {
+        let mut p = path.to_path_buf();
+        while !p.exists() {
+            if !p.pop() {
+                return; // Can't find an existing ancestor — skip check.
+            }
+        }
+        p
+    };
+
+    let output = match Command::new("diskutil")
+        .args(["info", "-plist"])
+        .arg(&check_path)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return, // Can't run diskutil — skip check silently.
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Look for <key>FilesystemType</key> followed by <string>apfs</string>.
+    // The value is lowercase in plist output.
+    let is_apfs = stdout
+        .find("<key>FilesystemType</key>")
+        .and_then(|idx| {
+            let after = &stdout[idx..];
+            let start = after.find("<string>")? + "<string>".len();
+            let end = after.find("</string>")?;
+            Some(after[start..end].trim().to_lowercase())
+        })
+        .map(|fs_type| fs_type == "apfs")
+        .unwrap_or(false);
+
+    if !is_apfs {
+        eprintln!(
+            "Warning: {} is not on an APFS volume. \
+             Copy-on-write clones (cp -c) will not work, and VM cloning \
+             will use full copies instead of instant CoW clones.",
+            path.display()
+        );
     }
 }
