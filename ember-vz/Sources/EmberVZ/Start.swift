@@ -176,6 +176,50 @@ struct Start: ParsableCommand {
         sigtermSource.resume()
         _sigtermSourceRef = sigtermSource
 
+        // Install SIGUSR1 handler: pause the VM.
+        signal(SIGUSR1, SIG_IGN)
+        let sigusr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        sigusr1Source.setEventHandler {
+            guard let vm = _vmRef else { return }
+            guard vm.canPause else {
+                fputs("warning: VM cannot be paused in current state\n", stderr)
+                return
+            }
+            fputs("received SIGUSR1, pausing VM...\n", stderr)
+            vm.pause { result in
+                switch result {
+                case .success:
+                    fputs("vm paused\n", stderr)
+                case .failure(let error):
+                    fputs("warning: pause failed: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        sigusr1Source.resume()
+        _sigusr1SourceRef = sigusr1Source
+
+        // Install SIGUSR2 handler: resume the VM.
+        signal(SIGUSR2, SIG_IGN)
+        let sigusr2Source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        sigusr2Source.setEventHandler {
+            guard let vm = _vmRef else { return }
+            guard vm.canResume else {
+                fputs("warning: VM cannot be resumed in current state\n", stderr)
+                return
+            }
+            fputs("received SIGUSR2, resuming VM...\n", stderr)
+            vm.resume { result in
+                switch result {
+                case .success:
+                    fputs("vm resumed\n", stderr)
+                case .failure(let error):
+                    fputs("warning: resume failed: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+        sigusr2Source.resume()
+        _sigusr2SourceRef = sigusr2Source
+
         vm.start { result in
             switch result {
             case .success:
@@ -194,6 +238,8 @@ struct Start: ParsableCommand {
 nonisolated(unsafe) var _vmRef: VZVirtualMachine?
 nonisolated(unsafe) var _delegateRef: VMDelegate?
 nonisolated(unsafe) var _sigtermSourceRef: DispatchSourceSignal?
+nonisolated(unsafe) var _sigusr1SourceRef: DispatchSourceSignal?
+nonisolated(unsafe) var _sigusr2SourceRef: DispatchSourceSignal?
 
 // MARK: - VM Delegate
 

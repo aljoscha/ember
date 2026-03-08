@@ -16,7 +16,7 @@
 - [x] Implement `ember-vz start`: boot Linux VM with VZLinuxBootLoader, virtio-blk, virtio-net (shared vmnet), virtio-console
 - [x] Implement graceful shutdown on SIGTERM (VZVirtualMachine.stop)
 - [x] Implement SIGKILL handling (force stop)
-- [ ] Implement pause (SIGUSR1) and resume (SIGUSR2)
+- [x] Implement pause (SIGUSR1) and resume (SIGUSR2)
 - [ ] Implement `--ready-fd` to report guest MAC address when VM is booted
 - [ ] Implement serial console logging to file
 - [ ] Test: boot a Linux kernel + minimal rootfs, verify serial output, verify network
