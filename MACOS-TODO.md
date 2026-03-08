@@ -4,7 +4,7 @@
 
 - [x] Define `VmBackend`, `StorageBackend`, `NetworkBackend` traits in `src/backend/mod.rs`
 - [x] Move Firecracker code behind `VmBackend` trait (`src/backend/linux/vm.rs`)
-- [ ] Move ZFS code behind `StorageBackend` trait (`src/backend/linux/storage.rs`)
+- [x] Move ZFS code behind `StorageBackend` trait (`src/backend/linux/storage.rs`)
 - [ ] Move TAP/iptables/IP-allocation code behind `NetworkBackend` trait (`src/backend/linux/network.rs`)
 - [ ] Move ext4/loop-mount code behind platform-specific image helpers (`src/backend/linux/image.rs`)
 - [ ] Update CLI modules to call backend traits instead of direct module calls

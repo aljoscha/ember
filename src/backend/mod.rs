@@ -117,81 +117,87 @@ pub trait VmBackend {
 /// - **Linux**: ZFS zvols with snapshots and `zfs clone`.
 /// - **macOS**: raw `.img` files with APFS CoW clones (`cp -c`).
 ///
-/// All methods are associated functions selected at compile time.
+/// Methods use `&self` so the implementation can hold platform-specific config
+/// (e.g., ZFS pool/dataset paths on Linux, state directory on macOS).
+/// `init` is an associated function since it's called before the backend is constructed.
 pub trait StorageBackend {
     /// Initialize storage during `ember init`.
     ///
-    /// Linux: creates ZFS datasets (`pool/dataset/images`, `pool/dataset/vms`).
+    /// Linux: creates ZFS pool (if needed) and datasets.
     /// macOS: validates the state directory is on an APFS volume.
-    fn init(config: &InitConfig) -> Result<()>;
+    fn init(config: &InitConfig) -> Result<()>
+    where
+        Self: Sized;
 
-    /// Create a base image volume from an unpacked rootfs.
+    /// Create a base image volume from an ext4 image file.
     ///
     /// `name` is the image identifier (e.g., `library-alpine-latest`).
     /// `image_path` is the path to the ext4 image file to import.
+    /// `size_mib` is the image size in MiB (used for zvol creation on Linux).
     ///
-    /// Returns the path to the created volume/image.
+    /// Returns the zvol path (Linux) or .img file path (macOS).
     ///
     /// Linux: creates a zvol, writes the image via `dd`, creates `@base` snapshot.
     /// macOS: copies the `.img` file into `images/data/`.
-    fn create_image_volume(name: &str, image_path: &Path) -> Result<PathBuf>;
+    fn create_image_volume(&self, name: &str, image_path: &Path, size_mib: u64) -> Result<PathBuf>;
 
-    /// Clone a base image for a new VM. Returns the path to the VM's disk.
+    /// Clone a base image for a new VM. Returns the zvol path (Linux) or
+    /// .img file path (macOS).
     ///
     /// Linux: `zfs clone pool/.../images/name@base pool/.../vms/vm_name`.
     /// macOS: `cp -c images/data/name.img vms/vm_name/rootfs.img`.
-    fn clone_for_vm(image_name: &str, vm_name: &str) -> Result<PathBuf>;
+    fn clone_for_vm(&self, image_name: &str, vm_name: &str) -> Result<PathBuf>;
 
     /// Create a named snapshot of a VM's current disk state.
     ///
     /// Linux: `zfs snapshot pool/.../vms/vm_name@snap_name`.
     /// macOS: `cp -c vms/vm_name/rootfs.img vms/vm_name/snapshots/snap_name.img`.
-    fn snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
+    fn snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
 
     /// Restore a VM's disk to a previously created snapshot.
     ///
     /// Linux: `zfs rollback pool/.../vms/vm_name@snap_name`.
     /// macOS: `cp -c vms/vm_name/snapshots/snap_name.img vms/vm_name/rootfs.img`.
-    fn restore_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
+    fn restore_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
 
     /// Delete a snapshot.
     ///
     /// Linux: `zfs destroy pool/.../vms/vm_name@snap_name`.
     /// macOS: `rm vms/vm_name/snapshots/snap_name.img`.
-    fn delete_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
+    fn delete_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
 
     /// List all snapshots for a VM.
-    fn list_snapshots(vm_name: &str) -> Result<Vec<SnapshotInfo>>;
+    fn list_snapshots(&self, vm_name: &str) -> Result<Vec<SnapshotInfo>>;
 
     /// Resize a VM's disk to `new_size`.
     ///
     /// Linux: `zfs set volsize=... + resize2fs`.
     /// macOS: `truncate -s ... + resize2fs`.
-    fn resize(vm_name: &str, new_size: ByteSize) -> Result<()>;
+    fn resize(&self, vm_name: &str, new_size: ByteSize) -> Result<()>;
 
     /// Destroy all storage for a VM (disk image, snapshots).
     ///
     /// Linux: `zfs destroy -r pool/.../vms/vm_name`.
     /// macOS: `rm -rf vms/vm_name/` (disk files only; state is separate).
-    fn destroy_vm_storage(vm_name: &str) -> Result<()>;
+    fn destroy_vm_storage(&self, vm_name: &str) -> Result<()>;
 
     /// Destroy storage for a base image.
     ///
     /// Linux: `zfs destroy pool/.../images/name` (and its @base snapshot).
     /// macOS: `rm images/data/name.img`.
-    fn destroy_image_storage(name: &str) -> Result<()>;
+    fn destroy_image_storage(&self, name: &str) -> Result<()>;
 
     /// Mount a disk image and return the mount point path.
     ///
     /// Linux: loop-mounts the zvol block device.
     /// macOS: `hdiutil attach` the raw `.img` file.
-    fn mount(path: &Path) -> Result<PathBuf>;
+    fn mount(&self, path: &Path) -> Result<PathBuf>;
 
     /// Unmount a previously mounted disk image.
     ///
     /// Linux: `umount`.
     /// macOS: `hdiutil detach`.
-    fn unmount(mount_point: &Path) -> Result<()>;
+    fn unmount(&self, mount_point: &Path) -> Result<()>;
 }
 
 /// Network backend: manages VM networking.
