@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import Virtualization
 
 /// Boot a Linux VM with the given kernel, disk, and configuration.
 ///
@@ -42,13 +43,150 @@ struct Start: ParsableCommand {
     var readyFd: Int32? = nil
 
     func run() throws {
-        // TODO: Implement VM boot in subsequent tasks:
-        //   1. Configure VZLinuxBootLoader with kernel + boot args
-        //   2. Attach virtio-blk disk, virtio-net (shared vmnet), virtio-console
-        //   3. Start VM, wait for boot, write MAC to ready-fd
-        //   4. Install signal handlers for SIGTERM/SIGUSR1/SIGUSR2
-        //   5. Run until VM exits or signal received
-        print("ember-vz: start command not yet implemented")
-        throw ExitCode.failure
+        // Build the VM configuration (does not require main actor)
+        let vmConfig = try buildConfiguration()
+
+        // Schedule VM creation and start on the main queue.
+        // VZVirtualMachine must be used from the queue it was created on
+        // (defaults to main queue).
+        DispatchQueue.main.async {
+            do {
+                try self.startVM(config: vmConfig)
+            } catch {
+                fputs("error: \(error.localizedDescription)\n", stderr)
+                Darwin.exit(1)
+            }
+        }
+
+        // Block forever on the main run loop. The VM delegate calls exit()
+        // when the guest shuts down or an error occurs.
+        dispatchMain()
+    }
+
+    // MARK: - VM Configuration
+
+    /// Build the VZVirtualMachineConfiguration from CLI arguments.
+    /// This assembles the boot loader, disk, network, and console devices.
+    private func buildConfiguration() throws -> VZVirtualMachineConfiguration {
+        let config = VZVirtualMachineConfiguration()
+
+        // Boot loader: direct Linux kernel boot (like Firecracker)
+        let bootLoader = VZLinuxBootLoader(
+            kernelURL: URL(fileURLWithPath: kernel)
+        )
+        bootLoader.commandLine = bootArgs
+        config.bootLoader = bootLoader
+
+        // CPU and memory
+        config.cpuCount = cpus
+        config.memorySize = UInt64(memory) * 1024 * 1024
+
+        // Storage: raw ext4 disk image as virtio-blk (/dev/vda in guest)
+        let diskAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: URL(fileURLWithPath: disk),
+            readOnly: false,
+            cachingMode: .cached,
+            synchronizationMode: .full
+        )
+        config.storageDevices = [
+            VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
+        ]
+
+        // Network: vmnet shared mode (NAT + DHCP, no root required)
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        networkDevice.macAddress = VZMACAddress.randomLocallyAdministered()
+        config.networkDevices = [networkDevice]
+
+        // Serial console: virtio-console device.
+        // Guest output goes to stdout (or a log file); guest input from /dev/null.
+        let serialPort = VZVirtioConsoleDeviceSerialPortConfiguration()
+        let outputHandle: FileHandle
+        if let logPath = serialLog {
+            // Ensure the log file exists so we can open it for writing
+            FileManager.default.createFile(atPath: logPath, contents: nil)
+            guard let handle = FileHandle(forWritingAtPath: logPath) else {
+                throw ValidationError("Cannot open serial log file: \(logPath)")
+            }
+            handle.seekToEndOfFile()
+            outputHandle = handle
+        } else {
+            outputHandle = FileHandle.standardOutput
+        }
+        serialPort.attachment = VZFileHandleSerialPortAttachment(
+            fileHandleForReading: FileHandle.nullDevice,
+            fileHandleForWriting: outputHandle
+        )
+        config.serialPorts = [serialPort]
+
+        // Entropy: virtio-rng provides /dev/urandom in guest
+        config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+
+        // Memory balloon: allows host to reclaim unused guest memory
+        config.memoryBalloonDevices = [
+            VZVirtioTraditionalMemoryBalloonDeviceConfiguration()
+        ]
+
+        try config.validate()
+        return config
+    }
+
+    // MARK: - VM Lifecycle
+
+    /// Create the VM from a validated configuration, start it, and install
+    /// a delegate that exits the process when the guest shuts down.
+    @MainActor
+    private func startVM(config: VZVirtualMachineConfiguration) throws {
+        let vm = VZVirtualMachine(configuration: config)
+
+        // Report the guest MAC address so ember can discover the IP via DHCP.
+        // Written to ready-fd if provided, otherwise to stderr.
+        let mac = config.networkDevices.first!.macAddress.string
+        if let fd = readyFd {
+            let readyHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            readyHandle.write(Data("\(mac)\n".utf8))
+        }
+        fputs("MAC=\(mac)\n", stderr)
+
+        // Delegate handles guest stop / error → process exit
+        let delegate = VMDelegate()
+        vm.delegate = delegate
+
+        // Keep a strong reference to the delegate and VM so they aren't deallocated
+        _vmRef = vm
+        _delegateRef = delegate
+
+        vm.start { result in
+            switch result {
+            case .success:
+                fputs("vm started\n", stderr)
+            case .failure(let error):
+                fputs("error: vm failed to start: \(error.localizedDescription)\n", stderr)
+                Darwin.exit(1)
+            }
+        }
+    }
+}
+
+// Strong references to keep the VM and delegate alive for the process lifetime.
+// These live at module scope since dispatchMain() never returns.
+nonisolated(unsafe) var _vmRef: VZVirtualMachine?
+nonisolated(unsafe) var _delegateRef: VMDelegate?
+
+// MARK: - VM Delegate
+
+/// Handles VM lifecycle events. Exits the process when the guest stops.
+class VMDelegate: NSObject, VZVirtualMachineDelegate {
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        fputs("vm stopped\n", stderr)
+        exit(0)
+    }
+
+    func virtualMachine(
+        _ virtualMachine: VZVirtualMachine,
+        didStopWithError error: any Error
+    ) {
+        fputs("error: vm stopped unexpectedly: \(error.localizedDescription)\n", stderr)
+        exit(1)
     }
 }
