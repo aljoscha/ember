@@ -205,24 +205,26 @@ pub trait StorageBackend {
 /// - **Linux**: TAP devices + iptables NAT/masquerade + static IP allocation.
 /// - **macOS**: vmnet shared mode (NAT + DHCP handled by the framework).
 ///
-/// All methods are associated functions selected at compile time.
+/// Methods use `&self` so the implementation can hold state (e.g., `StateStore`
+/// for IP allocation tracking on Linux).
 pub trait NetworkBackend {
     /// Set up networking for a VM. Returns the network configuration.
     ///
-    /// Linux: allocates IP, creates TAP device, adds iptables NAT rules.
+    /// Linux: allocates IP, creates TAP device, enables IP forwarding,
+    /// adds iptables NAT rules.
     /// macOS: no-op (vmnet handles everything); returns vmnet gateway info.
-    fn setup(vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo>;
+    fn setup(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo>;
 
     /// Tear down networking for a VM.
     ///
     /// Linux: removes iptables rules, deletes TAP device, releases IP.
     /// macOS: no-op (vmnet cleans up automatically).
-    fn teardown(vm: &VmMetadata) -> Result<()>;
+    fn teardown(&self, vm: &VmMetadata) -> Result<()>;
 
     /// Discover the guest's IP address from its MAC address.
     ///
-    /// Linux: the IP is statically assigned, so this is a lookup.
+    /// Linux: the IP is statically assigned, so this is a no-op/lookup.
     /// macOS: parses `/var/db/dhcpd_leases` for the vmnet DHCP lease,
     /// with ARP-based fallback.
-    fn discover_guest_ip(mac: &str) -> Result<String>;
+    fn discover_guest_ip(&self, mac: &str) -> Result<String>;
 }
