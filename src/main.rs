@@ -45,6 +45,7 @@ fn needs_root(command: &Command) -> bool {
         command,
         Command::Version
             | Command::Info
+            | Command::Debug(_)
             | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
@@ -64,6 +65,7 @@ fn needs_reconcile(command: &Command) -> bool {
         Command::Version
             | Command::Info
             | Command::Init(_)
+            | Command::Debug(_)
             | Command::Reconcile
             | Command::Ssh(_)
             | Command::Exec(_)
@@ -101,6 +103,7 @@ fn main() -> anyhow::Result<()> {
         Command::Exec(args) => cli::exec::run(args, &cli.state_dir),
         Command::Cp(args) => cli::cp::run(args, &cli.state_dir),
         Command::Info => cli::info::run(&cli.state_dir),
+        Command::Debug(cmd) => cli::debug::run(cmd, &cli.state_dir),
         Command::Reconcile => {
             #[cfg(target_os = "linux")]
             state::reconcile::run(&cli.state_dir);

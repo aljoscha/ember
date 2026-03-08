@@ -1,4 +1,5 @@
 pub mod cp;
+pub mod debug;
 pub mod exec;
 pub mod image;
 pub mod info;
@@ -58,6 +59,10 @@ pub enum Command {
 
     /// Show ember configuration and status overview
     Info,
+
+    /// Debugging and diagnostics
+    #[command(subcommand)]
+    Debug(debug::DebugCommand),
 
     /// Reconcile internal state with actual Firecracker process state
     Reconcile,

@@ -39,10 +39,10 @@
 
 ## Phase 2.5: Storage Efficiency Diagnostics
 
-- [ ] Implement `ember debug storage-efficiency` command
-- [ ] Report logical size (sum of all .img file sizes via stat)
-- [ ] Report actual disk usage (df / diskutil apfs list)
-- [ ] Report CoW efficiency ratio
+- [x] Implement `ember debug storage-efficiency` command
+- [x] Report logical size (sum of all .img file sizes via stat)
+- [x] Report actual disk usage (df / diskutil apfs list)
+- [x] Report CoW efficiency ratio
 - [ ] Test: create base image + multiple clones, verify efficiency report shows savings
 
 ## Phase 3: macOS VM Backend (AVF via ember-vz)
