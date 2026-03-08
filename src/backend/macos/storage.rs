@@ -100,13 +100,38 @@ impl StorageBackend for MacosStorage {
         Ok(())
     }
 
+    /// Import an ext4 image file into the images directory.
+    ///
+    /// On macOS, the raw `.img` file *is* the base image — no zvol, no
+    /// `@base` snapshot. The file is simply moved (or copied) into
+    /// `images/data/<name>.img`. `size_mib` is unused on macOS.
     fn create_image_volume(
         &self,
-        _name: &str,
-        _image_path: &Path,
+        name: &str,
+        image_path: &Path,
         _size_mib: u64,
     ) -> Result<PathBuf> {
-        todo!("macOS: create_image_volume")
+        let dest = self.image_path(name);
+
+        // Ensure the images directory exists.
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
+
+        // Move the image file into place. Use rename if possible (same
+        // filesystem), fall back to copy + delete for cross-device moves.
+        if fs::rename(image_path, &dest).is_err() {
+            fs::copy(image_path, &dest).map_err(|e| Error::Io {
+                path: dest.clone(),
+                source: e,
+            })?;
+            let _ = fs::remove_file(image_path);
+        }
+
+        Ok(dest)
     }
 
     fn clone_for_vm(&self, _image_name: &str, _vm_name: &str) -> Result<PathBuf> {
