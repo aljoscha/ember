@@ -4,9 +4,9 @@ use std::process::Command;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
+use crate::backend::{InitConfig, Storage, StorageBackend};
 use crate::error::Error;
 use crate::state::store::StateStore;
-use crate::zfs;
 
 #[derive(Args)]
 pub struct InitArgs {
@@ -32,7 +32,7 @@ pub struct InitArgs {
 }
 
 /// Global configuration written by `ember init`.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
     pub pool: String,
     pub dataset: String,
@@ -56,34 +56,14 @@ impl GlobalConfig {
 }
 
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
-    let pool = &args.pool;
-
-    // 1. Create or verify ZFS pool.
-    if zfs::pool::exists(pool)? {
-        let info = zfs::pool::status(pool)?;
-        println!("Pool '{pool}' already exists (health: {})", info.health);
-    } else {
-        let device = args.device.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("pool '{pool}' does not exist — provide --device to create it")
-        })?;
-        println!("Creating ZFS pool '{pool}' on {device}...");
-        zfs::pool::create(pool, device)?;
-        println!("Pool '{pool}' created.");
-    }
-
-    // 2. Create datasets: <pool>/<dataset>, <pool>/<dataset>/images, <pool>/<dataset>/vms.
-    let base = format!("{pool}/{}", args.dataset);
-    let images = format!("{base}/images");
-    let vms = format!("{base}/vms");
-
-    for ds in [&base, &images, &vms] {
-        if zfs::dataset::exists(ds)? {
-            println!("Dataset '{ds}' already exists.");
-        } else {
-            println!("Creating dataset '{ds}'...");
-            zfs::dataset::create(ds)?;
-        }
-    }
+    // 1-2. Create or verify ZFS pool and datasets via the storage backend.
+    let init_config = InitConfig {
+        state_dir: state_dir.to_path_buf(),
+        pool: args.pool.clone(),
+        dataset: args.dataset.clone(),
+        device: args.device.clone(),
+    };
+    Storage::init(&init_config)?;
 
     // 3. Initialize state directory structure.
     let store = StateStore::new(state_dir.to_path_buf());
@@ -118,7 +98,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // 6. Write config.
     let config = GlobalConfig {
-        pool: pool.clone(),
+        pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         kernel_path,
         wan_iface,

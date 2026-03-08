@@ -191,6 +191,7 @@ fn configure_and_boot(
         host_ip: net_info.host_ip.clone(),
         netmask: net_info.netmask.clone(),
         guest_mac: net_info.guest_mac.clone(),
+        hostname: vm.name.clone(),
         dns_servers,
     });
 

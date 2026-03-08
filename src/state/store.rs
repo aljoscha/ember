@@ -33,6 +33,7 @@ use crate::error::{Error, Result};
 /// └── network/
 ///     └── allocations.json
 /// ```
+#[derive(Clone)]
 pub struct StateStore {
     root: PathBuf,
 }

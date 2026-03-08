@@ -4,12 +4,12 @@ use clap::{Args, Subcommand};
 
 use super::init::GlobalConfig;
 use super::vm::OutputFormat;
+use crate::backend::{Storage, StorageBackend};
 use crate::image;
 use crate::image::pull::ImageReference;
 use crate::image::registry::{new_build_entry, new_entry, ImageRegistry};
 use crate::state::store::StateStore;
 use crate::state::vm::{self, VmMetadata};
-use crate::zfs;
 
 #[derive(Subcommand)]
 pub enum ImageCommand {
@@ -82,22 +82,21 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Pull an OCI image from a registry and write it to a ZFS zvol.
+/// Pull an OCI image from a registry and import it into storage.
 ///
 /// Full pipeline: skopeo pull → inject SSH keys + resolv.conf → ext4 image
-/// → zvol create → dd to zvol → @base snapshot → register in local registry.
+/// → storage backend import → register in local registry.
 ///
-/// Uses a [`Rollback`] guard to ensure the zvol is cleaned up if any step
-/// after creation fails (e.g., writing the image or saving the registry).
+/// Uses a [`Rollback`] guard to ensure storage is cleaned up if any step
+/// after creation fails (e.g., saving the registry).
 fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let images_dataset = config.images_dataset();
+    let storage = Storage::new(&config);
 
     // Parse and validate the image reference.
     let reference = ImageReference::parse(&args.reference)?;
     let local_name = reference.local_name();
-    let zvol = format!("{images_dataset}/{local_name}");
 
     // Check if this image is already pulled.
     let registry = ImageRegistry::load(&store)?;
@@ -121,10 +120,12 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Step 2: Inject SSH authorized_keys, resolv.conf, and inittab into rootfs.
     inject_image_config(&rootfs_dir, true)?;
 
-    // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
-    let (size_mib, rollback) = create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
+    // Steps 3-4: Create ext4 image → import into storage backend.
+    let (size_mib, disk_path, rollback) =
+        create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
+    let zvol = disk_path.to_string_lossy().to_string();
     let entry = new_entry(&reference, &zvol, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
@@ -136,18 +137,17 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a VM image from a Dockerfile and write it to a ZFS zvol.
+/// Build a VM image from a Dockerfile and import it into storage.
 ///
 /// Full pipeline: docker build → export rootfs → inject SSH keys + resolv.conf
-/// → ext4 image → zvol create → dd to zvol → @base snapshot → register.
+/// → ext4 image → storage backend import → register.
 fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let images_dataset = config.images_dataset();
+    let storage = Storage::new(&config);
 
-    // Sanitize the name for ZFS dataset use.
+    // Sanitize the name for storage use.
     let local_name = image::build::sanitize_name(&args.name)?;
-    let zvol = format!("{images_dataset}/{local_name}");
 
     // Check if this image already exists.
     let registry = ImageRegistry::load(&store)?;
@@ -191,10 +191,12 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Skip inittab — systemd-based images handle init and CtrlAltDel natively.
     inject_image_config(&rootfs_dir, false)?;
 
-    // Steps 3-4: Create ext4 image → zvol → write → @base snapshot.
-    let (size_mib, rollback) = create_zvol_from_rootfs(&rootfs_dir, work_dir.path(), &zvol)?;
+    // Steps 3-4: Create ext4 image → import into storage backend.
+    let (size_mib, disk_path, rollback) =
+        create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
+    let zvol = disk_path.to_string_lossy().to_string();
     let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
@@ -285,11 +287,11 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // Destroy the ZFS zvol (and its @base snapshot) recursively.
-    if zfs::volume::exists(&entry.zvol)? {
-        println!("Destroying zvol {}...", entry.zvol);
-        zfs::volume::destroy(&entry.zvol, true)?;
-    }
+    // Destroy the image's storage (zvol on Linux, .img file on macOS).
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    println!("Destroying storage for image '{}'...", local_name);
+    storage.destroy_image_storage(&local_name)?;
 
     // Remove from registry last, after the zvol is gone.
     image::registry::remove_image(&store, &local_name)?;
@@ -361,35 +363,34 @@ fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Resul
     Ok(())
 }
 
-/// Create an ext4 image from a rootfs directory and write it to a new ZFS zvol.
+/// Create an ext4 image from a rootfs directory and import it into storage.
 ///
-/// Returns `(size_mib, rollback)` — the caller must register the image in the
-/// registry and then call `rollback.commit()` to finalize.
-fn create_zvol_from_rootfs(
+/// Returns `(size_mib, disk_path, rollback)` — the caller must register
+/// the image in the registry and then call `rollback.commit()` to finalize.
+fn create_image_from_rootfs(
     rootfs_dir: &Path,
     work_dir: &Path,
-    zvol: &str,
-) -> anyhow::Result<(u64, crate::cleanup::Rollback)> {
+    name: &str,
+    storage: &Storage,
+) -> anyhow::Result<(u64, PathBuf, crate::cleanup::Rollback)> {
     let size_mib = image::ext4::estimate_size_mib(rootfs_dir)?;
     let ext4_path = work_dir.join("rootfs.ext4");
     println!("  Creating ext4 image ({size_mib} MiB)...");
     image::ext4::create(rootfs_dir, &ext4_path, size_mib)?;
 
-    let mut rollback = crate::cleanup::Rollback::new();
+    println!("  Importing image into storage...");
+    let disk_path = storage.create_image_volume(name, &ext4_path, size_mib)?;
 
-    println!("  Creating zvol {zvol}...");
-    zfs::volume::create(zvol, size_mib)?;
+    let mut rollback = crate::cleanup::Rollback::new();
     {
-        let z = zvol.to_string();
-        rollback.push("ZFS zvol", move || {
-            let _ = zfs::volume::destroy(&z, true);
+        let storage = storage.clone();
+        let n = name.to_string();
+        rollback.push("image storage", move || {
+            let _ = storage.destroy_image_storage(&n);
         });
     }
 
-    println!("  Writing image to zvol and creating @base snapshot...");
-    image::zvol::write_to_zvol(&ext4_path, zvol)?;
-
-    Ok((size_mib, rollback))
+    Ok((size_mib, disk_path, rollback))
 }
 
 /// Resolve a user-provided image name to its registry local_name.

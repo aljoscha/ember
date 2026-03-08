@@ -18,6 +18,7 @@ use crate::image;
 use crate::zfs;
 
 /// Linux storage backend using ZFS zvols.
+#[derive(Clone)]
 pub struct LinuxStorage {
     /// ZFS images dataset path (e.g., "tank/ember/images").
     images_dataset: String,
@@ -48,15 +49,38 @@ impl LinuxStorage {
 }
 
 impl StorageBackend for LinuxStorage {
-    /// Create ZFS pool (if needed) and datasets during `ember init`.
+    /// Create or verify ZFS pool and datasets during `ember init`.
+    ///
+    /// Handles the full ZFS initialization: creates the pool if it doesn't
+    /// exist (requires `device`), then creates the dataset hierarchy.
     fn init(config: &InitConfig) -> Result<()> {
         let pool = &config.pool;
+
+        // 1. Create or verify ZFS pool.
+        if zfs::pool::exists(pool)? {
+            let info = zfs::pool::status(pool)?;
+            println!("Pool '{pool}' already exists (health: {})", info.health);
+        } else {
+            let device = config.device.as_deref().ok_or_else(|| {
+                Error::Zfs(format!(
+                    "pool '{pool}' does not exist — provide --device to create it"
+                ))
+            })?;
+            println!("Creating ZFS pool '{pool}' on {device}...");
+            zfs::pool::create(pool, device)?;
+            println!("Pool '{pool}' created.");
+        }
+
+        // 2. Create datasets: <pool>/<dataset>, <pool>/<dataset>/images, <pool>/<dataset>/vms.
         let base = format!("{pool}/{}", config.dataset);
         let images = format!("{base}/images");
         let vms = format!("{base}/vms");
 
         for ds in [&base, &images, &vms] {
-            if !zfs::dataset::exists(ds)? {
+            if zfs::dataset::exists(ds)? {
+                println!("Dataset '{ds}' already exists.");
+            } else {
+                println!("Creating dataset '{ds}'...");
                 zfs::dataset::create(ds)?;
             }
         }
@@ -163,16 +187,70 @@ impl StorageBackend for LinuxStorage {
     /// Destroy the image zvol (includes its @base snapshot).
     fn destroy_image_storage(&self, name: &str) -> Result<()> {
         let zvol = self.image_zvol(name);
-        // Ignore errors — the zvol may already be gone.
-        let _ = zfs::volume::destroy(&zvol, true);
+        zfs::volume::destroy(&zvol, true)
+    }
+
+    /// Device path for a VM's root disk zvol.
+    ///
+    /// Returns the `/dev/zvol/...` path that can be used for mounting
+    /// or passing to Firecracker as a block device.
+    fn disk_device_path(&self, vm_name: &str) -> PathBuf {
+        let zvol = self.vm_zvol(vm_name);
+        zfs::volume::device_path(&zvol)
+    }
+
+    /// Fork a VM's disk by snapshotting the source and cloning into a new VM.
+    ///
+    /// Returns `(zvol_path, fork_snapshot_full_name)`.
+    fn clone_from_snapshot(
+        &self,
+        source_vm: &str,
+        snap_name: &str,
+        target_vm: &str,
+    ) -> Result<(PathBuf, String)> {
+        let source_zvol = self.vm_zvol(source_vm);
+        let target_zvol = self.vm_zvol(target_vm);
+
+        // Create the snapshot on the source VM.
+        zfs::snapshot::create(&source_zvol, snap_name)?;
+
+        let fork_snap_full = format!("{source_zvol}@{snap_name}");
+
+        // Clone the snapshot into the target VM's zvol.
+        if let Err(e) = zfs::volume::clone(&fork_snap_full, &target_zvol) {
+            // Clean up the snapshot on failure.
+            let _ = zfs::snapshot::destroy(&source_zvol, snap_name);
+            return Err(e);
+        }
+
+        Ok((PathBuf::from(target_zvol), fork_snap_full))
+    }
+
+    /// Clean up a fork origin snapshot (e.g., "tank/ember/vms/source@fork-target").
+    fn destroy_fork_origin(&self, fork_origin: &str) -> Result<()> {
+        if let Some((dataset, snap_name)) = fork_origin.split_once('@') {
+            match zfs::snapshot::destroy(dataset, snap_name) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Warning: failed to clean up fork snapshot '{fork_origin}': {e}");
+                }
+            }
+        }
         Ok(())
     }
 
     /// Mount a block device (zvol) at a temporary directory.
     ///
-    /// Returns the mount point path. The caller is responsible for calling
-    /// [`unmount`] when done.
+    /// Waits for the device to appear if needed (ZFS zvols may take a moment
+    /// after creation). Returns the mount point path. The caller is
+    /// responsible for calling [`unmount`] when done.
     fn mount(&self, path: &Path) -> Result<PathBuf> {
+        // Wait for the device to appear (ZFS zvols created by clone may
+        // not be immediately available).
+        if !path.exists() {
+            image::zvol::wait_for_device(path)?;
+        }
+
         let mount_dir = tempfile::tempdir()
             .map_err(|e| Error::Io {
                 path: std::env::temp_dir(),

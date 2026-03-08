@@ -2,11 +2,15 @@ use std::path::Path;
 
 use clap::{Args, Subcommand};
 
+use crate::backend::{Storage, StorageBackend};
+use crate::cli::init::GlobalConfig;
 use crate::state::store::StateStore;
 use crate::state::vm;
-use crate::zfs;
 
 use super::vm::OutputFormat;
+
+/// Reserved snapshot name used internally for image cloning (ZFS `@base`).
+const RESERVED_SNAPSHOT_NAME: &str = "base";
 
 #[derive(Subcommand)]
 pub enum SnapshotCommand {
@@ -69,21 +73,24 @@ pub fn run(cmd: &SnapshotCommand, state_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Create a ZFS snapshot of a VM's zvol.
+/// Create a snapshot of a VM's disk.
 ///
-/// The snapshot name must not conflict with the reserved `@base` snapshot
+/// The snapshot name must not conflict with the reserved `base` name
 /// used for image cloning, and must not already exist.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, &args.vm_name)?;
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    let _metadata = vm::load(&store, &args.vm_name)?;
 
-    // Disallow the reserved @base snapshot name.
-    if args.snapshot_name == zfs::BASE_SNAPSHOT_NAME {
+    // Disallow the reserved snapshot name.
+    if args.snapshot_name == RESERVED_SNAPSHOT_NAME {
         anyhow::bail!("snapshot name 'base' is reserved for image cloning");
     }
 
     // Check the snapshot doesn't already exist.
-    if zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
+    let existing = storage.list_snapshots(&args.vm_name)?;
+    if existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' already exists on vm '{}'",
             args.snapshot_name,
@@ -91,7 +98,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    zfs::snapshot::create(&metadata.zvol_path, &args.snapshot_name)?;
+    storage.snapshot(&args.vm_name, &args.snapshot_name)?;
 
     println!(
         "Created snapshot '{}' of vm '{}'",
@@ -100,23 +107,32 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// List ZFS snapshots for a VM.
+/// List snapshots for a VM.
 ///
-/// Shows all user-created snapshots on the VM's zvol, excluding the
-/// internal `@base` snapshot used for image cloning. Supports table
-/// and JSON output formats.
+/// Shows all user-created snapshots, excluding internal snapshots.
+/// Supports table and JSON output formats.
 fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, &args.vm_name)?;
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    let _metadata = vm::load(&store, &args.vm_name)?;
 
-    let snapshots: Vec<_> = zfs::snapshot::list(&metadata.zvol_path)?
-        .into_iter()
-        .filter(|s| s.short_name != zfs::BASE_SNAPSHOT_NAME)
-        .collect();
+    let snapshots = storage.list_snapshots(&args.vm_name)?;
 
     match args.format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&snapshots)?);
+            // Build a JSON-serializable list matching the backend's SnapshotInfo.
+            let json_list: Vec<_> = snapshots
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "name": s.name,
+                        "created_at": s.created_at,
+                        "size": s.size,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_list)?);
         }
         OutputFormat::Table => {
             if snapshots.is_empty() {
@@ -127,17 +143,13 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            println!(
-                "{:<30} {:<24} {:>10} {:>10}",
-                "NAME", "CREATED", "USED", "REFER"
-            );
+            println!("{:<30} {:<24} {:>10}", "NAME", "CREATED", "SIZE");
             for snap in &snapshots {
                 println!(
-                    "{:<30} {:<24} {:>10} {:>10}",
-                    snap.short_name,
-                    format_epoch(snap.creation),
-                    format_bytes(snap.used),
-                    format_bytes(snap.referenced),
+                    "{:<30} {:<24} {:>10}",
+                    snap.name,
+                    format_epoch(snap.created_at),
+                    format_bytes(snap.size),
                 );
             }
         }
@@ -187,21 +199,23 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Delete a ZFS snapshot from a VM's zvol.
+/// Delete a snapshot from a VM.
 ///
-/// The reserved `@base` snapshot cannot be deleted — it is used for image
-/// cloning. ZFS will return an error if the snapshot has dependent clones.
+/// The reserved `base` snapshot cannot be deleted — it is used for image cloning.
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::load(&store, &args.vm_name)?;
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    let _metadata = vm::load(&store, &args.vm_name)?;
 
-    // Disallow deleting the reserved @base snapshot.
-    if args.snapshot_name == zfs::BASE_SNAPSHOT_NAME {
+    // Disallow deleting the reserved snapshot.
+    if args.snapshot_name == RESERVED_SNAPSHOT_NAME {
         anyhow::bail!("snapshot 'base' is reserved for image cloning and cannot be deleted");
     }
 
     // Verify the snapshot exists.
-    if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
+    let existing = storage.list_snapshots(&args.vm_name)?;
+    if !existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' does not exist on vm '{}'\n\
              Hint: list snapshots with: ember snapshot list {}",
@@ -211,7 +225,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    zfs::snapshot::destroy(&metadata.zvol_path, &args.snapshot_name)?;
+    storage.delete_snapshot(&args.vm_name, &args.snapshot_name)?;
 
     println!(
         "Deleted snapshot '{}' from vm '{}'",
@@ -220,17 +234,19 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restore a VM's zvol to a previously created snapshot.
+/// Restore a VM's disk to a previously created snapshot.
 ///
-/// The VM must be stopped (or never started) — rolling back a zvol that is
-/// in use by a running Firecracker process would corrupt it. Uses
-/// `zfs rollback -r`, which destroys any snapshots newer than the target.
+/// The VM must be stopped — rolling back a disk that is in use by a running
+/// hypervisor would corrupt it.
 fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    let _metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
 
     // Verify the snapshot exists.
-    if !zfs::snapshot::exists(&metadata.zvol_path, &args.snapshot_name)? {
+    let existing = storage.list_snapshots(&args.vm_name)?;
+    if !existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' does not exist on vm '{}'\n\
              Hint: list snapshots with: ember snapshot list {}",
@@ -240,7 +256,7 @@ fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    zfs::snapshot::rollback(&metadata.zvol_path, &args.snapshot_name)?;
+    storage.restore_snapshot(&args.vm_name, &args.snapshot_name)?;
 
     println!(
         "Restored vm '{}' to snapshot '{}'",

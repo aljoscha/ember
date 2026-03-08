@@ -127,6 +127,38 @@ pub struct VmMetadata {
     pub forked_from: Option<String>,
 }
 
+impl VmMetadata {
+    /// Create a minimal VmMetadata for use in backend teardown/cleanup.
+    ///
+    /// Only the `name` and `network` fields are meaningful; the rest are
+    /// placeholder values. Used in rollback closures where we only need
+    /// enough metadata to clean up resources.
+    pub fn default_for_teardown() -> Self {
+        Self {
+            name: String::new(),
+            id: Uuid::nil(),
+            status: VmStatus::Created,
+            image: String::new(),
+            cpus: 0,
+            memory_mib: 0,
+            disk_size_gib: 0,
+            kernel_path: PathBuf::new(),
+            zvol_path: String::new(),
+            boot_args: None,
+            subnet: None,
+            network: None,
+            pid: None,
+            api_socket: PathBuf::new(),
+            created_at: String::new(),
+            ssh: SshConfig {
+                user: String::new(),
+                key: PathBuf::new(),
+            },
+            forked_from: None,
+        }
+    }
+}
+
 /// Load a running VM's metadata and network info.
 ///
 /// Returns an error if the VM is not found, not in `Running` state,

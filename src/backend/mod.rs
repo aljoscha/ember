@@ -21,10 +21,21 @@ use crate::state::vm::{NetworkInfo, VmMetadata};
 // which implementation to use.
 pub mod linux;
 
+// Type aliases for the active platform backend.
+// Currently always Linux; when macOS support is added these become
+// #[cfg(target_os)] gated.
+pub type Vm = linux::LinuxVm;
+pub type Storage = linux::LinuxStorage;
+pub type Network = linux::LinuxNetwork;
+
 // #[cfg(target_os = "macos")]
 // pub mod macos;
 // #[cfg(target_os = "macos")]
-// pub use macos::{MacosVm as Vm, MacosStorage as Storage, MacosNetwork as Network};
+// pub type Vm = macos::MacosVm;
+// #[cfg(target_os = "macos")]
+// pub type Storage = macos::MacosStorage;
+// #[cfg(target_os = "macos")]
+// pub type Network = macos::MacosNetwork;
 
 // ---------------------------------------------------------------------------
 // Common types returned by backend traits
@@ -69,6 +80,9 @@ pub struct InitConfig {
     pub pool: String,
     /// Dataset name within the ZFS pool. Used on Linux; ignored on macOS.
     pub dataset: String,
+    /// Block device for ZFS pool creation (e.g., `/dev/loop0`).
+    /// Only used on Linux when creating a new pool.
+    pub device: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,9 +201,38 @@ pub trait StorageBackend {
     /// macOS: `rm images/data/name.img`.
     fn destroy_image_storage(&self, name: &str) -> Result<()>;
 
+    /// Get the mountable device path for a VM's root disk.
+    ///
+    /// Linux: `/dev/zvol/pool/dataset/vms/vm_name` (block device for the zvol).
+    /// macOS: `state_dir/vms/vm_name/rootfs.img` (raw disk image file).
+    fn disk_device_path(&self, vm_name: &str) -> PathBuf;
+
+    /// Clone a VM snapshot to create a new VM's disk (used by `vm fork`).
+    ///
+    /// Creates a snapshot of the source VM (if `snap_name` doesn't exist yet),
+    /// then clones that snapshot into a new VM.
+    ///
+    /// Returns `(disk_path, fork_snapshot_identifier)` where the identifier
+    /// is stored in metadata for cleanup when the forked VM is deleted.
+    ///
+    /// Linux: `zfs clone pool/.../vms/source@snap pool/.../vms/target`.
+    /// macOS: `cp -c vms/source/rootfs.img vms/target/rootfs.img`.
+    fn clone_from_snapshot(
+        &self,
+        source_vm: &str,
+        snap_name: &str,
+        target_vm: &str,
+    ) -> Result<(PathBuf, String)>;
+
+    /// Clean up the fork origin snapshot created by [`clone_from_snapshot`].
+    ///
+    /// Called when deleting a forked VM to remove the snapshot that was
+    /// created on the source VM during forking.
+    fn destroy_fork_origin(&self, fork_origin: &str) -> Result<()>;
+
     /// Mount a disk image and return the mount point path.
     ///
-    /// Linux: loop-mounts the zvol block device.
+    /// Linux: mounts the zvol block device.
     /// macOS: `hdiutil attach` the raw `.img` file.
     fn mount(&self, path: &Path) -> Result<PathBuf>;
 

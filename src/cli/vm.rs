@@ -1,21 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
 use super::init::GlobalConfig;
+use crate::backend::{Network, NetworkBackend, Storage, StorageBackend, Vm, VmBackend};
 use crate::config;
 use crate::config::size::ByteSize;
 use crate::error::Error;
-use crate::firecracker;
 use crate::image;
 use crate::image::registry::ImageRegistry;
-use crate::network;
-use crate::ssh;
 use crate::state::store::StateStore;
-use crate::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
-use crate::zfs;
+use crate::state::vm::{self, SshConfig, VmMetadata, VmStatus};
 
 #[derive(Subcommand)]
 pub enum VmCommand {
@@ -373,33 +369,24 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
             )
         })?;
 
-    let image_zvol = image_entry.zvol.clone();
+    let image_name = image_entry.local_name.clone();
     let image_ref = image_entry.reference.clone();
     let image_size_mib = image_entry.size_mib;
 
-    // Verify @base snapshot exists on the image zvol.
-    if !zfs::snapshot::exists(&image_zvol, zfs::BASE_SNAPSHOT_NAME)? {
-        anyhow::bail!(
-            "image zvol '{}' has no @base snapshot — the image may be corrupted",
-            image_zvol
-        );
-    }
-
-    // Build zvol path for the VM.
-    let vm_zvol = format!("{}/{}", global_config.vms_dataset(), resolved.name);
+    let storage = Storage::new(&global_config);
 
     let mut rollback = Rollback::new();
 
-    // Clone @base snapshot → per-VM zvol (instant, copy-on-write).
-    let snapshot = format!("{image_zvol}@{}", zfs::BASE_SNAPSHOT_NAME);
-    println!("Cloning {} → {}...", snapshot, vm_zvol);
-    zfs::volume::clone(&snapshot, &vm_zvol)?;
+    // Clone base image → per-VM disk (instant, copy-on-write).
+    println!("Cloning image for VM '{}'...", resolved.name);
+    let vm_disk_path = storage.clone_for_vm(&image_name, &resolved.name)?;
+    let vm_zvol = vm_disk_path.to_string_lossy().to_string();
     {
-        let zvol = vm_zvol.clone();
+        let storage = storage.clone();
         let sd = state_dir.to_path_buf();
         let name = resolved.name.clone();
-        rollback.push("ZFS zvol clone", move || {
-            let _ = zfs::volume::destroy(&zvol, true);
+        rollback.push("VM storage clone", move || {
+            let _ = storage.destroy_vm_storage(&name);
             let _ = vm::delete(&StateStore::new(sd), &name);
         });
     }
@@ -408,6 +395,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         &resolved,
         &store,
         &mut global_config,
+        &storage,
         &vm_zvol,
         image_size_mib,
         &image_ref,
@@ -427,46 +415,35 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Post-clone steps: grow zvol, inject SSH key, save metadata.
+/// Post-clone steps: grow disk, inject SSH key, save metadata.
 ///
-/// Separated from [`create`] so the caller can clean up the zvol on failure.
+/// Separated from [`create`] so the caller can clean up storage on failure.
 fn create_post_clone(
     resolved: &ResolvedVmCreate,
     store: &StateStore,
     global_config: &mut GlobalConfig,
+    storage: &Storage,
     vm_zvol: &str,
     image_size_mib: u64,
     image_ref: &str,
 ) -> anyhow::Result<()> {
-    // Grow zvol if requested disk size exceeds image size.
+    // Grow disk if requested disk size exceeds image size.
     let requested_size_mib = resolved.disk_size as u64 * 1024;
     let needs_resize = requested_size_mib > image_size_mib;
     if needs_resize {
-        println!("Growing zvol to {} GiB...", resolved.disk_size);
-        zfs::volume::set_volsize(vm_zvol, resolved.disk_size)?;
+        println!("Growing disk to {} GiB...", resolved.disk_size);
+        storage.resize(
+            &resolved.name,
+            ByteSize::from_gib(resolved.disk_size as u64),
+        )?;
     }
 
-    // Wait for the zvol device node to appear.
-    let dev_path = zfs::volume::device_path(vm_zvol);
-    image::zvol::wait_for_device(&dev_path)?;
+    // Mount the disk to inject per-VM SSH key.
+    let dev_path = storage.disk_device_path(&resolved.name);
+    let mount_dir = storage.mount(&dev_path)?;
 
-    // If we grew the zvol, expand the ext4 filesystem to fill the space.
-    if needs_resize {
-        println!("Expanding ext4 filesystem...");
-        e2fsck(&dev_path)?;
-        resize2fs(&dev_path)?;
-    }
-
-    // Mount the zvol to inject per-VM SSH key.
-    let mount_dir = tempfile::tempdir().map_err(|e| Error::Io {
-        path: std::env::temp_dir(),
-        source: e,
-    })?;
-
-    mount_block_device(&dev_path, mount_dir.path())?;
-
-    let inject_result = inject_ssh_key(mount_dir.path());
-    let umount_result = umount(mount_dir.path());
+    let inject_result = inject_ssh_key(&mount_dir);
+    let umount_result = storage.unmount(&mount_dir);
 
     // Always try to unmount, even if injection failed.
     let detected_ssh_user = inject_result?;
@@ -562,28 +539,24 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let subnet = args.network.clone().or(source.subnet.clone());
 
-    // Snapshot the source VM's zvol.
+    let storage = Storage::new(&global_config);
+
+    // Snapshot source and clone into new VM via the storage backend.
     let fork_snap_name = format!("fork-{}", args.name);
-    println!("Snapshotting {}@{fork_snap_name}...", source.zvol_path);
-    zfs::snapshot::create(&source.zvol_path, &fork_snap_name)?;
-
-    let fork_snap_full = format!("{}@{fork_snap_name}", source.zvol_path);
-
-    // Clone the snapshot into the new VM's zvol.
-    let vm_zvol = format!("{}/{}", global_config.vms_dataset(), args.name);
-    println!("Cloning {fork_snap_full} → {vm_zvol}...");
-    zfs::volume::clone(&fork_snap_full, &vm_zvol)?;
+    println!("Forking '{}' → '{}'...", args.source, args.name);
+    let (vm_disk_path, fork_snap_full) =
+        storage.clone_from_snapshot(&args.source, &fork_snap_name, &args.name)?;
+    let vm_zvol = vm_disk_path.to_string_lossy().to_string();
 
     let mut rollback = Rollback::new();
     {
-        let zvol = vm_zvol.clone();
-        let snap_dataset = source.zvol_path.clone();
-        let snap_name = fork_snap_name.clone();
+        let storage = storage.clone();
+        let fork_origin = fork_snap_full.clone();
         let sd = state_dir.to_path_buf();
         let name = args.name.clone();
         rollback.push("fork clone + snapshot", move || {
-            let _ = zfs::volume::destroy(&zvol, true);
-            let _ = zfs::snapshot::destroy(&snap_dataset, &snap_name);
+            let _ = storage.destroy_vm_storage(&name);
+            let _ = storage.destroy_fork_origin(&fork_origin);
             let _ = vm::delete(&StateStore::new(sd), &name);
         });
     }
@@ -591,17 +564,8 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Grow disk if requested.
     let needs_resize = disk_size_gib > source.disk_size_gib;
     if needs_resize {
-        println!("Growing zvol to {} GiB...", disk_size_gib);
-        zfs::volume::set_volsize(&vm_zvol, disk_size_gib)?;
-    }
-
-    let dev_path = zfs::volume::device_path(&vm_zvol);
-    image::zvol::wait_for_device(&dev_path)?;
-
-    if needs_resize {
-        println!("Expanding ext4 filesystem...");
-        e2fsck(&dev_path)?;
-        resize2fs(&dev_path)?;
+        println!("Growing disk to {} GiB...", disk_size_gib);
+        storage.resize(&args.name, ByteSize::from_gib(disk_size_gib as u64))?;
     }
 
     // Resolve kernel: CLI override or inherit from source.
@@ -683,97 +647,43 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // ── Networking ────────────────────────────────────────────────
 
-    // Determine WAN interface (from config or auto-detect).
-    let wan_iface = match &config.wan_iface {
-        Some(iface) => iface.clone(),
-        None => {
-            println!("No WAN interface in config, detecting...");
-            network::wan::detect()?
-        }
-    };
-
-    // Allocate a /30 IP block for this VM.
-    let subnet = metadata
-        .subnet
-        .as_deref()
-        .unwrap_or(network::ip::DEFAULT_SUBNET);
-    println!("Allocating network address...");
-    let allocation = network::ip::allocate(&store, subnet, &metadata.name)?;
+    let net_backend = Network::new(store.clone());
+    println!("Setting up network...");
+    let net_info = net_backend.setup(&metadata, &config)?;
     println!(
         "  Guest IP: {}, Host IP: {}",
-        allocation.guest_ip, allocation.host_ip
+        net_info.guest_ip, net_info.host_ip
     );
     {
-        let sd = state_dir.to_path_buf();
-        let name = metadata.name.clone();
-        rollback.push("IP allocation", move || {
-            let _ = network::ip::release(&StateStore::new(sd), &name);
+        let net = Network::new(StateStore::new(state_dir.to_path_buf()));
+        let meta_name = metadata.name.clone();
+        let net_info_clone = net_info.clone();
+        rollback.push("network", move || {
+            let teardown_meta = VmMetadata {
+                name: meta_name,
+                network: Some(net_info_clone),
+                ..VmMetadata::default_for_teardown()
+            };
+            let _ = net.teardown(&teardown_meta);
         });
     }
 
-    // Create TAP device.
-    let tap_name = network::tap::device_name(&metadata.id);
-    let host_ip_cidr = format!("{}/30", allocation.host_ip);
-    println!("Creating TAP device {tap_name}...");
-    network::tap::create(&tap_name, &host_ip_cidr)?;
+    metadata.network = Some(net_info);
+
+    // ── Hypervisor ────────────────────────────────────────────────
+
+    println!("Starting VM...");
+    let started = Vm::start(&metadata, &config)?;
+    let pid = started.pid;
     {
-        let tap = tap_name.clone();
-        rollback.push("TAP device", move || {
-            let _ = network::tap::delete(&tap);
+        let meta = metadata.clone();
+        rollback.push("VM process", move || {
+            let _ = Vm::force_stop(&meta);
         });
     }
-
-    // Enable IP forwarding (idempotent).
-    network::nat::enable_ip_forwarding()?;
-
-    // Add iptables NAT/forwarding rules.
-    network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface)?;
-    {
-        let tap = tap_name.clone();
-        let guest_ip = allocation.guest_ip.clone();
-        let wan = wan_iface.clone();
-        rollback.push("iptables rules", move || {
-            let _ = network::nat::remove_rules(&tap, &guest_ip, &wan);
-        });
-    }
-
-    let net_info = NetworkInfo {
-        tap_device: tap_name,
-        host_ip: allocation.host_ip,
-        guest_ip: allocation.guest_ip,
-        netmask: allocation.netmask,
-        guest_mac: None,
-        wan_iface: Some(wan_iface),
-    };
-
-    // ── Firecracker ───────────────────────────────────────────────
-
-    let socket_path = &metadata.api_socket;
-    let log_path = store.vm_dir(&args.name).join("firecracker.log");
-    let rootfs_path = zfs::volume::device_path(&metadata.zvol_path);
-
-    // Clean up stale socket from a previous run.
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path).map_err(|e| Error::Io {
-            path: socket_path.clone(),
-            source: e,
-        })?;
-    }
-
-    // Spawn Firecracker process.
-    println!("Starting Firecracker...");
-    let child = firecracker::process::spawn(socket_path, &log_path)?;
-    let pid = child.id();
-    rollback.push("Firecracker process", move || {
-        let _ = firecracker::process::kill(pid);
-    });
-
-    // Configure and boot via the Firecracker API.
-    start_configure(&metadata, socket_path, &rootfs_path, &net_info)?;
 
     // ── Persist state ─────────────────────────────────────────────
 
-    metadata.network = Some(net_info);
     metadata.status = VmStatus::Running;
     metadata.pid = Some(pid);
     vm::save(&store, &metadata)?;
@@ -783,60 +693,6 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     println!("VM '{}' started (pid {}).", args.name, pid);
     Ok(())
-}
-
-/// Clean up networking resources on failure.
-///
-/// Best-effort: logs warnings but does not propagate errors, since we're
-/// already handling a failure.
-fn cleanup_network(store: &StateStore, vm_name: &str, net_info: &NetworkInfo) {
-    network::cleanup(store, vm_name, net_info);
-}
-
-/// Configure and start a Firecracker instance via the API.
-///
-/// Runs the async API calls inside a one-shot tokio runtime.
-fn start_configure(
-    metadata: &VmMetadata,
-    socket_path: &Path,
-    rootfs_path: &Path,
-    net_info: &NetworkInfo,
-) -> anyhow::Result<()> {
-    // Wait for the API socket to appear.
-    firecracker::process::wait_for_socket(socket_path)?;
-
-    // Detect host DNS servers for the guest, scoped to the WAN interface
-    // so we only get servers reachable through the VM's NAT path.
-    let wan_iface = net_info.wan_iface.as_deref().unwrap_or("eth0");
-    let dns_servers = network::dns::detect_nameservers(wan_iface);
-    println!("Using DNS servers: {}", dns_servers.join(", "));
-
-    // Build VM configuration with networking.
-    let mut vm_config = firecracker::config::VmConfig::new(
-        metadata.cpus,
-        metadata.memory_mib,
-        &metadata.kernel_path,
-        rootfs_path,
-    );
-    if let Some(ref boot_args) = metadata.boot_args {
-        vm_config = vm_config.with_boot_args(boot_args);
-    }
-    let vm_config = vm_config.with_network(firecracker::config::VmNetworkConfig {
-        tap_device: net_info.tap_device.clone(),
-        guest_ip: net_info.guest_ip.clone(),
-        host_ip: net_info.host_ip.clone(),
-        netmask: net_info.netmask.clone(),
-        guest_mac: net_info.guest_mac.clone(),
-        hostname: metadata.name.clone(),
-        dns_servers,
-    });
-
-    // Run the async API calls.
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = firecracker::api::FirecrackerClient::new(socket_path);
-        vm_config.configure_and_start(&client).await
-    })
 }
 
 /// Stop a running VM: graceful shutdown via SSH poweroff, then SIGKILL fallback.
@@ -871,44 +727,20 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         )
     })?;
 
-    // Check if the process is actually alive.
-    if !firecracker::process::is_alive(pid) {
-        println!("Firecracker process (pid {pid}) is already dead.");
+    // Stop the VM via the backend.
+    if !Vm::is_running(pid) {
+        println!("VM process (pid {pid}) is already dead.");
     } else if args.force {
-        // --force: skip graceful shutdown, go straight to SIGKILL.
-        println!("Force-killing Firecracker (pid {pid})...");
-        firecracker::process::kill(pid)?;
-        firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
+        println!("Force-stopping VM (pid {pid})...");
+        Vm::force_stop(&metadata)?;
     } else {
-        // Graceful shutdown: try SSH poweroff first, then SendCtrlAltDel fallback.
-        println!("Sending shutdown signal to VM '{}'...", args.name);
-        let rt = tokio::runtime::Runtime::new()?;
-
-        let shutdown_sent = try_ssh_poweroff(&rt, &metadata);
-        if !shutdown_sent {
-            try_ctrl_alt_del(&rt, &metadata);
-        }
-
-        // Wait up to 10 seconds for the process to exit.
-        println!("Waiting for VM to shut down (up to 10s)...");
-        let exited = firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(10));
-        if !exited {
-            println!("VM did not exit in time, sending SIGKILL...");
-            firecracker::process::kill(pid)?;
-            firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
-        }
+        println!("Stopping VM '{}'...", args.name);
+        Vm::stop(&metadata)?;
     }
 
-    // Clean up networking resources (TAP device, iptables rules, IP allocation).
-    if let Some(ref net_info) = metadata.network {
-        cleanup_network(&store, &args.name, net_info);
-    }
-
-    // Clean up the API socket.
-    let socket_path = &metadata.api_socket;
-    if socket_path.exists() {
-        let _ = std::fs::remove_file(socket_path);
-    }
+    // Clean up networking via the backend.
+    let net_backend = Network::new(store.clone());
+    let _ = net_backend.teardown(&metadata);
 
     // Update metadata.
     metadata.status = VmStatus::Stopped;
@@ -918,71 +750,6 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     println!("VM '{}' stopped.", args.name);
     Ok(())
-}
-
-/// Attempt graceful shutdown via SSH `poweroff` command.
-///
-/// Returns `true` if the command was sent successfully. Uses a short
-/// connect timeout (3s) since the VM should already be running.
-fn try_ssh_poweroff(rt: &tokio::runtime::Runtime, metadata: &vm::VmMetadata) -> bool {
-    let network = match &metadata.network {
-        Some(net) => net,
-        None => {
-            eprintln!("No network configured, skipping SSH shutdown.");
-            return false;
-        }
-    };
-
-    let guest_ip = &network.guest_ip;
-    let key_path = &metadata.ssh.key;
-    let user = &metadata.ssh.user;
-
-    rt.block_on(async {
-        let timeout = std::time::Duration::from_secs(3);
-        let mut client =
-            match ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("SSH connect failed ({e}), will try SendCtrlAltDel.");
-                    return false;
-                }
-            };
-
-        // Send reboot — Firecracker has no ACPI, so `poweroff` just halts
-        // the vCPU in a loop and the VMM hangs forever.  `reboot` triggers
-        // a CPU reset (via reboot=k boot arg), which KVM reports as
-        // KVM_EXIT_SHUTDOWN, causing the Firecracker process to exit cleanly.
-        //
-        // Use sudo: the SSH user may be non-root (e.g., "ubuntu").
-        // Ignore exec errors — the connection drops as the VM goes down.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ssh::exec::exec(&mut client, "sudo reboot"),
-        )
-        .await;
-
-        true
-    })
-}
-
-/// Attempt graceful shutdown via Firecracker SendCtrlAltDel API.
-fn try_ctrl_alt_del(rt: &tokio::runtime::Runtime, metadata: &vm::VmMetadata) {
-    let socket_path = &metadata.api_socket;
-    if !socket_path.exists() {
-        eprintln!("API socket not found, skipping SendCtrlAltDel.");
-        return;
-    }
-
-    let result = rt.block_on(async {
-        let client = firecracker::api::FirecrackerClient::new(socket_path);
-        client
-            .put_action(&firecracker::api::InstanceAction::send_ctrl_alt_del())
-            .await
-    });
-
-    if let Err(e) = result {
-        eprintln!("SendCtrlAltDel failed: {e}");
-    }
 }
 
 /// Pause a running VM via the Firecracker PATCH /vm API.
@@ -1018,13 +785,7 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     println!("Pausing VM '{}'...", args.name);
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = firecracker::api::FirecrackerClient::new(socket_path);
-        client
-            .patch_vm(&firecracker::api::VmStateUpdate::pause())
-            .await
-    })?;
+    Vm::pause(&metadata)?;
 
     metadata.status = VmStatus::Paused;
     vm::save(&store, &metadata)?;
@@ -1066,13 +827,7 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     println!("Resuming VM '{}'...", args.name);
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = firecracker::api::FirecrackerClient::new(socket_path);
-        client
-            .patch_vm(&firecracker::api::VmStateUpdate::resume())
-            .await
-    })?;
+    Vm::resume(&metadata)?;
 
     metadata.status = VmStatus::Running;
     vm::save(&store, &metadata)?;
@@ -1105,18 +860,11 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    // Grow the ZFS zvol.
-    println!("Growing zvol to {} GiB...", new_gib);
-    zfs::volume::set_volsize(&metadata.zvol_path, new_gib)?;
-
-    // Wait for the block device node to settle after the resize.
-    let dev_path = zfs::volume::device_path(&metadata.zvol_path);
-    image::zvol::wait_for_device(&dev_path)?;
-
-    // Expand the ext4 filesystem to fill the new space.
-    println!("Expanding ext4 filesystem...");
-    e2fsck(&dev_path)?;
-    resize2fs(&dev_path)?;
+    // Grow the disk via the storage backend (handles resize + ext4 expand).
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    println!("Resizing disk to {} GiB...", new_gib);
+    storage.resize(&args.name, args.disk_size)?;
 
     // Update metadata.
     metadata.disk_size_gib = new_gib;
@@ -1155,18 +903,17 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Force-delete a VM: kill process, clean up network, destroy zvol, remove state.
+/// Force-delete a VM: kill process, clean up network, destroy storage, remove state.
 ///
 /// Idempotent — each cleanup step continues if the resource is already gone.
 /// Called from `vm delete --force` and `image delete --force`.
 pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Result<()> {
-    // Kill the Firecracker process if the VM is running/paused.
+    // Kill the hypervisor process if the VM is running/paused.
     if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) {
         if let Some(pid) = metadata.pid {
-            if firecracker::process::is_alive(pid) {
-                println!("Force-killing Firecracker (pid {pid})...");
-                firecracker::process::kill(pid)?;
-                firecracker::process::wait_for_exit(pid, std::time::Duration::from_secs(5));
+            if Vm::is_running(pid) {
+                println!("Force-stopping VM (pid {pid})...");
+                let _ = Vm::force_stop(metadata);
             }
         }
         if metadata.api_socket.exists() {
@@ -1174,35 +921,23 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         }
     }
 
-    // Clean up networking resources (TAP device, iptables rules, IP allocation).
-    if let Some(ref net_info) = metadata.network {
-        cleanup_network(store, &metadata.name, net_info);
-    }
+    // Clean up networking via the backend.
+    let net_backend = Network::new(store.clone());
+    let _ = net_backend.teardown(metadata);
 
     // Wait for udev to finish processing device events.
-    let _ = ProcessCommand::new("udevadm").arg("settle").status();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
 
-    // Destroy the ZFS zvol and all snapshots under it.
-    println!("Destroying ZFS zvol '{}'...", metadata.zvol_path);
-    match zfs::volume::destroy(&metadata.zvol_path, true) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!(
-                "Warning: failed to destroy zvol '{}': {e}",
-                metadata.zvol_path
-            );
-        }
-    }
+    // Destroy storage via the backend.
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+
+    println!("Destroying storage for VM '{}'...", metadata.name);
+    let _ = storage.destroy_vm_storage(&metadata.name);
 
     // Clean up fork origin snapshot if this VM was forked.
-    // The clone is destroyed above, so the snapshot is now deletable.
     if let Some(ref fork_snap) = metadata.forked_from {
-        if let Some((dataset, snap_name)) = fork_snap.split_once('@') {
-            match zfs::snapshot::destroy(dataset, snap_name) {
-                Ok(()) => {}
-                Err(e) => eprintln!("Warning: failed to clean up fork snapshot '{fork_snap}': {e}"),
-            }
-        }
+        let _ = storage.destroy_fork_origin(fork_snap);
     }
 
     // Remove the VM state directory.
@@ -1310,65 +1045,4 @@ fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<String> {
     image::inject::inject_ssh_authorized_keys_for_home(rootfs_dir, &pubkey_path, home_relative)?;
 
     Ok(user.to_string())
-}
-
-/// Mount a block device at the given mount point.
-fn mount_block_device(device: &Path, mount_dir: &Path) -> crate::error::Result<()> {
-    let output = ProcessCommand::new("mount")
-        .arg(device)
-        .arg(mount_dir)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "mount".to_string(),
-            source: e,
-        })?;
-
-    Error::check_command("mount", output)?;
-    Ok(())
-}
-
-/// Unmount a filesystem.
-fn umount(mount_dir: &Path) -> crate::error::Result<()> {
-    crate::image::ext4::umount(mount_dir)
-}
-
-/// Check ext4 filesystem consistency before resize.
-///
-/// `-f` forces checking even if the filesystem is marked clean.
-/// `-p` automatically repairs safe issues without prompting.
-fn e2fsck(device: &Path) -> crate::error::Result<()> {
-    let output = ProcessCommand::new("e2fsck")
-        .args(["-f", "-p"])
-        .arg(device)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "e2fsck".to_string(),
-            source: e,
-        })?;
-
-    // e2fsck exit codes: 0 = clean, 1 = errors corrected. Both are OK.
-    let code = output.status.code().unwrap_or(-1);
-    if code > 1 {
-        return Err(Error::Command {
-            command: "e2fsck".to_string(),
-            exit_code: code,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-/// Expand an ext4 filesystem to fill its block device.
-fn resize2fs(device: &Path) -> crate::error::Result<()> {
-    let output = ProcessCommand::new("resize2fs")
-        .arg(device)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "resize2fs".to_string(),
-            source: e,
-        })?;
-
-    Error::check_command("resize2fs", output)?;
-    Ok(())
 }
