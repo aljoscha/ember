@@ -8,7 +8,7 @@
 - [x] Move TAP/iptables/IP-allocation code behind `NetworkBackend` trait (`src/backend/linux/network.rs`)
 - [x] Move ext4/loop-mount code behind platform-specific image helpers (`src/backend/linux/image.rs`)
 - [x] Update CLI modules to call backend traits instead of direct module calls
-- [ ] Verify `cargo build` and `cargo test` pass with no behavior change
+- [x] Verify `cargo build` and `cargo test` pass with no behavior change
 
 ## Phase 1: Swift Helper (`ember-vz`)
 
