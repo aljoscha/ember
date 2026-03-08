@@ -29,7 +29,7 @@
 - [x] Implement snapshot create/restore/delete using `cp -c`
 - [x] Implement resize: `truncate` + `resize2fs`
 - [x] Implement mount/unmount via `hdiutil attach`/`hdiutil detach`
-- [ ] Implement destroy (remove files)
+- [x] Implement destroy (remove files)
 - [ ] Validate APFS volume during `ember init` (`diskutil info` check)
 - [ ] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)
 - [ ] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
