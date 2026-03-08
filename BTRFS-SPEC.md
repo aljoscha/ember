@@ -164,7 +164,38 @@ As with APFS, `ember vm create` measures the wall-clock time of the `cp --reflin
 
 ```
 Warning: disk clone took 3.2s — this may indicate copy-on-write is not working.
+Run `ember debug storage-efficiency` to check.
 ```
+
+## Verifying CoW Storage Efficiency
+
+### The Problem
+
+Like APFS clones, btrfs reflink copies report their full logical size via `du` and `stat`. A user with 10 VMs cloned from a 2GB image sees `du` report 20GB even though actual disk usage is ~2GB. btrfs does not expose per-file CoW savings to userspace tools.
+
+### `ember debug storage-efficiency`
+
+A built-in diagnostic command that reports CoW savings. This is a **generic command** — same implementation, same output format across all storage backends (ZFS, btrfs, APFS):
+
+```
+$ ember debug storage-efficiency
+
+Storage Efficiency Report
+─────────────────────────
+Images:        2 (3.2 GB logical)
+VMs:           8 (25.6 GB logical)
+Snapshots:    12 (38.4 GB logical)
+                  ──────────────────
+Total logical:    67.2 GB
+Actual disk used:  4.1 GB  (via df)
+CoW efficiency:   16.4x space savings
+```
+
+**How it works on btrfs:**
+
+1. **Logical size**: Sum of all `.img` file sizes via `stat` (what `du` would report)
+2. **Actual disk usage**: Query the btrfs mount point via `df` to get real on-disk usage
+3. **Efficiency ratio**: Logical size / actual disk used — shows the CoW savings multiplier
 
 ## VM Resize
 
@@ -294,6 +325,7 @@ src/
 | Drive path | `/dev/zvol/...` (block device) | `.../rootfs.img` (file) | `.../rootfs.img` (file) |
 | Root required | Yes | Yes | No |
 | Filesystem validation | `zpool list` | `stat -f` or `/proc/mounts` | `diskutil info` |
+| Storage efficiency | `ember debug storage-efficiency` | `ember debug storage-efficiency` | `ember debug storage-efficiency` |
 
 The btrfs backend is structurally almost identical to the macOS APFS backend — both use file-based CoW clones. The main differences are the clone command (`cp --reflink=always` vs `cp -c`), the mount mechanism (`mount -o loop` vs `hdiutil attach`), and the init process (managed btrfs filesystem vs APFS-is-always-there).
 
