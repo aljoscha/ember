@@ -6,9 +6,16 @@ Pick the first unchecked task (`- [ ]`) from MACOS-TODO.md. Implement only that 
 
 Use agent teams when it would speed things up — for example, to research crate APIs, explore the codebase, or implement independent pieces in parallel.
 
-After implementing:
+## Workflow
+
+* **Read this file again after each context compaction.**
+* Code should be simple and clean, well-commented explaining what/how/why.
+* Minimal changes — if we iterate and try multiple things, clean up to the minimum required fix at the end.
+* Before committing, verify that what you produced is high quality and works.
+
+## After each task
 
 1. Verify the code compiles (`cargo build`). If there are tests, run them (`cargo test`).
 2. Mark the completed task as done (`- [x]`) in MACOS-TODO.md.
 3. Create a jj change with a descriptive message that explains what was implemented and why.
-4. Stop. Do not continue to the next task.
+4. Continue with the next unchecked task.
