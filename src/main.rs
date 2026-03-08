@@ -1,3 +1,4 @@
+pub mod backend;
 mod cleanup;
 mod cli;
 pub mod config;

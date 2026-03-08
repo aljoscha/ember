@@ -2,7 +2,7 @@
 
 ## Phase 0: Backend Trait Extraction (Linux-only, no behavior change)
 
-- [ ] Define `VmBackend`, `StorageBackend`, `NetworkBackend` traits in `src/backend/mod.rs`
+- [x] Define `VmBackend`, `StorageBackend`, `NetworkBackend` traits in `src/backend/mod.rs`
 - [ ] Move Firecracker code behind `VmBackend` trait (`src/backend/linux/vm.rs`)
 - [ ] Move ZFS code behind `StorageBackend` trait (`src/backend/linux/storage.rs`)
 - [ ] Move TAP/iptables/IP-allocation code behind `NetworkBackend` trait (`src/backend/linux/network.rs`)
