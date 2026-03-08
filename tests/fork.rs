@@ -1,6 +1,8 @@
-//! Integration tests for `ember vm fork`.
+//! Integration tests for `ember vm fork` (Linux-only).
 //!
 //! These tests require:
+#![cfg(target_os = "linux")]
+//!
 //! - Root privileges
 //! - Working ZFS installation
 //! - Network access (to pull OCI images from Docker Hub)

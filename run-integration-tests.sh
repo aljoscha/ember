@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 #
-# Build and run integration tests under sudo.
+# Build and run integration tests.
 #
 # Integration tests (tests/*.rs) are marked #[ignore] because they need
-# root, ZFS, and (for image tests) network + skopeo.  This script builds
-# them as the current user, extracts the exact binary path from cargo's
-# JSON output, and runs each one under sudo.
+# platform-specific prerequisites (root + ZFS on Linux, APFS on macOS).
+# Test files use #![cfg(target_os)] to compile only on their platform.
+#
+# On Linux, tests run under sudo (root required for ZFS + TAP + iptables).
+# On macOS, tests run as the current user (no root needed for APFS clones).
 #
 # Usage:
-#   ./run-integration-tests.sh              # run all integration tests
-#   ./run-integration-tests.sh init         # run only tests/init.rs
-#   ./run-integration-tests.sh image init   # run specific test files
-#   ./run-integration-tests.sh vm::networking_ssh_and_internet  # run one test
+#   ./run-integration-tests.sh                        # run all platform tests
+#   ./run-integration-tests.sh init                   # run only tests/init.rs
+#   ./run-integration-tests.sh macos_storage          # run only tests/macos_storage.rs
+#   ./run-integration-tests.sh vm::networking_ssh      # run one test
 
 set -euo pipefail
+
+platform="$(uname -s)"
 
 # Parse arguments. "vm::foo" means run only test "foo" from tests/vm.rs.
 # Plain "vm" runs all tests in tests/vm.rs.
@@ -47,7 +51,9 @@ if [[ ${#tests[@]} -eq 0 ]]; then
 fi
 
 # Build all requested test crates and collect their binary paths.
+# Tests that are cfg'd out for this platform will compile as empty binaries.
 binaries=()
+test_names=()
 for name in "${tests[@]}"; do
     echo "Building test: $name"
     bin=$(cargo test --test "$name" --no-run --message-format=json 2>/dev/null \
@@ -59,20 +65,17 @@ for name in "${tests[@]}"; do
     fi
     echo "  Binary: $bin"
     binaries+=("$bin")
+    test_names+=("$name")
 done
 
-# Run each test binary under sudo.
-# Tests run with --test-threads=1 because they have global side effects
-# (TAP devices, iptables rules, ZFS pools). The crash-recovery reconciliation
-# code scans all em-* TAP devices system-wide, so parallel tests with separate
-# state directories would delete each other's TAP devices as "orphaned".
 echo ""
-echo "Running ${#binaries[@]} integration test(s) as root..."
+echo "Running ${#binaries[@]} integration test(s) on ${platform}..."
 echo ""
 
 failed=0
-for i in "${!tests[@]}"; do
-    name="${tests[$i]}"
+skipped=0
+for i in "${!test_names[@]}"; do
+    name="${test_names[$i]}"
     bin="${binaries[$i]}"
     filter="${test_filters[$name]:-}"
 
@@ -82,18 +85,33 @@ for i in "${!tests[@]}"; do
         echo "=== $name ==="
     fi
 
-    if sudo "$bin" --ignored --test-threads=1 --nocapture "$filter"; then
+    # On Linux, tests require root (ZFS, TAP, iptables).
+    # On macOS, tests run without root (APFS, vmnet shared mode).
+    if [[ "$platform" == "Linux" ]]; then
+        runner=(sudo "$bin" --ignored --test-threads=1 --nocapture)
+    else
+        runner=("$bin" --ignored --test-threads=1 --nocapture)
+    fi
+
+    if "${runner[@]}" "$filter"; then
         echo "--- $name: PASSED ---"
     else
-        echo "--- $name: FAILED ---"
-        failed=$((failed + 1))
+        # Exit code from test binary: if 0 tests ran (all cfg'd out), it's
+        # still a success. Check by listing tests first.
+        count=$("$bin" --ignored --list 2>/dev/null | grep -c "^.*: test$" || true)
+        if [[ "$count" -eq 0 ]]; then
+            echo "--- $name: SKIPPED (no tests for this platform) ---"
+            skipped=$((skipped + 1))
+        else
+            echo "--- $name: FAILED ---"
+            failed=$((failed + 1))
+        fi
     fi
     echo ""
 done
 
+echo "Results: $((${#binaries[@]} - failed - skipped)) passed, $failed failed, $skipped skipped."
+
 if [[ $failed -gt 0 ]]; then
-    echo "$failed test suite(s) failed."
     exit 1
-else
-    echo "All integration tests passed."
 fi

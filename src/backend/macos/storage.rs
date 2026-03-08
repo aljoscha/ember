@@ -349,7 +349,9 @@ impl StorageBackend for MacosStorage {
         Error::check_command("truncate", output)?;
 
         // Check filesystem consistency before resizing (resize2fs requires this).
-        let output = Command::new("e2fsck")
+        // e2fsprogs tools are installed via Homebrew and may not be in PATH.
+        let e2fsck = find_e2fsprogs_tool("e2fsck");
+        let output = Command::new(&e2fsck)
             .arg("-f") // force check even if clean
             .arg("-y") // auto-fix errors
             .arg(&rootfs)
@@ -364,7 +366,8 @@ impl StorageBackend for MacosStorage {
         }
 
         // Expand the ext4 filesystem to fill the (now larger) image file.
-        let output = Command::new("resize2fs")
+        let resize2fs = find_e2fsprogs_tool("resize2fs");
+        let output = Command::new(&resize2fs)
             .arg(&rootfs)
             .output()
             .map_err(|e| Error::CommandExec {
@@ -613,6 +616,27 @@ fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Find an e2fsprogs tool (e2fsck, resize2fs, mkfs.ext4) by checking
+/// common Homebrew installation paths before falling back to PATH.
+///
+/// Homebrew installs e2fsprogs as keg-only (not symlinked into /usr/local/bin
+/// or /opt/homebrew/bin) because macOS ships its own fsck. The sbin/ directory
+/// under the Homebrew prefix contains the actual binaries.
+fn find_e2fsprogs_tool(name: &str) -> String {
+    // Apple Silicon Homebrew prefix.
+    let arm_path = format!("/opt/homebrew/opt/e2fsprogs/sbin/{name}");
+    if Path::new(&arm_path).exists() {
+        return arm_path;
+    }
+    // Intel Homebrew prefix.
+    let intel_path = format!("/usr/local/opt/e2fsprogs/sbin/{name}");
+    if Path::new(&intel_path).exists() {
+        return intel_path;
+    }
+    // Fall back to PATH lookup.
+    name.to_string()
 }
 
 /// Check whether the given path resides on an APFS volume.

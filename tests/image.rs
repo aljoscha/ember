@@ -1,6 +1,8 @@
-//! Integration tests for `ember image pull`, `image list`, and `image delete`.
+//! Integration tests for `ember image pull`, `image list`, and `image delete` (Linux-only).
 //!
 //! These tests require:
+#![cfg(target_os = "linux")]
+//!
 //! - Root privileges
 //! - Working ZFS installation
 //! - Network access (to pull OCI images from Docker Hub)

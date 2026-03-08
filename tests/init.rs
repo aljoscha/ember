@@ -1,6 +1,7 @@
-//! Integration tests for `ember init`.
+//! Integration tests for `ember init` (Linux-only).
 //!
 //! These tests require root privileges and a working ZFS installation.
+#![cfg(target_os = "linux")]
 //! They are marked `#[ignore]` so `cargo test` skips them by default.
 //!
 //! To run:

@@ -1,6 +1,8 @@
-//! Integration tests for `ember exec` and `ember cp`.
+//! Integration tests for `ember exec` and `ember cp` (Linux-only).
 //!
 //! These tests require:
+#![cfg(target_os = "linux")]
+//!
 //! - Root privileges
 //! - Working ZFS installation
 //! - `firecracker` binary in PATH + `/dev/kvm`

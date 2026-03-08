@@ -38,8 +38,8 @@
 - [x] Validate APFS volume during `ember init` (`diskutil info` check)
 - [x] Catch `cp -c` failures with clear error message (non-APFS, cross-volume)
 - [x] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
-- [ ] Test: create image, clone for VM, snapshot, restore, resize
-- [ ] Test: verify `cp -c` clone doesn't reduce free space (df check)
+- [x] Test: create image, clone for VM, snapshot, restore, resize
+- [x] Test: verify `cp -c` clone doesn't reduce free space (df check)
 - [ ] Test: verify `cp -c` fails gracefully on non-APFS volume
 
 ## Phase 2.5: Storage Efficiency Diagnostics
@@ -48,7 +48,7 @@
 - [x] Report logical size (sum of all .img file sizes via stat)
 - [x] Report actual disk usage (df / diskutil apfs list)
 - [x] Report CoW efficiency ratio
-- [ ] Test: create base image + multiple clones, verify efficiency report shows savings
+- [x] Test: create base image + multiple clones, verify efficiency report shows savings
 
 ## Phase 3: macOS VM Backend (AVF via ember-vz)
 
