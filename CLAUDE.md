@@ -4,13 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is ember?
 
-A lightweight CLI for managing Firecracker microVMs with ZFS-backed storage. Inspired by SlicerVM but CLI-only — no daemon, no REST API. See SPEC.md for the full design and TODO.md for the task list.
+A lightweight CLI for managing microVMs with copy-on-write storage. CLI-only — no daemon, no REST API.
+
+- **Linux**: Firecracker (KVM) + ZFS zvols. See SPEC.md for the full design, TODO.md for the task list.
+- **macOS**: Apple Virtualization Framework + APFS clones. See MACOS-SPEC.md for the design, MACOS-TODO.md for the task list.
+
+## Current Focus
+
+macOS support. Work through MACOS-TODO.md one task at a time. Implement, verify, check off the task, commit, stop.
 
 ## Approach
 
-- Follow the design in SPEC.md closely: shell out to `zfs`/`zpool`/`iptables`, thin Firecracker API client over Unix socket, ZFS zvols as block devices.
+- Follow the design in MACOS-SPEC.md closely for macOS work, SPEC.md for Linux work.
+- Platform-specific code lives behind backend traits (`VmBackend`, `StorageBackend`, `NetworkBackend`) with `#[cfg(target_os)]` compile-time selection.
+- Shell out to platform tools (same philosophy as Linux): `ember-vz` (Swift helper for AVF), `hdiutil`, `diskutil`, `cp -c`, Homebrew `e2fsprogs`.
 - When exploring for design or debugging, start producing actionable output (plans, hypotheses, code) early. Don't spend the whole session just reading code.
-- Work through TODO.md one task at a time. Implement, verify, check off the task, commit, stop.
+- Work through the TODO one task at a time. Implement, verify, check off the task, commit, stop.
 
 ## Build Commands
 
@@ -58,7 +67,7 @@ sudo ./target/debug/ember vm create testvm --image alpine:latest
 - `snake_case` for functions/variables, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Use `thiserror` for library-style errors, `anyhow` for application-level error propagation.
 - Prefer explicit error handling. Use `?` for propagation, not `.unwrap()`.
-- Shell out to `zfs`/`zpool`/`iptables` CLI tools — no fragile C library bindings.
+- Shell out to platform CLI tools — no fragile C library bindings. Linux: `zfs`/`zpool`/`iptables`. macOS: `hdiutil`/`diskutil`/`cp -c`/`ember-vz`.
 
 ## Debugging & Refactoring Approach
 
@@ -68,19 +77,23 @@ sudo ./target/debug/ember vm create testvm --image alpine:latest
 
 ## Architecture
 
-See SPEC.md for the full architecture. Key modules:
+See SPEC.md (Linux) and MACOS-SPEC.md (macOS) for full architecture. Key modules:
 
 ```
 src/
 ├── main.rs              # Entry point, CLI dispatch
-├── cli/                 # Command implementations
-├── zfs/                 # ZFS pool, dataset, volume, snapshot operations
-├── firecracker/         # API client, process management, config builder
-├── network/             # TAP devices, IP allocation, NAT rules
-├── image/               # OCI pull, ext4 creation, image registry
-├── ssh/                 # SSH client, exec, file copy
-├── state/               # JSON state store with file locking
-└── config/              # YAML config parsing and merge
+├── cli/                 # Command implementations (shared across platforms)
+├── backend/
+│   ├── mod.rs           # Backend trait definitions + #[cfg] re-exports
+│   ├── linux/           # Firecracker + ZFS + TAP + iptables
+│   └── macos/           # AVF (ember-vz) + APFS clones + vmnet
+├── zfs/                 # ZFS pool, dataset, volume, snapshot operations (Linux)
+├── firecracker/         # API client, process management, config builder (Linux)
+├── network/             # TAP devices, IP allocation, NAT rules (Linux)
+├── image/               # OCI pull, ext4 creation, image registry (shared)
+├── ssh/                 # SSH client, exec, file copy (shared, cross-platform)
+├── state/               # JSON state store with file locking (shared)
+└── config/              # YAML config parsing and merge (shared)
 ```
 
 ## Version Control
