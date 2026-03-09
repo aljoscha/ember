@@ -52,7 +52,7 @@
 
 ## Phase 3: macOS VM Backend (AVF via ember-vz)
 
-- [ ] Implement `VmBackend` for macOS: start (spawn `ember-vz`, wait for ready-fd)
+- [x] Implement `VmBackend` for macOS: start (spawn `ember-vz`, wait for ready-fd)
 - [ ] Implement stop (SIGTERM + timeout + SIGKILL)
 - [ ] Implement pause/resume (SIGUSR1/SIGUSR2)
 - [ ] Implement `is_running` (kill(pid, 0))
