@@ -232,14 +232,45 @@ pub trait StorageBackend {
     /// Mount a disk image and return the mount point path.
     ///
     /// Linux: mounts the zvol block device.
-    /// macOS: `hdiutil attach` the raw `.img` file.
+    /// macOS: not supported for ext4 — use [`inject_ssh_key`] instead.
     fn mount(&self, path: &Path) -> Result<PathBuf>;
 
     /// Unmount a previously mounted disk image.
     ///
     /// Linux: `umount`.
-    /// macOS: `hdiutil detach`.
+    /// macOS: not supported for ext4 — use [`inject_ssh_key`] instead.
     fn unmount(&self, mount_point: &Path) -> Result<()>;
+
+    /// Inject an SSH public key into a VM's rootfs disk image.
+    ///
+    /// Detects whether the image has an ubuntu user and injects the key
+    /// into the appropriate home directory. Returns the detected SSH user
+    /// name (e.g., "root" or "ubuntu").
+    ///
+    /// Default implementation: mounts the image, injects the key via
+    /// filesystem writes, then unmounts. macOS overrides this with
+    /// `debugfs` since ext4 can't be mounted natively on macOS.
+    fn inject_ssh_key(&self, image_path: &Path, pubkey_path: &Path) -> Result<String> {
+        let mount_dir = self.mount(image_path)?;
+
+        let inject_result = (|| -> Result<String> {
+            let (user, home_relative) = crate::image::inject::detect_ssh_user(&mount_dir);
+            crate::image::inject::inject_ssh_authorized_keys_for_home(
+                &mount_dir,
+                pubkey_path,
+                home_relative,
+            )?;
+            Ok(user.to_string())
+        })();
+
+        let umount_result = self.unmount(&mount_dir);
+
+        // Report inject error first, then unmount error.
+        let user = inject_result?;
+        umount_result?;
+
+        Ok(user)
+    }
 }
 
 /// Network backend: manages VM networking.

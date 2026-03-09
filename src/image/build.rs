@@ -3,7 +3,7 @@
 //! Uses Docker (or Podman) to build a container image, exports its
 //! filesystem as a flat tarball, and extracts that into a rootfs
 //! directory.  The caller then feeds the rootfs through the same
-//! inject → ext4 → zvol pipeline used by [`crate::image::pull`].
+//! inject → ext4 → storage import pipeline used by [`crate::image::pull`].
 
 use std::fs;
 use std::path::{Path, PathBuf};

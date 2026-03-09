@@ -438,16 +438,18 @@ fn create_post_clone(
         )?;
     }
 
-    // Mount the disk to inject per-VM SSH key.
+    // Inject per-VM SSH key into the rootfs image.
+    // Linux: mounts the zvol, writes the key, unmounts.
+    // macOS: uses debugfs to write directly into the ext4 image.
     let dev_path = storage.disk_device_path(&resolved.name);
-    let mount_dir = storage.mount(&dev_path)?;
-
-    let inject_result = inject_ssh_key(&mount_dir);
-    let umount_result = storage.unmount(&mount_dir);
-
-    // Always try to unmount, even if injection failed.
-    let detected_ssh_user = inject_result?;
-    umount_result?;
+    let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub\n\
+             Hint: create one with: ssh-keygen -t ed25519"
+        )
+    })?;
+    println!("Injecting SSH key from {}...", pubkey_path.display());
+    let detected_ssh_user = storage.inject_ssh_key(&dev_path, &pubkey_path)?;
 
     // Determine kernel path (auto-downloads default if needed).
     let kernel_path = ensure_kernel(&resolved.kernel, global_config, store)?;
@@ -1022,27 +1024,4 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Inject the invoking user's SSH public key into the rootfs.
-///
-/// Detects whether the rootfs has an `ubuntu` user and injects the key
-/// into the appropriate home directory. Returns the detected SSH user name.
-fn inject_ssh_key(rootfs_dir: &Path) -> anyhow::Result<String> {
-    let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub\n\
-             Hint: create one with: ssh-keygen -t ed25519"
-        )
-    })?;
-
-    let (user, home_relative) = image::inject::detect_ssh_user(rootfs_dir);
-
-    println!(
-        "Injecting SSH key from {} (user: {user})...",
-        pubkey_path.display()
-    );
-    image::inject::inject_ssh_authorized_keys_for_home(rootfs_dir, &pubkey_path, home_relative)?;
-
-    Ok(user.to_string())
 }

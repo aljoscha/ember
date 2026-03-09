@@ -71,11 +71,11 @@
 
 ## Phase 5: macOS Image Pipeline
 
-- [ ] Adapt ext4 creation to use `hdiutil attach` instead of `mount -o loop`
-- [ ] Verify `skopeo` works on macOS (Homebrew install)
-- [ ] Verify SSH key injection works with `hdiutil`-mounted images
-- [ ] Adapt `ember image build` for macOS (Docker Desktop / Podman)
-- [ ] Test: `ember image pull alpine:latest` end-to-end on macOS
+- [x] Adapt ext4 creation to use `hdiutil attach` instead of `mount -o loop`
+- [x] Verify `skopeo` works on macOS (Homebrew install)
+- [x] Verify SSH key injection works with `hdiutil`-mounted images
+- [x] Adapt `ember image build` for macOS (Docker Desktop / Podman)
+- [x] Test: `ember image pull alpine:latest` end-to-end on macOS
 
 ## Phase 6: macOS `ember init` + State Directory
 

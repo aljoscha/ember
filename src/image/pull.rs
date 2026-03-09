@@ -142,12 +142,21 @@ fn check_tool(name: &str) -> Result<()> {
         })?;
 
     if !output.status.success() {
+        let hint = install_hint(name);
         return Err(Error::Image(format!(
-            "'{name}' is not installed — install it with your package manager \
-             (e.g. `pacman -S {name}` or `apt install {name}`)"
+            "'{name}' is not installed — install it with: {hint}"
         )));
     }
     Ok(())
+}
+
+/// Platform-appropriate install command hint for a missing tool.
+fn install_hint(name: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("`brew install {name}`")
+    } else {
+        format!("`pacman -S {name}` or `apt install {name}`")
+    }
 }
 
 /// Pull an OCI image and unpack its layers into a rootfs directory.
@@ -177,13 +186,21 @@ pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
     );
     let oci_ref = format!("oci:{}:{}", oci_dir.display(), reference.tag);
 
-    let output = Command::new("skopeo")
-        .args(["copy", &docker_ref, &oci_ref])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "skopeo copy".to_string(),
-            source: e,
-        })?;
+    let mut cmd = Command::new("skopeo");
+    cmd.args(["copy"]);
+
+    // On macOS, skopeo defaults to OS "darwin" when resolving multi-arch
+    // manifest lists. We always want Linux images for VMs.
+    if cfg!(target_os = "macos") {
+        cmd.args(["--override-os", "linux"]);
+    }
+
+    cmd.args([&docker_ref, &oci_ref]);
+
+    let output = cmd.output().map_err(|e| Error::CommandExec {
+        command: "skopeo copy".to_string(),
+        source: e,
+    })?;
     Error::check_command("skopeo copy", output)?;
 
     // Step 2: Parse OCI layout and extract layers into rootfs.
@@ -273,7 +290,7 @@ fn blob_path(oci_dir: &Path, digest: &str) -> Result<PathBuf> {
 
 /// Extract a single layer tar archive into the rootfs directory.
 ///
-/// Uses GNU tar which auto-detects compression (gzip, zstd, xz, etc.).
+/// Both GNU tar and BSD tar (macOS) auto-detect compression (gzip, zstd, xz, etc.).
 fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> {
     let layer_path = blob_path(oci_dir, digest)?;
 

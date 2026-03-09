@@ -474,58 +474,110 @@ impl StorageBackend for MacosStorage {
         Ok(())
     }
 
-    /// Mount a raw ext4 disk image using `hdiutil attach`.
+    /// Not supported for ext4 on macOS.
     ///
-    /// Returns the mount point path chosen by hdiutil. The `-plist` flag
-    /// gives us structured output to reliably extract the mount point.
-    /// `-nobrowse` prevents the volume from appearing in Finder.
-    fn mount(&self, path: &Path) -> Result<PathBuf> {
-        let output = Command::new("hdiutil")
-            .args(["attach", "-plist", "-nobrowse"])
-            .arg(path)
+    /// macOS has no native ext4 mount support. Use [`inject_ssh_key`] for
+    /// the primary use case (SSH key injection during VM creation).
+    fn mount(&self, _path: &Path) -> Result<PathBuf> {
+        Err(Error::Image(
+            "ext4 mounting is not supported on macOS — \
+             macOS has no native ext4 filesystem support"
+                .to_string(),
+        ))
+    }
+
+    /// Not supported for ext4 on macOS (see [`mount`]).
+    fn unmount(&self, _mount_point: &Path) -> Result<()> {
+        Err(Error::Image(
+            "ext4 unmounting is not supported on macOS".to_string(),
+        ))
+    }
+
+    /// Inject an SSH public key into a VM's ext4 rootfs image using `debugfs`.
+    ///
+    /// macOS can't mount ext4 natively, so we use `debugfs -w` from Homebrew
+    /// e2fsprogs to write files directly into the ext4 image:
+    ///
+    /// 1. `debugfs -R 'stat /home/ubuntu'` — detect SSH user
+    /// 2. `debugfs -w` — create `.ssh/` dir and write `authorized_keys`
+    /// 3. `set_inode_field` — fix permissions (700/.ssh, 600/authorized_keys)
+    ///    and ownership (uid/gid matching the target user)
+    fn inject_ssh_key(&self, image_path: &Path, pubkey_path: &Path) -> Result<String> {
+        let debugfs = find_e2fsprogs_tool("debugfs");
+
+        // Step 1: Detect SSH user by checking if /home/ubuntu exists.
+        let output = Command::new(&debugfs)
+            .args(["-R", "stat /home/ubuntu"])
+            .arg(image_path)
             .output()
             .map_err(|e| Error::CommandExec {
-                command: "hdiutil attach".to_string(),
+                command: "debugfs stat".to_string(),
+                source: e,
+            })?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let has_ubuntu = !stderr.contains("File not found");
+
+        let (ssh_user, home_path, uid, gid) = if has_ubuntu {
+            ("ubuntu", "/home/ubuntu", 1000u32, 1000u32)
+        } else {
+            ("root", "/root", 0u32, 0u32)
+        };
+
+        let ssh_dir = format!("{home_path}/.ssh");
+        let ak_path = format!("{ssh_dir}/authorized_keys");
+
+        // Step 2: Write SSH key using debugfs.
+        // The `write` command copies a host file into the ext4 image.
+        // `set_inode_field` fixes permissions and ownership.
+        let pubkey_abs = std::fs::canonicalize(pubkey_path).map_err(|e| Error::Io {
+            path: pubkey_path.to_path_buf(),
+            source: e,
+        })?;
+
+        let commands = format!(
+            "mkdir {ssh_dir}\n\
+             write {pubkey} {ak_path}\n\
+             set_inode_field {ssh_dir} mode 040700\n\
+             set_inode_field {ssh_dir} uid {uid}\n\
+             set_inode_field {ssh_dir} gid {gid}\n\
+             set_inode_field {ak_path} mode 0100600\n\
+             set_inode_field {ak_path} uid {uid}\n\
+             set_inode_field {ak_path} gid {gid}\n",
+            pubkey = pubkey_abs.display(),
+        );
+
+        // Write commands to a temp file and pass to debugfs -f.
+        let cmd_file = tempfile::NamedTempFile::new().map_err(|e| Error::Io {
+            path: std::env::temp_dir(),
+            source: e,
+        })?;
+        std::fs::write(cmd_file.path(), &commands).map_err(|e| Error::Io {
+            path: cmd_file.path().to_path_buf(),
+            source: e,
+        })?;
+
+        let output = Command::new(&debugfs)
+            .arg("-w")
+            .arg("-f")
+            .arg(cmd_file.path())
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "debugfs write".to_string(),
                 source: e,
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        // debugfs exits 0 even on some errors; check stderr for real failures.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such file or directory")
+            && !stderr.contains("File not found by ext2_lookup")
+        {
             return Err(Error::Image(format!(
-                "hdiutil attach failed: {}",
-                stderr.trim()
+                "debugfs failed to inject SSH key: {stderr}"
             )));
         }
 
-        // Parse the plist output to find the mount point. hdiutil outputs
-        // an array of "system-entities", each with a "mount-point" key for
-        // mounted partitions.
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mount_point = parse_hdiutil_mount_point(&stdout).ok_or_else(|| {
-            Error::Image(format!(
-                "hdiutil attach succeeded but no mount point found in output for {}",
-                path.display()
-            ))
-        })?;
-
-        Ok(PathBuf::from(mount_point))
-    }
-
-    /// Unmount a disk image using `hdiutil detach`.
-    ///
-    /// This is the macOS equivalent of `umount`. The path should be the
-    /// mount point returned by [`mount`].
-    fn unmount(&self, mount_point: &Path) -> Result<()> {
-        let output = Command::new("hdiutil")
-            .args(["detach"])
-            .arg(mount_point)
-            .output()
-            .map_err(|e| Error::CommandExec {
-                command: "hdiutil detach".to_string(),
-                source: e,
-            })?;
-        Error::check_command("hdiutil detach", output)?;
-        Ok(())
+        Ok(ssh_user.to_string())
     }
 }
 
@@ -592,39 +644,13 @@ fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parse the mount point from `hdiutil attach -plist` XML output.
-///
-/// The plist contains a `system-entities` array. Each entity dict may have
-/// a `mount-point` key. We look for the first one (the main partition).
-/// This is a simple string search to avoid pulling in a plist crate.
-fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
-    // Look for:
-    //   <key>mount-point</key>
-    //   <string>/Volumes/something</string>
-    let marker = "<key>mount-point</key>";
-    let idx = plist_xml.find(marker)?;
-    let after = &plist_xml[idx + marker.len()..];
-
-    // Find the <string>...</string> that follows.
-    let start_tag = "<string>";
-    let end_tag = "</string>";
-    let s_start = after.find(start_tag)? + start_tag.len();
-    let s_end = after.find(end_tag)?;
-
-    if s_start <= s_end {
-        Some(after[s_start..s_end].to_string())
-    } else {
-        None
-    }
-}
-
 /// Find an e2fsprogs tool (e2fsck, resize2fs, mkfs.ext4) by checking
 /// common Homebrew installation paths before falling back to PATH.
 ///
 /// Homebrew installs e2fsprogs as keg-only (not symlinked into /usr/local/bin
 /// or /opt/homebrew/bin) because macOS ships its own fsck. The sbin/ directory
 /// under the Homebrew prefix contains the actual binaries.
-fn find_e2fsprogs_tool(name: &str) -> String {
+pub(crate) fn find_e2fsprogs_tool(name: &str) -> String {
     // Apple Silicon Homebrew prefix.
     let arm_path = format!("/opt/homebrew/opt/e2fsprogs/sbin/{name}");
     if Path::new(&arm_path).exists() {
