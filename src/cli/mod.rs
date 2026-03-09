@@ -15,21 +15,39 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "ember",
-    about = "Lightweight Firecracker VM manager with ZFS-backed storage"
+    about = "Lightweight VM manager with copy-on-write storage"
 )]
 #[command(version)]
 pub struct Cli {
-    /// Override state directory (default: /var/lib/ember)
-    #[arg(long, global = true, default_value = "/var/lib/ember")]
+    /// Override state directory
+    ///
+    /// Default: /var/lib/ember (Linux), ~/Library/Application Support/ember (macOS)
+    #[arg(long, global = true, default_value_os_t = default_state_dir())]
     pub state_dir: PathBuf,
 
     #[command(subcommand)]
     pub command: Command,
 }
 
+/// Platform-appropriate default state directory.
+///
+/// Linux: `/var/lib/ember` (requires root, alongside ZFS datasets).
+/// macOS: `~/Library/Application Support/ember/` (no root, APFS clones).
+fn default_state_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("ember");
+        }
+    }
+    PathBuf::from("/var/lib/ember")
+}
+
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize ember: create/verify ZFS pool, datasets, download kernel
+    /// Initialize ember: set up storage, create state directory, download kernel
     Init(init::InitArgs),
 
     /// Manage virtual machines

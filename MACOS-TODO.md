@@ -79,11 +79,11 @@
 
 ## Phase 6: macOS `ember init` + State Directory
 
-- [ ] Use `~/Library/Application Support/ember/` as default state directory on macOS
-- [ ] Skip ZFS pool/dataset creation on macOS
-- [ ] Skip root privilege check on macOS
-- [ ] Adapt reconciliation: skip TAP/iptables cleanup (not applicable)
-- [ ] Test: `ember init` on macOS creates correct directory structure
+- [x] Use `~/Library/Application Support/ember/` as default state directory on macOS
+- [x] Skip ZFS pool/dataset creation on macOS
+- [x] Skip root privilege check on macOS
+- [x] Adapt reconciliation: skip TAP/iptables cleanup (not applicable)
+- [x] Test: `ember init` on macOS creates correct directory structure
 
 ## Phase 7: Polish + CI
 
