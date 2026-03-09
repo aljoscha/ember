@@ -227,12 +227,38 @@ impl VmBackend for MacosVm {
         Ok(())
     }
 
-    fn pause(_vm: &VmMetadata) -> Result<()> {
-        todo!("macOS: pause VM (SIGUSR1 to ember-vz)")
+    /// Pause the VM by sending SIGUSR1 to ember-vz.
+    ///
+    /// The helper's SIGUSR1 handler calls `VZVirtualMachine.pause()`,
+    /// which freezes guest vCPUs.
+    fn pause(vm: &VmMetadata) -> Result<()> {
+        let pid = vm
+            .pid
+            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGUSR1).map_err(|e| {
+            Error::Network(format!(
+                "failed to send SIGUSR1 (pause) to ember-vz (pid {pid}): {e}"
+            ))
+        })
     }
 
-    fn resume(_vm: &VmMetadata) -> Result<()> {
-        todo!("macOS: resume VM (SIGUSR2 to ember-vz)")
+    /// Resume a paused VM by sending SIGUSR2 to ember-vz.
+    ///
+    /// The helper's SIGUSR2 handler calls `VZVirtualMachine.resume()`,
+    /// which unfreezes guest vCPUs.
+    fn resume(vm: &VmMetadata) -> Result<()> {
+        let pid = vm
+            .pid
+            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGUSR2).map_err(|e| {
+            Error::Network(format!(
+                "failed to send SIGUSR2 (resume) to ember-vz (pid {pid}): {e}"
+            ))
+        })
     }
 
     fn is_running(pid: u32) -> bool {
