@@ -182,7 +182,7 @@ fn discover_ip_from_arp(mac: &str) -> Result<Option<String>> {
 /// The MAC is matched case-insensitively against the `hw_address` field,
 /// ignoring the `1,` hardware-type prefix.
 fn find_ip_in_dhcp_leases(leases_text: &str, mac: &str) -> Option<String> {
-    let mac_lower = mac.to_lowercase();
+    let normalized_target = normalize_mac(mac);
 
     // Parse brace-delimited lease entries.
     let mut ip: Option<String> = None;
@@ -198,7 +198,7 @@ fn find_ip_in_dhcp_leases(leases_text: &str, mac: &str) -> Option<String> {
         } else if line == "}" {
             // End of entry — check for match.
             if let (Some(lease_ip), Some(lease_mac)) = (&ip, &hw_mac) {
-                if lease_mac == &mac_lower {
+                if lease_mac == &normalized_target {
                     return Some(lease_ip.clone());
                 }
             }
@@ -206,8 +206,10 @@ fn find_ip_in_dhcp_leases(leases_text: &str, mac: &str) -> Option<String> {
             ip = Some(value.to_string());
         } else if let Some(value) = line.strip_prefix("hw_address=") {
             // Strip the hardware-type prefix (e.g. "1," for Ethernet).
+            // Normalize to handle macOS stripping leading zeros from octets
+            // (e.g. "1,22:bc:4d:71:d6:6" → "22:bc:4d:71:d6:06").
             let mac_part = value.split_once(',').map(|(_, m)| m).unwrap_or(value);
-            hw_mac = Some(mac_part.to_lowercase());
+            hw_mac = Some(normalize_mac(mac_part));
         }
     }
 
@@ -306,6 +308,22 @@ mod tests {
     fn empty_leases_returns_none() {
         let ip = find_ip_in_dhcp_leases("", "ca:8a:b2:b8:2b:af");
         assert_eq!(ip, None);
+    }
+
+    #[test]
+    fn dhcp_short_octets_match() {
+        // macOS DHCP leases strip leading zeros from MAC octets
+        // (e.g. "22:bc:4d:71:d6:6" instead of "22:bc:4d:71:d6:06").
+        let leases = "\
+{
+\tip_address=192.168.64.9
+\thw_address=1,22:bc:4d:71:d6:6
+\tidentifier=1,22:bc:4d:71:d6:6
+\tlease=0x69aefd42
+}
+";
+        let ip = find_ip_in_dhcp_leases(leases, "22:bc:4d:71:d6:06");
+        assert_eq!(ip, Some("192.168.64.9".to_string()));
     }
 
     // ── ARP table parsing tests ──────────────────────────────────
