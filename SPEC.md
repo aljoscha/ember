@@ -321,10 +321,10 @@ The `forked_from` field in VM metadata tracks the origin snapshot path (e.g., `<
 ### Boot Arguments
 
 ```
-console=ttyS0 reboot=k panic=1 pci=off ip=<guest-ip>::<gateway>:<netmask>::eth0:off:<dns0>:<dns1>
+console=ttyS0 reboot=k panic=1 pci=off ip=<guest-ip>::<gateway>:<netmask>:<hostname>:eth0:off:<dns0>:<dns1>
 ```
 
-The kernel `ip=` parameter configures guest networking at boot. No cloud-init or DHCP needed. DNS servers are appended to the `ip=` parameter — the kernel writes them to `/proc/net/pnp`, which the guest symlinks as `/etc/resolv.conf` (see "Guest DNS" below). At most 2 servers are included (kernel limit).
+The kernel `ip=` parameter configures guest networking at boot. No cloud-init or DHCP needed. The VM name is passed as `<hostname>` so the kernel sets it at boot. DNS servers are appended to the `ip=` parameter — the kernel writes them to `/proc/net/pnp`, which the guest symlinks as `/etc/resolv.conf` (see "Guest DNS" below). At most 2 servers are included (kernel limit).
 
 ### Kernel Presets
 

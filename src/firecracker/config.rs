@@ -26,6 +26,8 @@ pub struct VmNetworkConfig {
     pub netmask: String,
     /// Optional guest MAC address.
     pub guest_mac: Option<String>,
+    /// Hostname for the guest (passed via the kernel `ip=` parameter).
+    pub hostname: String,
     /// DNS nameservers to pass to the guest via the kernel `ip=` parameter.
     /// The kernel writes these to `/proc/net/pnp` which the guest uses as
     /// `/etc/resolv.conf`. At most 2 servers are used (kernel limit).
@@ -106,8 +108,13 @@ impl VmConfig {
                     .map(|s| format!(":{s}"))
                     .collect::<String>();
                 format!(
-                    "{} ip={}::{}:{}::eth0:off{}",
-                    self.boot_args, net.guest_ip, net.host_ip, net.netmask, dns_suffix
+                    "{} ip={}::{}:{}:{}:eth0:off{}",
+                    self.boot_args,
+                    net.guest_ip,
+                    net.host_ip,
+                    net.netmask,
+                    net.hostname,
+                    dns_suffix
                 )
             }
             None => self.boot_args.clone(),
@@ -198,11 +205,12 @@ mod tests {
                 host_ip: "10.100.0.1".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: None,
+                hostname: "testvm".to_string(),
                 dns_servers: vec![],
             });
         assert_eq!(
             config.full_boot_args(),
-            "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252::eth0:off"
+            "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252:testvm:eth0:off"
         );
     }
 
@@ -215,11 +223,12 @@ mod tests {
                 host_ip: "10.100.0.1".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: None,
+                hostname: "myvm".to_string(),
                 dns_servers: vec!["10.64.0.1".to_string(), "192.168.0.1".to_string()],
             });
         assert_eq!(
             config.full_boot_args(),
-            "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252::eth0:off:10.64.0.1:192.168.0.1"
+            "console=ttyS0 reboot=k panic=1 pci=off ip=10.100.0.2::10.100.0.1:255.255.255.252:myvm:eth0:off:10.64.0.1:192.168.0.1"
         );
     }
 
@@ -240,11 +249,12 @@ mod tests {
                 host_ip: "10.100.0.5".to_string(),
                 netmask: "255.255.255.252".to_string(),
                 guest_mac: Some("AA:FC:00:00:00:01".to_string()),
+                hostname: "customvm".to_string(),
                 dns_servers: vec!["1.1.1.1".to_string()],
             });
         assert_eq!(
             config.full_boot_args(),
-            "console=ttyS0 panic=1 ip=10.100.0.6::10.100.0.5:255.255.255.252::eth0:off:1.1.1.1"
+            "console=ttyS0 panic=1 ip=10.100.0.6::10.100.0.5:255.255.255.252:customvm:eth0:off:1.1.1.1"
         );
     }
 }
