@@ -56,8 +56,8 @@
 - [x] Implement stop (SIGTERM + timeout + SIGKILL)
 - [x] Implement pause/resume (SIGUSR1/SIGUSR2)
 - [x] Implement `is_running` (kill(pid, 0))
-- [ ] Build or acquire AVF-compatible Linux kernel preset
-- [ ] Update `kernel.rs` with macOS-specific preset URL and boot args (`console=hvc0`)
+- [x] Build or acquire AVF-compatible Linux kernel preset
+- [x] Update `kernel.rs` with macOS-specific preset URL and boot args (`console=hvc0`)
 - [ ] Test: full VM lifecycle (start, SSH, stop)
 
 ## Phase 4: macOS Networking (vmnet)
