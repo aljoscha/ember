@@ -2,9 +2,9 @@ use std::path::Path;
 
 use clap::Args;
 
+use crate::cli::vm::load_running_with_ip;
 use crate::ssh;
 use crate::state::store::StateStore;
-use crate::state::vm;
 
 #[derive(Args)]
 pub struct CpArgs {
@@ -37,7 +37,7 @@ pub fn run(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     let store = StateStore::new(state_dir.to_path_buf());
-    let (metadata, network) = vm::load_running_with_network(&store, vm_name)?;
+    let (metadata, network) = load_running_with_ip(&store, vm_name)?;
 
     let guest_ip = &network.guest_ip;
     let key_path = &metadata.ssh.key;

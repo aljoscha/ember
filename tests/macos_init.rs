@@ -65,12 +65,7 @@ fn init_creates_directory_structure() {
     let state_dir = setup_init(tmp.path());
 
     // Required directories.
-    let expected_dirs = [
-        "images/data",
-        "vms",
-        "kernels",
-        "network",
-    ];
+    let expected_dirs = ["images/data", "vms", "kernels", "network"];
 
     for dir in &expected_dirs {
         let path = state_dir.join(dir);

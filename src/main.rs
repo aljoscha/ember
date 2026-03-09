@@ -86,12 +86,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Lightweight state reconciliation on every privileged command.
-    // Cleans up after crashes: marks dead VMs stopped, removes orphaned TAP devices.
-    // Linux-only: depends on firecracker process checks and TAP device cleanup.
+    // Linux: cleans up dead VMs, orphaned TAP devices. Requires root.
+    // macOS: cleans up dead VMs, resolves pending guest IPs from DHCP leases.
     #[cfg(target_os = "linux")]
     if needs_reconcile(&cli.command) {
         state::reconcile::run(&cli.state_dir);
     }
+    #[cfg(target_os = "macos")]
+    state::reconcile_macos::run(&cli.state_dir);
 
     match &cli.command {
         Command::Init(args) => cli::init::run(args, &cli.state_dir),
@@ -107,6 +109,8 @@ fn main() -> anyhow::Result<()> {
         Command::Reconcile => {
             #[cfg(target_os = "linux")]
             state::reconcile::run(&cli.state_dir);
+            #[cfg(target_os = "macos")]
+            state::reconcile_macos::run(&cli.state_dir);
             Ok(())
         }
         Command::Version => {

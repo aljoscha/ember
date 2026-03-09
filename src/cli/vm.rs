@@ -11,7 +11,28 @@ use crate::error::Error;
 use crate::image;
 use crate::image::registry::ImageRegistry;
 use crate::state::store::StateStore;
-use crate::state::vm::{self, SshConfig, VmMetadata, VmStatus};
+use crate::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
+
+/// Load a running VM with network info, checking that the guest IP is resolved.
+///
+/// Wraps `vm::load_running_with_network` and returns an error if the guest IP
+/// is still "pending" (macOS vmnet DHCP hasn't been discovered yet).
+/// State reconciliation normally resolves pending IPs before this is called.
+pub fn load_running_with_ip(
+    store: &StateStore,
+    name: &str,
+) -> anyhow::Result<(VmMetadata, NetworkInfo)> {
+    let (metadata, network) = vm::load_running_with_network(store, name)?;
+
+    if network.guest_ip == "pending" {
+        anyhow::bail!(
+            "guest IP not yet available for '{name}' — the VM may still be booting\n\
+             Hint: try 'ember reconcile' or wait a few seconds and retry"
+        );
+    }
+
+    Ok((metadata, network))
+}
 
 #[derive(Subcommand)]
 pub enum VmCommand {
@@ -684,6 +705,37 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
         });
     }
 
+    // Merge the network info from the VM backend (contains the MAC address
+    // assigned by the hypervisor) back into the metadata.
+    metadata.network = Some(started.network.clone());
+
+    // ── Guest IP discovery (macOS) ────────────────────────────────
+    // On macOS, the guest IP is assigned by vmnet DHCP after boot.
+    // Retry a few times since the lease may not appear immediately.
+    #[cfg(target_os = "macos")]
+    if let Some(ref mac) = started.network.guest_mac {
+        print!("Waiting for guest IP...");
+        let mut discovered_ip = None;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            match net_backend.discover_guest_ip(mac) {
+                Ok(ip) => {
+                    discovered_ip = Some(ip);
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+        if let Some(ip) = discovered_ip {
+            println!(" {ip}");
+            if let Some(ref mut net) = metadata.network {
+                net.guest_ip = ip;
+            }
+        } else {
+            println!(" not found (try 'ember vm inspect' later)");
+        }
+    }
+
     // ── Persist state ─────────────────────────────────────────────
 
     metadata.status = VmStatus::Running;
@@ -998,8 +1050,15 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("Memory:      {} MiB", metadata.memory_mib);
             println!("Disk:        {} GiB", metadata.disk_size_gib);
             println!("Kernel:      {}", metadata.kernel_path.display());
-            println!("ZFS zvol:    {}", metadata.zvol_path);
-            println!("API socket:  {}", metadata.api_socket.display());
+            #[cfg(target_os = "linux")]
+            {
+                println!("ZFS zvol:    {}", metadata.zvol_path);
+                println!("API socket:  {}", metadata.api_socket.display());
+            }
+            #[cfg(target_os = "macos")]
+            {
+                println!("Disk image:  {}", metadata.zvol_path);
+            }
             println!("Created:     {}", metadata.created_at);
 
             if let Some(pid) = metadata.pid {
@@ -1008,6 +1067,7 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
 
             if let Some(ref net) = metadata.network {
                 println!("Network:");
+                #[cfg(target_os = "linux")]
                 println!("  TAP device:  {}", net.tap_device);
                 println!("  Host IP:     {}", net.host_ip);
                 println!("  Guest IP:    {}", net.guest_ip);

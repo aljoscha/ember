@@ -82,7 +82,7 @@ pub enum Command {
     #[command(subcommand)]
     Debug(debug::DebugCommand),
 
-    /// Reconcile internal state with actual Firecracker process state
+    /// Reconcile internal state with actual VM process state
     Reconcile,
 
     /// Print version information
