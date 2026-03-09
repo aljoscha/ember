@@ -65,8 +65,8 @@
 - [x] Implement `NetworkBackend` for macOS: setup (no-op, vmnet handles everything)
 - [x] Implement guest IP discovery from DHCP leases (`/var/db/dhcpd_leases`)
 - [x] Implement ARP-based fallback IP discovery
-- [ ] Implement teardown (no-op for shared mode)
-- [ ] Implement WAN interface detection (`route get 8.8.8.8` instead of `ip route get`)
+- [x] Implement teardown (no-op for shared mode)
+- [x] Implement WAN interface detection (`route get 8.8.8.8` instead of `ip route get`)
 - [ ] Test: VM gets DHCP IP, SSH works, internet access from guest
 
 ## Phase 5: macOS Image Pipeline

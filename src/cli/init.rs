@@ -102,7 +102,21 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     };
     #[cfg(target_os = "macos")]
-    let wan_iface: Option<String> = None;
+    let wan_iface = if let Some(iface) = &args.wan_iface {
+        println!("Using WAN interface '{iface}' (from --wan-iface).");
+        Some(iface.clone())
+    } else {
+        match crate::backend::macos::network::detect_wan_iface() {
+            Ok(iface) => {
+                println!("Detected WAN interface: {iface}");
+                Some(iface)
+            }
+            Err(e) => {
+                println!("Warning: could not detect WAN interface: {e}");
+                None
+            }
+        }
+    };
 
     // 6. Write config.
     let config = GlobalConfig {

@@ -11,7 +11,7 @@ use crate::cli::init::GlobalConfig;
 use crate::error::{Error, Result};
 use crate::state::vm::{NetworkInfo, VmMetadata};
 
-/// Default gateway for vmnet shared mode (192.168.64.0/24 network).
+/// vmnet shared mode defaults.
 const VMNET_GATEWAY: &str = "192.168.64.1";
 
 /// Default netmask for vmnet shared mode (/24).
@@ -84,6 +84,56 @@ impl NetworkBackend for MacosNetwork {
              Hint: the VM may not have obtained an IP yet"
         )))
     }
+}
+
+/// Detect the default WAN interface on macOS via `route get 8.8.8.8`.
+///
+/// Parses the `interface: <name>` line from the output. While vmnet handles
+/// NAT internally (so the WAN interface isn't needed for firewall rules),
+/// this is useful for diagnostics and stored in GlobalConfig for consistency
+/// with Linux.
+///
+/// # Example output
+/// ```text
+///    route to: dns.google
+/// destination: default
+///     gateway: 192.168.0.1
+///   interface: en0
+///       flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+/// ```
+pub fn detect_wan_iface() -> Result<String> {
+    let output = Command::new("route")
+        .args(["get", "8.8.8.8"])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "route".to_string(),
+            source: e,
+        })?;
+
+    let output = Error::check_command("route get 8.8.8.8", output)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    parse_interface_from_route(&stdout).ok_or_else(|| {
+        Error::Network(
+            "could not detect default network interface — is the host connected to the internet?\n\
+             Hint: specify the interface manually with: ember init --wan-iface <iface>"
+                .to_string(),
+        )
+    })
+}
+
+/// Parse the `interface: <name>` field from macOS `route get` output.
+fn parse_interface_from_route(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(iface) = line.strip_prefix("interface:") {
+            let iface = iface.trim();
+            if !iface.is_empty() {
+                return Some(iface.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Try to find the guest IP from the vmnet DHCP lease file.
@@ -312,5 +362,39 @@ compalhub.home (192.168.0.1) at 90:5c:44:55:9f:c8 on en0 ifscope [ethernet]
     #[test]
     fn normalize_uppercase() {
         assert_eq!(normalize_mac("CA:8A:B2:B8:2B:AF"), "ca:8a:b2:b8:2b:af");
+    }
+
+    // ── WAN interface detection (route parser) ───────────────────
+
+    #[test]
+    fn parse_route_typical_output() {
+        let output = "\
+   route to: dns.google
+destination: default
+       mask: default
+    gateway: 192.168.0.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+ recvpipe  sendpipe  ssthresh  rtt,msec    rttvar  hopcount      mtu     expire
+       0         0         0         0         0         0      1500         0
+";
+        assert_eq!(parse_interface_from_route(output), Some("en0".to_string()));
+    }
+
+    #[test]
+    fn parse_route_wifi_interface() {
+        let output = "  interface: en1\n";
+        assert_eq!(parse_interface_from_route(output), Some("en1".to_string()));
+    }
+
+    #[test]
+    fn parse_route_no_interface_line() {
+        let output = "route to: dns.google\ndestination: default\n";
+        assert_eq!(parse_interface_from_route(output), None);
+    }
+
+    #[test]
+    fn parse_route_empty() {
+        assert_eq!(parse_interface_from_route(""), None);
     }
 }
