@@ -15,6 +15,7 @@
 KERNEL_TAG    := microvm-kernel-6.1.163-20.299.amzn2023
 KERNEL_REPO   := https://github.com/amazonlinux/linux.git
 KERNEL_DIR    := linux
+TAG_STAMP     := $(KERNEL_DIR)/.tag-$(KERNEL_TAG)
 BASE_CONFIG   := base.config
 FRAGMENT      := docker.fragment
 OUTPUT        := vmlinux
@@ -42,20 +43,29 @@ $(BASE_CONFIG):
 fetch-base: $(BASE_CONFIG)
 
 # --- Fetch the kernel source ---
+# The stamp file encodes the tag name so that changing KERNEL_TAG
+# triggers a fresh clone (the old stamp won't exist).
 
-$(KERNEL_DIR)/.git:
+$(TAG_STAMP):
+	@if [ -d $(KERNEL_DIR) ]; then \
+		echo "==> KERNEL_TAG changed, removing stale source..."; \
+		rm -rf $(KERNEL_DIR); \
+	fi
 	@echo "==> Cloning kernel source (shallow, tag $(KERNEL_TAG))..."
 	git clone --depth 1 --branch $(KERNEL_TAG) $(KERNEL_REPO) $(KERNEL_DIR)
+	@touch $@
 
-fetch-source: $(KERNEL_DIR)/.git
+fetch-source: $(TAG_STAMP)
 
 # --- Merge configs ---
 
-$(KERNEL_DIR)/.config: $(BASE_CONFIG) $(FRAGMENT) $(KERNEL_DIR)/.git
+$(KERNEL_DIR)/.config: $(BASE_CONFIG) $(FRAGMENT) $(TAG_STAMP)
 	@echo "==> Merging base config + docker.fragment..."
 	cd $(KERNEL_DIR) && \
 		KCONFIG_CONFIG=.config \
 		scripts/kconfig/merge_config.sh -m ../$(BASE_CONFIG) ../$(FRAGMENT)
+	@echo "==> Patching BUILD_SALT to match kernel source..."
+	sed -i 's/^CONFIG_BUILD_SALT=.*/CONFIG_BUILD_SALT=""/' $(KERNEL_DIR)/.config
 	cd $(KERNEL_DIR) && make olddefconfig
 
 config: $(KERNEL_DIR)/.config
@@ -77,6 +87,7 @@ vmlinux: $(OUTPUT)
 docker-build:
 	$(DOCKER) build -t $(BUILDER_IMAGE) .
 	$(DOCKER) run --rm \
+		--user $$(id -u):$$(id -g) \
 		-v $(CURDIR):/build \
 		-w /build \
 		$(BUILDER_IMAGE) \
@@ -86,7 +97,13 @@ docker-build:
 
 clean:
 	rm -f $(OUTPUT)
-	[ -d $(KERNEL_DIR) ] && cd $(KERNEL_DIR) && make mrproper || true
+	-[ -d $(KERNEL_DIR) ] && cd $(KERNEL_DIR) && make mrproper
 
-distclean: clean
-	rm -rf $(KERNEL_DIR) $(BASE_CONFIG)
+distclean:
+	rm -f $(OUTPUT)
+	rm -rf $(KERNEL_DIR) $(BASE_CONFIG) 2>/dev/null; \
+	if [ -d $(KERNEL_DIR) ]; then \
+		echo "==> Root-owned files detected, cleaning via Docker..."; \
+		$(DOCKER) run --rm -v $(CURDIR):/build -w /build alpine \
+			rm -rf /build/$(KERNEL_DIR); \
+	fi
