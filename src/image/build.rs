@@ -66,6 +66,26 @@ fn detect_container_tool() -> Result<String> {
     ))
 }
 
+/// Check that `fakeroot` and `gtar` are available (macOS only).
+///
+/// These tools are needed to preserve file ownership when extracting tar
+/// archives as a non-root user.
+fn check_fakeroot_tools() -> Result<()> {
+    for (tool, pkg) in [("fakeroot", "fakeroot"), ("gtar", "gnu-tar")] {
+        let ok = Command::new("which")
+            .arg(tool)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err(Error::Image(format!(
+                "'{tool}' is not installed — install it with: `brew install {pkg}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Build pipeline
 // ---------------------------------------------------------------------------
@@ -81,6 +101,9 @@ fn detect_container_tool() -> Result<String> {
 /// Returns the path to the unpacked rootfs directory.
 pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> {
     let tool = detect_container_tool()?;
+    if cfg!(target_os = "macos") {
+        check_fakeroot_tools()?;
+    }
     let tag = format!("ember-build-{name}");
     let context_dir = dockerfile.parent().unwrap_or_else(|| Path::new("."));
 
@@ -149,17 +172,40 @@ fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf>
         source: e,
     })?;
 
-    let output = Command::new("tar")
-        .args(["xf"])
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&rootfs_dir)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "tar xf".to_string(),
+    // On macOS, use fakeroot + gtar to preserve ownership metadata from the
+    // tarball. Without fakeroot, tar as non-root can't chown, and mkfs.ext4 -d
+    // later bakes the macOS user's uid/gid into the ext4 image.
+    if cfg!(target_os = "macos") {
+        let state_file = work_dir.join("fakeroot.state");
+        let mut cmd = Command::new("fakeroot");
+        cmd.arg("-s").arg(&state_file);
+        if state_file.exists() {
+            cmd.arg("-i").arg(&state_file);
+        }
+        cmd.arg("--")
+            .arg("gtar")
+            .arg("xf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&rootfs_dir);
+        let output = cmd.output().map_err(|e| Error::CommandExec {
+            command: "fakeroot gtar xf".to_string(),
             source: e,
         })?;
-    Error::check_command("tar xf", output)?;
+        Error::check_command("fakeroot gtar xf", output)?;
+    } else {
+        let output = Command::new("tar")
+            .args(["xf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&rootfs_dir)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "tar xf".to_string(),
+                source: e,
+            })?;
+        Error::check_command("tar xf", output)?;
+    }
 
     Ok(rootfs_dir)
 }

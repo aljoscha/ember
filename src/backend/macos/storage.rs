@@ -505,7 +505,9 @@ impl StorageBackend for MacosStorage {
     fn inject_ssh_key(&self, image_path: &Path, pubkey_path: &Path) -> Result<String> {
         let debugfs = find_e2fsprogs_tool("debugfs");
 
-        // Step 1: Detect SSH user by checking if /home/ubuntu exists.
+        // Step 1: Detect SSH user and read uid/gid from the image.
+        // Check if /home/ubuntu exists; if so, read its owner from the inode.
+        // This avoids hardcoding uid/gid which may differ across images.
         let output = Command::new(&debugfs)
             .args(["-R", "stat /home/ubuntu"])
             .arg(image_path)
@@ -514,11 +516,18 @@ impl StorageBackend for MacosStorage {
                 command: "debugfs stat".to_string(),
                 source: e,
             })?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let has_ubuntu = !stderr.contains("File not found");
 
         let (ssh_user, home_path, uid, gid) = if has_ubuntu {
-            ("ubuntu", "/home/ubuntu", 1000u32, 1000u32)
+            // Parse uid/gid from the /etc/passwd entry for the ubuntu user.
+            // Fall back to reading the home directory inode ownership, and
+            // ultimately to 1000:1000 as a last resort.
+            let (uid, gid) = read_passwd_uid_gid(Path::new(&debugfs), image_path, "ubuntu")
+                .or_else(|| parse_debugfs_uid_gid(&stdout))
+                .unwrap_or((1000, 1000));
+            ("ubuntu", "/home/ubuntu", uid, gid)
         } else {
             ("root", "/root", 0u32, 0u32)
         };
@@ -584,6 +593,47 @@ impl StorageBackend for MacosStorage {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Read a user's uid and gid from `/etc/passwd` inside an ext4 image via debugfs.
+///
+/// Returns `None` if the user isn't found or the file can't be read.
+fn read_passwd_uid_gid(debugfs: &Path, image_path: &Path, username: &str) -> Option<(u32, u32)> {
+    let output = Command::new(debugfs)
+        .args(["-R", "cat /etc/passwd"])
+        .arg(image_path)
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // /etc/passwd format: name:x:uid:gid:...
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() >= 4 && fields[0] == username {
+            let uid = fields[2].parse::<u32>().ok()?;
+            let gid = fields[3].parse::<u32>().ok()?;
+            return Some((uid, gid));
+        }
+    }
+    None
+}
+
+/// Parse uid and gid from `debugfs stat` output.
+///
+/// Looks for the `User: <uid>   Group: <gid>` line in debugfs stat output.
+fn parse_debugfs_uid_gid(stat_output: &str) -> Option<(u32, u32)> {
+    for line in stat_output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("User:") {
+            // Format: "User:  1000   Group:  1000   Project: ..."
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1] == "Group:" {
+                let uid = parts[0].parse::<u32>().ok()?;
+                let gid = parts[2].parse::<u32>().ok()?;
+                return Some((uid, gid));
+            }
+        }
+    }
+    None
+}
 
 /// Create an APFS copy-on-write clone using `cp -c`.
 ///

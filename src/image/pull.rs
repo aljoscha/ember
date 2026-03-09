@@ -153,7 +153,12 @@ fn check_tool(name: &str) -> Result<()> {
 /// Platform-appropriate install command hint for a missing tool.
 fn install_hint(name: &str) -> String {
     if cfg!(target_os = "macos") {
-        format!("`brew install {name}`")
+        // Some Homebrew tools have a different formula name than the binary.
+        let pkg = match name {
+            "gtar" => "gnu-tar",
+            _ => name,
+        };
+        format!("`brew install {pkg}`")
     } else {
         format!("`pacman -S {name}` or `apt install {name}`")
     }
@@ -175,6 +180,10 @@ fn install_hint(name: &str) -> String {
 /// Path to the unpacked rootfs directory (`<dest>/rootfs/`).
 pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
     check_tool("skopeo")?;
+    if cfg!(target_os = "macos") {
+        check_tool("fakeroot")?;
+        check_tool("gtar")?;
+    }
 
     let oci_dir = dest.join("oci");
     let rootfs_dir = dest.join("rootfs");
@@ -290,21 +299,50 @@ fn blob_path(oci_dir: &Path, digest: &str) -> Result<PathBuf> {
 
 /// Extract a single layer tar archive into the rootfs directory.
 ///
-/// Both GNU tar and BSD tar (macOS) auto-detect compression (gzip, zstd, xz, etc.).
+/// On macOS, uses `fakeroot` + `gtar` so that ownership metadata from the tar
+/// archive is tracked even though non-root can't actually chown files. The
+/// fakeroot state is accumulated across layers and later consumed by
+/// `mkfs.ext4 -d` to produce an ext4 image with correct ownership.
+///
+/// On Linux (running as root), plain `tar xf` preserves ownership natively.
 fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> {
     let layer_path = blob_path(oci_dir, digest)?;
 
-    let output = Command::new("tar")
-        .arg("xf")
-        .arg(&layer_path)
-        .arg("-C")
-        .arg(rootfs_dir)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "tar xf".to_string(),
+    if cfg!(target_os = "macos") {
+        let state_file = rootfs_dir
+            .parent()
+            .expect("rootfs_dir has parent")
+            .join("fakeroot.state");
+        let mut cmd = Command::new("fakeroot");
+        cmd.arg("-s").arg(&state_file);
+        if state_file.exists() {
+            cmd.arg("-i").arg(&state_file);
+        }
+        cmd.arg("--")
+            .arg("gtar")
+            .arg("xf")
+            .arg(&layer_path)
+            .arg("-C")
+            .arg(rootfs_dir);
+        let output = cmd.output().map_err(|e| Error::CommandExec {
+            command: "fakeroot gtar xf".to_string(),
             source: e,
         })?;
-    Error::check_command("tar xf", output)?;
+        Error::check_command("fakeroot gtar xf", output)?;
+    } else {
+        let output = Command::new("tar")
+            .arg("xf")
+            .arg(&layer_path)
+            .arg("-C")
+            .arg(rootfs_dir)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "tar xf".to_string(),
+                source: e,
+            })?;
+        Error::check_command("tar xf", output)?;
+    }
+
     Ok(())
 }
 

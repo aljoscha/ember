@@ -86,20 +86,48 @@ fn create_sparse_file(path: &Path, size_mib: u64) -> Result<()> {
 /// This is equivalent to mkfs + mount + cp -a + umount but doesn't
 /// require mounting (critical on macOS where ext4 mounts aren't supported).
 ///
+/// If a `fakeroot.state` file exists next to `rootfs_dir` (created during
+/// tar extraction), `mkfs.ext4` is run under `fakeroot -i` so it reads
+/// the correct ownership metadata instead of the macOS user's uid/gid.
+///
 /// Uses [`super::storage::find_e2fsprogs_tool`] to locate `mkfs.ext4`
 /// in Homebrew's keg-only installation path.
 fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
     let mkfs = super::storage::find_e2fsprogs_tool("mkfs.ext4");
-    let output = Command::new(&mkfs)
-        .args(["-F", "-q"])
-        .arg("-d")
-        .arg(rootfs_dir)
-        .arg(image_path)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "mkfs.ext4".to_string(),
-            source: e,
-        })?;
+
+    let state_file = rootfs_dir
+        .parent()
+        .expect("rootfs_dir has parent")
+        .join("fakeroot.state");
+
+    let output = if state_file.exists() {
+        Command::new("fakeroot")
+            .arg("-i")
+            .arg(&state_file)
+            .arg("--")
+            .arg(&mkfs)
+            .args(["-F", "-q"])
+            .arg("-d")
+            .arg(rootfs_dir)
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "fakeroot mkfs.ext4".to_string(),
+                source: e,
+            })?
+    } else {
+        Command::new(&mkfs)
+            .args(["-F", "-q"])
+            .arg("-d")
+            .arg(rootfs_dir)
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "mkfs.ext4".to_string(),
+                source: e,
+            })?
+    };
+
     Error::check_command("mkfs.ext4", output)?;
     Ok(())
 }
