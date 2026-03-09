@@ -27,7 +27,10 @@ pub struct MacosVm;
 
 /// Default boot args for AVF guests.
 /// Uses `console=hvc0` (virtio console) instead of Linux's `console=ttyS0`.
-const DEFAULT_BOOT_ARGS: &str = "console=hvc0 root=/dev/vda rw";
+/// `ip=dhcp` triggers kernel-level DHCP (CONFIG_IP_PNP_DHCP) so the guest
+/// has network connectivity before userspace starts — needed since vmnet
+/// assigns IPs via DHCP rather than static configuration.
+const DEFAULT_BOOT_ARGS: &str = "console=hvc0 root=/dev/vda rw ip=dhcp";
 
 /// Timeout waiting for ember-vz to report VM readiness via ready-fd.
 /// AVF boot is typically fast (a few seconds), but allow headroom for
