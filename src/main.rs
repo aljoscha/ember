@@ -34,6 +34,7 @@ fn needs_root(command: &Command) -> bool {
     !matches!(
         command,
         Command::Version
+            | Command::Info
             | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
@@ -49,6 +50,7 @@ fn needs_reconcile(command: &Command) -> bool {
     !matches!(
         command,
         Command::Version
+            | Command::Info
             | Command::Init(_)
             | Command::Reconcile
             | Command::Ssh(_)
@@ -79,6 +81,7 @@ fn main() -> anyhow::Result<()> {
         Command::Ssh(args) => cli::ssh::run(args, &cli.state_dir),
         Command::Exec(args) => cli::exec::run(args, &cli.state_dir),
         Command::Cp(args) => cli::cp::run(args, &cli.state_dir),
+        Command::Info => cli::info::run(&cli.state_dir),
         Command::Reconcile => {
             state::reconcile::run(&cli.state_dir);
             Ok(())

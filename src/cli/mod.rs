@@ -1,6 +1,7 @@
 pub mod cp;
 pub mod exec;
 pub mod image;
+pub mod info;
 pub mod init;
 pub mod snapshot;
 pub mod ssh;
@@ -49,6 +50,9 @@ pub enum Command {
 
     /// Copy files between host and VM
     Cp(cp::CpArgs),
+
+    /// Show ember configuration and status overview
+    Info,
 
     /// Reconcile internal state with actual Firecracker process state
     Reconcile,
