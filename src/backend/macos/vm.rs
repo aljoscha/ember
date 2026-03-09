@@ -37,6 +37,15 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Name of the Swift helper binary.
 const EMBER_VZ_BIN: &str = "ember-vz";
 
+/// Timeout for graceful VM shutdown (SIGTERM) before falling back to SIGKILL.
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Timeout for SIGKILL to take effect.
+const FORCE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Polling interval when waiting for a process to exit.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 impl VmBackend for MacosVm {
     /// Start a VM by spawning the `ember-vz` helper process.
     ///
@@ -165,12 +174,57 @@ impl VmBackend for MacosVm {
         Ok(StartedVm { pid, network })
     }
 
-    fn stop(_vm: &VmMetadata) -> Result<()> {
-        todo!("macOS: stop VM (SIGTERM to ember-vz)")
+    /// Graceful stop: send SIGTERM to ember-vz, wait for exit, SIGKILL fallback.
+    ///
+    /// SIGTERM triggers `VZVirtualMachine.stop()` in the helper, which performs
+    /// a clean ACPI shutdown. If the process doesn't exit within the timeout,
+    /// we escalate to SIGKILL.
+    fn stop(vm: &VmMetadata) -> Result<()> {
+        let pid = vm
+            .pid
+            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+
+        if !Self::is_running(pid) {
+            return Ok(());
+        }
+
+        // Send SIGTERM for graceful shutdown.
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM).map_err(|e| {
+            Error::Network(format!(
+                "failed to send SIGTERM to ember-vz (pid {pid}): {e}"
+            ))
+        })?;
+
+        // Wait for the process to exit.
+        if !wait_for_exit(pid, GRACEFUL_SHUTDOWN_TIMEOUT) {
+            // Still alive — escalate to SIGKILL.
+            let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGKILL);
+            wait_for_exit(pid, FORCE_KILL_TIMEOUT);
+        }
+
+        Ok(())
     }
 
-    fn force_stop(_vm: &VmMetadata) -> Result<()> {
-        todo!("macOS: force stop VM (SIGKILL to ember-vz)")
+    /// Force stop: send SIGKILL immediately.
+    fn force_stop(vm: &VmMetadata) -> Result<()> {
+        let pid = vm
+            .pid
+            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+
+        if !Self::is_running(pid) {
+            return Ok(());
+        }
+
+        let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGKILL).map_err(|e| {
+            Error::Network(format!(
+                "failed to send SIGKILL to ember-vz (pid {pid}): {e}"
+            ))
+        })?;
+
+        wait_for_exit(pid, FORCE_KILL_TIMEOUT);
+        Ok(())
     }
 
     fn pause(_vm: &VmMetadata) -> Result<()> {
@@ -190,6 +244,20 @@ impl VmBackend for MacosVm {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Wait for a process to exit, polling `kill(pid, 0)` at regular intervals.
+///
+/// Returns `true` if the process exited within the timeout, `false` if still alive.
+fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !MacosVm::is_running(pid) {
+            return true;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    !MacosVm::is_running(pid)
+}
 
 /// Read the guest MAC address from the ready-fd pipe with a timeout.
 ///
