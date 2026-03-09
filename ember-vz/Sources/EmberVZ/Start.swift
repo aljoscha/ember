@@ -113,8 +113,11 @@ struct Start: ParsableCommand {
         } else {
             outputHandle = FileHandle.standardOutput
         }
+        guard let nullRead = FileHandle(forReadingAtPath: "/dev/null") else {
+            throw ValidationError("Cannot open /dev/null for reading")
+        }
         serialPort.attachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: FileHandle.nullDevice,
+            fileHandleForReading: nullRead,
             fileHandleForWriting: outputHandle
         )
         config.serialPorts = [serialPort]

@@ -89,41 +89,31 @@ fn ensure_kernel() -> Option<PathBuf> {
         return Some(path);
     }
 
-    // Use cached download if present.
+    // Use cached kernel if present.
     let cache = PathBuf::from(KERNEL_CACHE_PATH);
     if cache.exists() {
         return Some(cache);
     }
 
-    // Download to a temp file, then rename atomically.
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "aarch64",
-        _ => "x86_64",
-    };
-    let url = format!(
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/{arch}/vmlinux-6.1.102"
-    );
-
-    let tmp = PathBuf::from(format!("{KERNEL_CACHE_PATH}.{}", std::process::id()));
-    eprintln!("Downloading kernel from {url}...");
-    let status = Command::new("curl")
-        .args(["-fsSL", "-o"])
-        .arg(&tmp)
-        .arg(&url)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            let _ = std::fs::rename(&tmp, &cache);
-            eprintln!("Kernel cached at {KERNEL_CACHE_PATH}");
-            Some(cache)
-        }
-        _ => {
-            let _ = std::fs::remove_file(&tmp);
-            eprintln!("Failed to download kernel — skipping");
-            None
-        }
+    // Check for locally built kernel in kernel/vmlinux.
+    // On macOS (AVF), the kernel must include CONFIG_VIRTIO_PCI — the stock
+    // Firecracker CI kernel only has CONFIG_VIRTIO_MMIO, so we cannot simply
+    // download it.  Build an AVF kernel with:
+    //   cd kernel && make docker-build ARCH=arm64 FRAGMENTS="avf.fragment"
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let local_kernel = manifest_dir.join("kernel/vmlinux");
+    if local_kernel.exists() {
+        eprintln!("Using locally built kernel: {}", local_kernel.display());
+        // Cache it for future runs.
+        let _ = std::fs::copy(&local_kernel, &cache);
+        return Some(cache);
     }
+
+    eprintln!(
+        "Skipping: no AVF-compatible kernel found.\n\
+         Build one with: cd kernel && make docker-build ARCH=arm64 FRAGMENTS=\"avf.fragment\""
+    );
+    None
 }
 
 /// Find an e2fsprogs tool by checking Homebrew paths before falling back to PATH.
@@ -369,9 +359,12 @@ fn ember_vz_boot_serial_and_network() {
         !serial.is_empty(),
         "serial log is empty — virtio console not working"
     );
+    // On AVF the virtio-pci console backend registers after early boot, so the
+    // "Linux version" banner (printed at time 0) is lost.  Check for virtio_blk
+    // discovery which proves the virtio-pci transport and serial console both work.
     assert!(
-        serial.contains("Linux version"),
-        "serial log should contain 'Linux version' kernel banner.\n\
+        serial.contains("virtio_blk"),
+        "serial log should contain 'virtio_blk' (virtio PCI device discovery).\n\
          First 500 chars of serial log:\n{}",
         &serial[..serial.len().min(500)]
     );

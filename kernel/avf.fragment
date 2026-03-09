@@ -1,0 +1,17 @@
+# Kernel config fragment: Apple Virtualization Framework (AVF) support
+#
+# The Firecracker CI kernel uses virtio-mmio transport exclusively. AVF uses
+# virtio-pci, so we need PCI bus support and the virtio-pci transport driver.
+#
+# Apply on top of the Firecracker CI aarch64 base config using:
+#   scripts/kconfig/merge_config.sh base.config avf.fragment
+
+# PCI bus support — AVF exposes devices on a generic ECAM PCI host.
+CONFIG_PCI=y
+CONFIG_PCI_HOST_GENERIC=y
+
+# Virtio PCI transport — AVF presents virtio devices (blk, net, console) over PCI.
+CONFIG_VIRTIO_PCI=y
+
+# RTC — AVF exposes a PL031 real-time clock.
+CONFIG_RTC_DRV_PL031=y
