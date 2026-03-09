@@ -58,7 +58,7 @@
 - [x] Implement `is_running` (kill(pid, 0))
 - [x] Build or acquire AVF-compatible Linux kernel preset
 - [x] Update `kernel.rs` with macOS-specific preset URL and boot args (`console=hvc0`)
-- [ ] Test: full VM lifecycle (start, SSH, stop)
+- [x] Test: full VM lifecycle (start, SSH, stop)
 
 ## Phase 4: macOS Networking (vmnet)
 
