@@ -79,8 +79,10 @@ RUN mkdir -p /run/sshd \
 RUN systemctl enable ssh.socket
 
 # ---------- serial console ----------
-# Firecracker exposes the guest console on ttyS0.
-RUN systemctl enable serial-getty@ttyS0.service
+# Firecracker uses ttyS0; macOS AVF uses hvc0 (virtio-console).
+# Enable both — the unused one simply won't start.
+RUN systemctl enable serial-getty@ttyS0.service \
+    && systemctl enable serial-getty@hvc0.service
 
 # ---------- strip systemd units that are useless / harmful in a VM ----------
 RUN rm -f /etc/systemd/system/getty.target.wants/getty@tty1.service  || true

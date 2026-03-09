@@ -88,7 +88,6 @@
 ## Phase 7: Polish + CI
 
 - [ ] Add `cargo build --target aarch64-apple-darwin` to CI
-- [ ] Add `cargo build --target x86_64-apple-darwin` to CI
 - [ ] Integrate `swift build` for `ember-vz` into build pipeline
 - [ ] Create Homebrew formula (bundles both `ember` and `ember-vz`)
 - [ ] Update README with macOS installation instructions

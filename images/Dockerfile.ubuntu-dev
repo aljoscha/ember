@@ -105,15 +105,19 @@ RUN id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu; \
 RUN echo 'net.ipv4.ping_group_range = 0 2147483647' > /etc/sysctl.d/50-ping.conf
 
 # ---------- Buildkite CLI (bk) ----------
+ARG TARGETARCH
 ARG BK_VERSION=3.31.1
-RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION}/bk_${BK_VERSION}_linux_amd64.deb" -o /tmp/bk.deb \
+RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION}/bk_${BK_VERSION}_linux_${TARGETARCH}.deb" -o /tmp/bk.deb \
     && dpkg -i /tmp/bk.deb \
     && rm /tmp/bk.deb
 
 # ---------- enable services ----------
+# Firecracker uses ttyS0; macOS AVF uses hvc0 (virtio-console).
+# Enable both — the unused one simply won't start.
 RUN systemctl enable docker \
     && systemctl enable ssh.socket \
-    && systemctl enable serial-getty@ttyS0.service
+    && systemctl enable serial-getty@ttyS0.service \
+    && systemctl enable serial-getty@hvc0.service ends
 
 # ---------- per-user tools (installed as ubuntu) ----------
 USER ubuntu
