@@ -37,6 +37,30 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Name of the Swift helper binary.
 const EMBER_VZ_BIN: &str = "ember-vz";
 
+/// Resolve the path to the `ember-vz` helper binary.
+///
+/// Search order:
+/// 1. `EMBER_VZ` environment variable (explicit override)
+/// 2. Next to the current executable (e.g. `target/debug/ember-vz`)
+/// 3. Fall back to bare name (PATH lookup)
+fn resolve_ember_vz() -> std::path::PathBuf {
+    // 1. Explicit env override.
+    if let Ok(p) = std::env::var("EMBER_VZ") {
+        return std::path::PathBuf::from(p);
+    }
+
+    // 2. Sibling of the current executable.
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name(EMBER_VZ_BIN);
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+
+    // 3. Bare name — rely on PATH.
+    std::path::PathBuf::from(EMBER_VZ_BIN)
+}
+
 /// Timeout for graceful VM shutdown (SIGTERM) before falling back to SIGKILL.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -82,7 +106,7 @@ impl VmBackend for MacosVm {
         let write_fd_num = write_file.as_raw_fd();
 
         // Build the ember-vz start command.
-        let mut cmd = Command::new(EMBER_VZ_BIN);
+        let mut cmd = Command::new(resolve_ember_vz());
         cmd.arg("start")
             .arg("--kernel")
             .arg(&vm.kernel_path)
