@@ -151,7 +151,7 @@ fn spawn_ember_vz(
         "--memory",
         "256",
         "--boot-args",
-        "console=hvc0 root=/dev/vda rw",
+        "console=hvc0 root=/dev/vda rw ip=dhcp",
         "--serial-log",
         serial_log.to_str().unwrap(),
         "--ready-fd",
