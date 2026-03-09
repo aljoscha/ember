@@ -62,7 +62,7 @@
 
 ## Phase 4: macOS Networking (vmnet)
 
-- [ ] Implement `NetworkBackend` for macOS: setup (no-op, vmnet handles everything)
+- [x] Implement `NetworkBackend` for macOS: setup (no-op, vmnet handles everything)
 - [ ] Implement guest IP discovery from DHCP leases (`/var/db/dhcpd_leases`)
 - [ ] Implement ARP-based fallback IP discovery
 - [ ] Implement teardown (no-op for shared mode)
