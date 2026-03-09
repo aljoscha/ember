@@ -557,6 +557,197 @@ fn vm_delete_removes_storage() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2: Resize tests
+// ---------------------------------------------------------------------------
+
+/// Resize a stopped VM: verify .img file grows, ext4 expands, metadata updates.
+#[test]
+#[ignore]
+fn resize_grows_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = setup_with_vm(tmp.path(), "resize", "resizevm");
+    let state = state_dir.to_str().unwrap();
+    let rootfs = state_dir.join("vms").join("resizevm").join("rootfs.img");
+
+    // Initial file size should be 64MB (from create_test_image).
+    let initial_size = std::fs::metadata(&rootfs).unwrap().len();
+    assert_eq!(
+        initial_size,
+        64 * 1024 * 1024,
+        "initial image should be 64MB"
+    );
+
+    // --- Resize to 2 GiB ---
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "resizevm",
+        "--disk-size",
+        "2G",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm resize failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("resized"),
+        "expected confirmation message: {stdout}"
+    );
+
+    // --- Verify file size grew to 2 GiB ---
+    let new_size = std::fs::metadata(&rootfs).unwrap().len();
+    assert_eq!(
+        new_size,
+        2 * 1024 * 1024 * 1024,
+        "rootfs.img should be 2 GiB after resize, got {new_size} bytes"
+    );
+
+    // --- Verify metadata updated ---
+    let inspect = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "resizevm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
+    assert_eq!(
+        json["disk_size_gib"], 2,
+        "metadata should show 2 GiB after resize"
+    );
+
+    // --- Verify ext4 filesystem was expanded ---
+    // Use dumpe2fs to check the block count reflects ~2 GiB.
+    let dumpe2fs = find_e2fsprogs_tool("dumpe2fs");
+    let output = Command::new(&dumpe2fs)
+        .arg("-h")
+        .arg(&rootfs)
+        .output()
+        .unwrap_or_else(|_| panic!("failed to run {dumpe2fs} — is e2fsprogs installed?"));
+    assert!(
+        output.status.success(),
+        "dumpe2fs failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dump_stdout = String::from_utf8_lossy(&output.stdout);
+    let block_count: u64 = parse_dumpe2fs_value(&dump_stdout, "Block count");
+    let block_size: u64 = parse_dumpe2fs_value(&dump_stdout, "Block size");
+    let fs_bytes = block_count * block_size;
+
+    // ext4 has some overhead, so the filesystem won't be exactly 2 GiB.
+    // Check it's at least 1.8 GiB (allowing ~10% for metadata overhead).
+    let min_expected = (1.8 * 1024.0 * 1024.0 * 1024.0) as u64;
+    assert!(
+        fs_bytes >= min_expected,
+        "ext4 filesystem should be ~2 GiB after resize, got {fs_bytes} bytes ({:.2} GiB)",
+        fs_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+}
+
+/// Shrinking (or same size) should be rejected.
+#[test]
+#[ignore]
+fn resize_shrink_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = setup_with_vm(tmp.path(), "resizeshrink", "shrinkvm");
+    let state = state_dir.to_str().unwrap();
+
+    // metadata has disk_size_gib: 1; try same size.
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "shrinkvm",
+        "--disk-size",
+        "1G",
+    ]);
+    assert!(
+        !output.status.success(),
+        "expected resize to same size to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be larger"),
+        "expected 'must be larger' error: {stderr}"
+    );
+}
+
+/// Multiple sequential resizes should all succeed.
+#[test]
+#[ignore]
+fn resize_multiple_grows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = setup_with_vm(tmp.path(), "resizemulti", "multivm");
+    let state = state_dir.to_str().unwrap();
+    let rootfs = state_dir.join("vms").join("multivm").join("rootfs.img");
+
+    // Resize 1 GiB → 2 GiB.
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "multivm",
+        "--disk-size",
+        "2G",
+    ]);
+    assert!(
+        output.status.success(),
+        "first resize failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::metadata(&rootfs).unwrap().len(),
+        2 * 1024 * 1024 * 1024
+    );
+
+    // Resize 2 GiB → 4 GiB.
+    let output = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "resize",
+        "multivm",
+        "--disk-size",
+        "4G",
+    ]);
+    assert!(
+        output.status.success(),
+        "second resize failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::metadata(&rootfs).unwrap().len(),
+        4 * 1024 * 1024 * 1024
+    );
+
+    // Verify metadata tracks the latest size.
+    let inspect = ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "multivm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
+    assert_eq!(json["disk_size_gib"], 4, "metadata should show 4 GiB");
+}
+
+// ---------------------------------------------------------------------------
 // Phase 2: Non-APFS failure tests
 // ---------------------------------------------------------------------------
 
@@ -685,6 +876,23 @@ fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Parse a numeric value from `dumpe2fs -h` output.
+///
+/// Looks for a line like `Block count:      524288` and returns the number.
+fn parse_dumpe2fs_value(output: &str, key: &str) -> u64 {
+    let prefix = format!("{key}:");
+    let line = output
+        .lines()
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("expected '{prefix}' in dumpe2fs output"));
+    line.split(':')
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("failed to parse '{key}' value: {e}\nline: {line}"))
 }
 
 /// Get free space in bytes for the volume containing the given path.
