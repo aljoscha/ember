@@ -557,8 +557,135 @@ fn vm_delete_removes_storage() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2: Non-APFS failure tests
+// ---------------------------------------------------------------------------
+
+/// Verify that ember warns about non-APFS volumes and detects missing CoW.
+///
+/// On macOS, `cp -c` silently falls back to a full copy on non-APFS
+/// filesystems (it only fails for cross-device clones). Ember handles
+/// this with two detection mechanisms:
+///
+/// 1. **`ember init`** checks the state directory's filesystem type via
+///    `diskutil info` and warns if it's not APFS.
+/// 2. **Timing check**: the `apfs_clone()` helper warns if a clone takes
+///    over 1 second (indicating a full copy instead of instant CoW).
+///
+/// This test creates an HFS+ disk image, mounts it, and verifies that
+/// `ember init` produces the appropriate warning about non-APFS storage.
+#[test]
+#[ignore]
+fn cp_c_fails_gracefully_on_non_apfs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dmg_path = tmp.path().join("hfsplus.dmg");
+
+    // Create a 64MB HFS+ disk image.
+    let output = Command::new("hdiutil")
+        .args([
+            "create",
+            "-size",
+            "64m",
+            "-fs",
+            "HFS+",
+            "-volname",
+            "EmberTestHFS",
+        ])
+        .arg(&dmg_path)
+        .output()
+        .expect("failed to run hdiutil create");
+    assert!(
+        output.status.success(),
+        "hdiutil create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Mount the HFS+ volume.
+    let output = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-plist"])
+        .arg(&dmg_path)
+        .output()
+        .expect("failed to run hdiutil attach");
+    assert!(
+        output.status.success(),
+        "hdiutil attach failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Parse mount point from plist output.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mount_point = parse_hdiutil_mount_point(&stdout)
+        .unwrap_or_else(|| panic!("no mount point found in hdiutil output:\n{stdout}"));
+
+    // RAII guard: ensure we always detach the volume on test exit.
+    struct HdiutilCleanup(String);
+    impl Drop for HdiutilCleanup {
+        fn drop(&mut self) {
+            let _ = Command::new("hdiutil")
+                .args(["detach", "-force"])
+                .arg(&self.0)
+                .status();
+        }
+    }
+    let _cleanup = HdiutilCleanup(mount_point.clone());
+
+    // Set up ember state directory on the HFS+ volume.
+    let state_dir = PathBuf::from(&mount_point).join("ember-state");
+
+    // `ember init` should succeed but warn about non-APFS.
+    // The warning is printed to stderr by check_apfs_volume().
+    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "init on HFS+ failed (should warn, not error).\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("not on an APFS volume") || stderr.contains("not APFS"),
+        "expected APFS warning during init on HFS+ volume.\nstderr: {stderr}"
+    );
+
+    // Verify that `cp -c` between the APFS boot volume and the HFS+ volume
+    // fails with a clear cross-device error. This is the case where `cp -c`
+    // actually errors (same-volume non-APFS silently falls back to full copy).
+    let img = create_test_image(tmp.path(), "hfstest", 8);
+    let cross_vol_dest = PathBuf::from(&mount_point).join("cross-vol-clone.img");
+    let cp_output = Command::new("cp")
+        .arg("-c")
+        .arg(&img)
+        .arg(&cross_vol_dest)
+        .output()
+        .expect("failed to run cp -c");
+    assert!(
+        !cp_output.status.success(),
+        "cp -c should fail for cross-volume clone"
+    );
+    let cp_stderr = String::from_utf8_lossy(&cp_output.stderr);
+    assert!(
+        cp_stderr.contains("Cross-device link"),
+        "expected 'Cross-device link' error for cross-volume cp -c.\nstderr: {cp_stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Parse mount point from `hdiutil attach -plist` XML output.
+/// Looks for the `<key>mount-point</key>` entry and returns the value.
+fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
+    let marker = "<key>mount-point</key>";
+    let idx = plist_xml.find(marker)?;
+    let after = &plist_xml[idx + marker.len()..];
+    let start_tag = "<string>";
+    let end_tag = "</string>";
+    let s_start = after.find(start_tag)? + start_tag.len();
+    let s_end = after.find(end_tag)?;
+    if s_start <= s_end {
+        Some(after[s_start..s_end].to_string())
+    } else {
+        None
+    }
+}
 
 /// Get free space in bytes for the volume containing the given path.
 fn get_free_space_bytes(path: &Path) -> u64 {

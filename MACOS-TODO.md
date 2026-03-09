@@ -40,7 +40,7 @@
 - [x] Add timing-based sanity check on `cp -c` (warn if clone takes >1s)
 - [x] Test: create image, clone for VM, snapshot, restore, resize
 - [x] Test: verify `cp -c` clone doesn't reduce free space (df check)
-- [ ] Test: verify `cp -c` fails gracefully on non-APFS volume
+- [x] Test: verify `cp -c` fails gracefully on non-APFS volume
 
 ## Phase 2.5: Storage Efficiency Diagnostics
 
