@@ -307,7 +307,7 @@ The discovered IP is stored in `vm.json` just like on Linux.
 
 ### DNS
 
-vmnet shared mode forwards DNS automatically. No special resolv.conf injection needed — the DHCP lease includes DNS server information. However, the resolv.conf symlink to `/proc/net/pnp` is still injected for consistency with the Linux path (the kernel `ip=` parameter can optionally include DNS servers).
+vmnet shared mode's DHCP advertises the gateway (192.168.64.1) as DNS server, but the gateway does not actually forward DNS queries. During image injection, a static `/etc/resolv.conf` with public DNS servers (8.8.8.8, 1.1.1.1) is written instead of the Linux-style symlink to `/proc/net/pnp`.
 
 ### No IP Allocation State
 

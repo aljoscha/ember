@@ -155,10 +155,16 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
 
 /// Inject `/etc/resolv.conf` into the rootfs for DNS resolution.
 ///
-/// Creates a symlink `/etc/resolv.conf` → `/proc/net/pnp`. The kernel
-/// populates `/proc/net/pnp` with DNS servers from the `ip=` boot
+/// **Linux**: Creates a symlink `/etc/resolv.conf` → `/proc/net/pnp`. The
+/// kernel populates `/proc/net/pnp` with DNS servers from the `ip=` boot
 /// parameter, so DNS is configured dynamically at every VM boot without
 /// baking server addresses into the image.
+///
+/// **macOS**: Writes a static `/etc/resolv.conf` with public DNS servers.
+/// vmnet shared mode's DHCP advertises the gateway (192.168.64.1) as DNS,
+/// but the gateway doesn't actually forward DNS queries. The kernel's
+/// `ip=dhcp` picks up this non-functional server in `/proc/net/pnp`, so
+/// we use a static file instead.
 ///
 /// If the rootfs already has a `resolv.conf` (possibly a symlink from the
 /// container image, e.g. Ubuntu's link to `/run/systemd/resolve/...`),
@@ -177,12 +183,27 @@ pub fn inject_resolv_conf(rootfs_dir: &Path) -> Result<()> {
         let _ = fs::remove_file(&resolv_path);
     }
 
-    // Symlink to /proc/net/pnp — the kernel writes DNS servers there
-    // from the ip= boot parameter.
-    std::os::unix::fs::symlink("/proc/net/pnp", &resolv_path).map_err(|e| Error::Io {
-        path: resolv_path,
-        source: e,
-    })?;
+    #[cfg(target_os = "macos")]
+    {
+        // vmnet's DHCP advertises the gateway as DNS but it doesn't forward
+        // queries. Write a static resolv.conf with public DNS servers.
+        fs::write(&resolv_path, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n").map_err(|e| {
+            Error::Io {
+                path: resolv_path,
+                source: e,
+            }
+        })?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Symlink to /proc/net/pnp — the kernel writes DNS servers there
+        // from the ip= boot parameter.
+        std::os::unix::fs::symlink("/proc/net/pnp", &resolv_path).map_err(|e| Error::Io {
+            path: resolv_path,
+            source: e,
+        })?;
+    }
 
     Ok(())
 }
@@ -390,6 +411,7 @@ mod tests {
         assert_eq!(home, "root");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn inject_resolv_conf_creates_symlink() {
         let rootfs = tempfile::tempdir().unwrap();
@@ -408,6 +430,22 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn inject_resolv_conf_creates_static_file() {
+        let rootfs = tempfile::tempdir().unwrap();
+        fs::create_dir_all(rootfs.path().join("etc")).unwrap();
+
+        inject_resolv_conf(rootfs.path()).unwrap();
+
+        let resolv = rootfs.path().join("etc/resolv.conf");
+        let contents = fs::read_to_string(&resolv).unwrap();
+        assert!(
+            contents.contains("nameserver 8.8.8.8"),
+            "resolv.conf should contain public DNS"
+        );
+    }
+
     #[test]
     fn inject_resolv_conf_creates_etc_dir() {
         let rootfs = tempfile::tempdir().unwrap();
@@ -415,7 +453,7 @@ mod tests {
         inject_resolv_conf(rootfs.path()).unwrap();
 
         let resolv = rootfs.path().join("etc/resolv.conf");
-        assert!(resolv.symlink_metadata().unwrap().is_symlink());
+        assert!(resolv.symlink_metadata().is_ok());
     }
 
     #[test]
@@ -428,8 +466,8 @@ mod tests {
         inject_resolv_conf(rootfs.path()).unwrap();
 
         let resolv = etc.join("resolv.conf");
-        let target = fs::read_link(&resolv).unwrap();
-        assert_eq!(target.to_str().unwrap(), "/proc/net/pnp");
+        let contents = fs::read_to_string(&resolv).unwrap_or_default();
+        assert!(!contents.contains("old content"));
     }
 
     #[cfg(unix)]
@@ -446,12 +484,21 @@ mod tests {
         inject_resolv_conf(rootfs.path()).unwrap();
 
         let resolv = etc.join("resolv.conf");
-        let target = fs::read_link(&resolv).unwrap();
-        assert_eq!(
-            target.to_str().unwrap(),
-            "/proc/net/pnp",
-            "should replace old symlink with /proc/net/pnp"
-        );
+        // Old symlink should be gone.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let target = fs::read_link(&resolv).unwrap();
+            assert_eq!(
+                target.to_str().unwrap(),
+                "/proc/net/pnp",
+                "should replace old symlink with /proc/net/pnp"
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let contents = fs::read_to_string(&resolv).unwrap();
+            assert!(contents.contains("nameserver 8.8.8.8"));
+        }
     }
 
     #[test]
