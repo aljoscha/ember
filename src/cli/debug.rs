@@ -2,6 +2,9 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use clap::Subcommand;
 
 #[derive(Subcommand)]
@@ -64,8 +67,10 @@ fn storage_efficiency(state_dir: &Path) -> anyhow::Result<()> {
 
     let total_logical = image_bytes + vm_bytes + snap_bytes;
 
-    // Get actual disk usage via df on the state directory.
-    let actual_used = get_volume_used_bytes(state_dir);
+    // Get actual disk usage by summing allocated blocks for all .img files.
+    // On APFS, cloned files only report their unique (non-shared) blocks,
+    // so this correctly reflects CoW savings.
+    let actual_used = get_actual_disk_bytes(state_dir);
 
     println!();
     println!("Storage Efficiency Report");
@@ -89,7 +94,7 @@ fn storage_efficiency(state_dir: &Path) -> anyhow::Result<()> {
     println!("Total logical:     {}", format_bytes(total_logical));
 
     if let Some(used) = actual_used {
-        println!("Actual disk used:  {} (via df)", format_bytes(used));
+        println!("Actual disk used:  {}", format_bytes(used));
         if used > 0 && total_logical > used {
             let ratio = total_logical as f64 / used as f64;
             println!("CoW efficiency:    {:.1}x space savings", ratio);
@@ -122,30 +127,41 @@ fn count_img_files(dir: &Path) -> (u64, u64) {
     (count, bytes)
 }
 
-/// Get the "used" bytes on the volume containing the given path.
+/// Get actual disk bytes used by all `.img` files under the state directory.
 ///
-/// Runs `df -k <path>` and parses the output. Returns `None` if the
-/// command fails or output can't be parsed.
-fn get_volume_used_bytes(path: &Path) -> Option<u64> {
-    let output = std::process::Command::new("df")
-        .arg("-k")
-        .arg(path)
-        .output()
-        .ok()?;
+/// Uses `st_blocks` from file metadata, which reports 512-byte blocks
+/// actually allocated on disk. On APFS, cloned files only count their
+/// unique (non-shared) blocks, so this correctly reflects CoW savings.
+#[cfg(unix)]
+fn get_actual_disk_bytes(state_dir: &Path) -> Option<u64> {
+    let mut total_blocks: u64 = 0;
+    sum_img_blocks(state_dir, &mut total_blocks);
+    // st_blocks counts 512-byte blocks.
+    Some(total_blocks * 512)
+}
 
-    if !output.status.success() {
-        return None;
+#[cfg(not(unix))]
+fn get_actual_disk_bytes(_state_dir: &Path) -> Option<u64> {
+    None
+}
+
+/// Recursively walk a directory and sum `st_blocks` for all `.img` files.
+#[cfg(unix)]
+fn sum_img_blocks(dir: &Path, total: &mut u64) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            sum_img_blocks(&path, total);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("img") {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                *total += meta.blocks();
+            }
+        }
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // df -k output:
-    // Filesystem  1024-blocks  Used  Available  Capacity  Mounted on
-    // /dev/disk1  ...          USED  ...        ...       ...
-    let line = stdout.lines().nth(1)?;
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    // Field 2 is "Used" in 1024-byte blocks.
-    let used_kb: u64 = fields.get(2)?.parse().ok()?;
-    Some(used_kb * 1024)
 }
 
 /// Format bytes as a human-readable string (e.g., "2.1 GB").
