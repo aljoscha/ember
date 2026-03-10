@@ -96,7 +96,24 @@ impl KernelSpec {
     /// For paths, applies tilde expansion and returns the path as-is.
     pub fn resolve(&self, store: &StateStore) -> anyhow::Result<PathBuf> {
         match self {
-            KernelSpec::Path(p) => Ok(crate::config::vm::expand_tilde(p)),
+            KernelSpec::Path(p) => {
+                let src = crate::config::vm::expand_tilde(p);
+                let src = std::fs::canonicalize(&src)
+                    .map_err(|e| anyhow::anyhow!("kernel path '{}': {e}", src.display()))?;
+                let filename = src
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("kernel path has no filename"))?;
+                let dest = store.kernel_dir().join(filename);
+                std::fs::copy(&src, &dest).map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to copy kernel '{}' → '{}': {e}",
+                        src.display(),
+                        dest.display()
+                    )
+                })?;
+                println!("Copied kernel {} → {}", src.display(), dest.display());
+                Ok(dest)
+            }
             KernelSpec::Preset(preset) => {
                 let dest = store.kernel_dir().join(preset.filename());
                 if dest.exists() {
