@@ -35,6 +35,18 @@ Initialize ember with a ZFS pool:
 sudo ember init --pool mypool --device /dev/sdb
 ```
 
+> [!TIP]
+> **No spare disk?** You can back a zpool with regular files instead:
+> ```bash
+> truncate -s 100G /home/ember-data/zpool1.img /home/ember-data/zpool2.img
+> sudo zpool create ember /home/ember-data/zpool1.img /home/ember-data/zpool2.img
+> sudo ember init --pool ember
+> ```
+> File-backed pools aren't added to the ZFS cache by default, so after a reboot you need to re-import manually:
+> ```bash
+> sudo zpool import -d /home/ember-data ember
+> ```
+
 Build an image:
 
 ```bash
