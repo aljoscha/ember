@@ -25,7 +25,7 @@ cargo build --release
 The binary is at `./target/release/ember`.
 
 > [!NOTE]
-> If you need to run Docker inside a VM, you'll need a custom kernel with additional networking modules. See [Building a custom kernel](#building-a-custom-kernel) below.
+> If you need to run Docker inside a VM, build a custom kernel first: `sudo ember kernel build`. See [Building a custom kernel](#building-a-custom-kernel) below.
 
 ## Quick start
 
@@ -226,58 +226,54 @@ ember cp myvm:/var/log/syslog ./syslog.txt
 
 The stock kernel (`vmlinux-6.1.102`, auto-downloaded on first use) works for most use cases. However, it **lacks full Docker networking support** — the iptables `raw` table and nftables modules are missing, so Docker bridge networking doesn't work inside guest VMs.
 
-If you need Docker with bridge networking inside your VMs, build a custom kernel from the `kernel/` directory. It takes the Firecracker CI kernel config and merges a `docker.fragment` that adds the missing networking options (`CONFIG_IP_NF_RAW`, `CONFIG_NF_TABLES`, etc.).
+If you need Docker with bridge networking inside your VMs, build a custom kernel. It takes the Firecracker CI kernel config and merges extra options for iptables raw, nftables, and dummy network interfaces.
 
-### Native build
+### Using `ember kernel build` (recommended)
 
-Requires: gcc, make, flex, bison, libelf-dev, libssl-dev, bc, git, curl, python3.
+Requires Docker or Podman. The build runs inside a container — no host compiler toolchain needed.
+
+```bash
+sudo ember kernel build
+```
+
+This will explain what it's about to do (download ~1 GB of kernel source, compile inside a container) and ask for confirmation. Use `-y` to skip the prompt:
+
+```bash
+sudo ember kernel build -y
+```
+
+The built kernel is installed to the state directory and becomes the default for new VMs. You can also use `--kernel stock` to fall back to the pre-built kernel without Docker support:
+
+```bash
+sudo ember vm create myvm --image ubuntu-dev --kernel stock
+```
+
+List available kernels:
+
+```bash
+ember kernel list
+```
+
+### Manual build with Make
+
+Alternatively, you can build directly from the `kernel/` directory in the source tree.
+
+**Native** (requires gcc, make, flex, bison, libelf-dev, libssl-dev, bc, git, curl, python3):
 
 ```bash
 cd kernel
 make
 ```
 
-This will:
-1. Download the Firecracker CI base config
-2. Shallow-clone the Amazon Linux kernel source (6.1.163)
-3. Merge the base config with `docker.fragment`
-4. Compile `vmlinux`
-
-### Docker build (reproducible)
-
-No host dependencies needed beyond Docker:
+**Docker** (reproducible, no host deps beyond Docker):
 
 ```bash
 cd kernel
 make docker-build
 ```
 
-Both methods produce `kernel/vmlinux`.
-
-### Other make targets
-
-```bash
-make config       # merge configs without compiling
-make clean        # remove build artifacts (keeps source)
-make distclean    # remove everything including source
-```
-
-## Using a custom kernel
-
-Pass the kernel path when creating a VM:
+Both produce `kernel/vmlinux`. Pass the path when creating a VM:
 
 ```bash
 sudo ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
-```
-
-In a YAML config:
-
-```yaml
-kernel: /path/to/kernel/vmlinux
-```
-
-Or set it as the default for all new VMs at init time:
-
-```bash
-sudo ember init --kernel /path/to/kernel/vmlinux
 ```
