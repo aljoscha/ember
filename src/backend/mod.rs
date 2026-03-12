@@ -299,8 +299,14 @@ pub trait NetworkBackend {
 
     /// Discover the guest's IP address from its MAC address.
     ///
-    /// Linux: the IP is statically assigned, so this is a no-op/lookup.
-    /// macOS: parses `/var/db/dhcpd_leases` for the vmnet DHCP lease,
-    /// with ARP-based fallback.
-    fn discover_guest_ip(&self, mac: &str) -> Result<String>;
+    /// Only meaningful on platforms where the guest IP is dynamically assigned
+    /// (macOS vmnet DHCP). On Linux, IPs are statically allocated during
+    /// [`setup`] and the caller never invokes this method.
+    ///
+    /// Default: returns an error indicating static allocation.
+    fn discover_guest_ip(&self, _mac: &str) -> Result<String> {
+        Err(crate::error::Error::Network(
+            "guest IP discovery not supported — IPs are statically allocated".to_string(),
+        ))
+    }
 }

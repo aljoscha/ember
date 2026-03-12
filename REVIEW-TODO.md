@@ -98,7 +98,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 - [x] **No `compile_error!` for unsupported platforms**
   `src/backend/mod.rs` — Add fallback for non-Linux/macOS targets.
 
-- [ ] **`discover_guest_ip` returns error on Linux**
+- [x] **`discover_guest_ip` returns error on Linux**
   `src/backend/linux/network.rs:91-97` — Trait method always errors. Consider a
   default impl that returns an error, or document the platform-specific calling convention.
 

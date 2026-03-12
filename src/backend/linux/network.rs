@@ -85,14 +85,4 @@ impl NetworkBackend for LinuxNetwork {
         }
         Ok(())
     }
-
-    /// On Linux, the guest IP is statically allocated — it's already known
-    /// from the [`setup`] call. This method just returns the stored IP.
-    fn discover_guest_ip(&self, _mac: &str) -> Result<String> {
-        Err(Error::Network(
-            "guest IP discovery by MAC is not used on Linux — \
-             IPs are statically allocated during setup"
-                .to_string(),
-        ))
-    }
 }
