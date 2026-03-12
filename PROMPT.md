@@ -2,7 +2,7 @@
 
 Read @TEST-TODO.md for the task list. For test architecture, see @TEST-SPEC.md. For macOS design context, see @MACOS-SPEC.md. For Linux context, see @SPEC.md.
 
-Pick the first unchecked task (`- [ ]`) from TEST-TODO.md. Implement, verify, check off, commit, stop.
+Pick the first unchecked task (`- [ ]`) from TEST-TODO.md. Implement, verify, check off, commit, follow the workflow below.
 
 Use agent teams when it would speed things up — for example, to explore existing test files, research patterns, or implement independent pieces in parallel.
 
