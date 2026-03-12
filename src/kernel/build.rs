@@ -22,79 +22,9 @@ const KERNEL_REPO: &str = "https://github.com/amazonlinux/linux.git";
 const BASE_CONFIG_URL: &str = "https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config";
 const BUILDER_IMAGE: &str = "ember-kernel-builder";
 
-const DOCKERFILE: &str = "\
-FROM ubuntu:24.04
-
-RUN apt-get update -qq && \\
-    apt-get install -y -qq --no-install-recommends \\
-        bc \\
-        bison \\
-        ca-certificates \\
-        cpio \\
-        curl \\
-        flex \\
-        gcc \\
-        git \\
-        libelf-dev \\
-        libssl-dev \\
-        make \\
-        python3 \\
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-";
-
-const DOCKER_FRAGMENT: &str = "\
-# Kernel config fragment: Docker networking support
-#
-# These options are missing from the Firecracker CI kernel config and are
-# needed for Docker to work with bridge networking inside guest VMs.
-
-# iptables raw table — required for Docker bridge networking.
-CONFIG_IP_NF_RAW=y
-CONFIG_IP6_NF_RAW=y
-
-# nftables — modern Docker defaults to the nftables backend.
-CONFIG_NF_TABLES=y
-CONFIG_NF_TABLES_INET=y
-CONFIG_NF_TABLES_IPV4=y
-CONFIG_NF_TABLES_IPV6=y
-CONFIG_NFT_CT=y
-CONFIG_NFT_NAT=y
-CONFIG_NFT_MASQ=y
-CONFIG_NFT_REDIR=y
-CONFIG_NFT_REJECT=y
-CONFIG_NFT_COMPAT=y
-CONFIG_NFT_CHAIN_NAT=y
-
-# Dummy network interface (used by some container networking setups).
-CONFIG_DUMMY=y
-";
-
-const AVF_FRAGMENT: &str = "\
-# Kernel config fragment: Apple Virtualization Framework (AVF) support
-#
-# AVF uses virtio-pci (not virtio-mmio like Firecracker), a virtio console
-# (hvc0), and kernel-level DHCP for vmnet shared-mode networking. These
-# options are missing or disabled in the Firecracker CI base config.
-
-# PCI bus — AVF presents devices on a virtual PCI bus.
-CONFIG_PCI=y
-CONFIG_PCI_HOST_GENERIC=y
-
-# virtio transport over PCI (Firecracker uses MMIO; AVF uses PCI).
-CONFIG_VIRTIO_PCI=y
-CONFIG_VIRTIO_PCI_MODERN=y
-
-# virtio console — AVF serial console is hvc0, not ttyS0.
-CONFIG_VIRTIO_CONSOLE=y
-CONFIG_HVC_DRIVER=y
-
-# Kernel-level IP auto-configuration (ip=dhcp boot parameter).
-# Required for vmnet shared-mode DHCP networking.
-CONFIG_IP_PNP=y
-CONFIG_IP_PNP_DHCP=y
-";
+const DOCKERFILE: &str = include_str!("../../kernel/Dockerfile");
+const DOCKER_FRAGMENT: &str = include_str!("../../kernel/docker.fragment");
+const AVF_FRAGMENT: &str = include_str!("../../kernel/avf.fragment");
 
 // ---------------------------------------------------------------------------
 // Container tool detection
