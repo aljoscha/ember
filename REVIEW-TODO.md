@@ -60,7 +60,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/storage.rs:364` — Checks `!= Some(1)` but e2fsck uses a bitmask.
   Should check error bits (`code & 0b1100 != 0`) or use `>= 2` like the Linux backend.
 
-- [ ] **`InitArgs` exposes `--pool`/`--device`/`--dataset` on macOS**
+- [x] **`InitArgs` exposes `--pool`/`--device`/`--dataset` on macOS**
   `src/cli/init.rs:12-32` — Linux-specific flags visible to macOS users. Hide or
   document as Linux-only.
 

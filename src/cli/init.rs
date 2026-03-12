@@ -10,16 +10,19 @@ use crate::state::store::StateStore;
 
 #[derive(Args)]
 pub struct InitArgs {
-    /// ZFS pool name
-    #[arg(long, default_value = "ember")]
+    /// ZFS pool name (Linux only)
+    #[cfg_attr(target_os = "macos", arg(long, default_value = "ember", hide = true))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "ember"))]
     pub pool: String,
 
-    /// Block device for pool creation
-    #[arg(long)]
+    /// Block device for pool creation (Linux only)
+    #[cfg_attr(target_os = "macos", arg(long, hide = true))]
+    #[cfg_attr(not(target_os = "macos"), arg(long))]
     pub device: Option<String>,
 
-    /// Dataset name within the pool
-    #[arg(long, default_value = "ember")]
+    /// Dataset name within the pool (Linux only)
+    #[cfg_attr(target_os = "macos", arg(long, default_value = "ember", hide = true))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "ember"))]
     pub dataset: String,
 
     /// Kernel preset or file path [presets: stock]
