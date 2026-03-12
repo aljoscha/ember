@@ -68,7 +68,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `ember-vz/Sources/EmberVZ/Start.swift:81-82` — Validate against AVF
   `minimumAllowed*`/`maximumAllowed*` before configuring.
 
-- [ ] **VM errors use `Error::Network` variant**
+- [x] **VM errors use `Error::Network` variant**
   `src/backend/macos/vm.rs:212, 240, 264, 283` — Add an `Error::Vm` variant for
   hypervisor lifecycle errors.
 

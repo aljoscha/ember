@@ -97,7 +97,7 @@ impl VmBackend for MacosVm {
         // ember-vz writes the guest MAC address to the write end once booted;
         // we read it from the read end.
         let (read_owned, write_owned) =
-            nix::unistd::pipe().map_err(|e| Error::Network(format!("pipe: {e}")))?;
+            nix::unistd::pipe().map_err(|e| Error::Vm(format!("pipe: {e}")))?;
 
         // Wrap both pipe ends in File immediately so they are closed on drop,
         // even if cmd.spawn() fails (prevents fd leak on the read end).
@@ -207,7 +207,7 @@ impl VmBackend for MacosVm {
     fn stop(vm: &VmMetadata) -> Result<()> {
         let pid = vm
             .pid
-            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+            .ok_or_else(|| Error::Vm(format!("vm '{}' has no PID", vm.name)))?;
 
         // Send SIGTERM for graceful shutdown. Handle ESRCH (process already
         // exited) directly instead of pre-checking is_running() to avoid a
@@ -217,7 +217,7 @@ impl VmBackend for MacosVm {
             Ok(()) => {}
             Err(nix::errno::Errno::ESRCH) => return Ok(()), // already exited
             Err(e) => {
-                return Err(Error::Network(format!(
+                return Err(Error::Vm(format!(
                     "failed to send SIGTERM to ember-vz (pid {pid}): {e}"
                 )))
             }
@@ -237,7 +237,7 @@ impl VmBackend for MacosVm {
     fn force_stop(vm: &VmMetadata) -> Result<()> {
         let pid = vm
             .pid
-            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+            .ok_or_else(|| Error::Vm(format!("vm '{}' has no PID", vm.name)))?;
 
         // Send SIGKILL directly, handling ESRCH (already exited) instead of
         // pre-checking is_running() to avoid a TOCTOU race.
@@ -246,7 +246,7 @@ impl VmBackend for MacosVm {
             Ok(()) => {}
             Err(nix::errno::Errno::ESRCH) => return Ok(()), // already exited
             Err(e) => {
-                return Err(Error::Network(format!(
+                return Err(Error::Vm(format!(
                     "failed to send SIGKILL to ember-vz (pid {pid}): {e}"
                 )))
             }
@@ -263,11 +263,11 @@ impl VmBackend for MacosVm {
     fn pause(vm: &VmMetadata) -> Result<()> {
         let pid = vm
             .pid
-            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+            .ok_or_else(|| Error::Vm(format!("vm '{}' has no PID", vm.name)))?;
 
         let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
         nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGUSR1).map_err(|e| {
-            Error::Network(format!(
+            Error::Vm(format!(
                 "failed to send SIGUSR1 (pause) to ember-vz (pid {pid}): {e}"
             ))
         })
@@ -280,11 +280,11 @@ impl VmBackend for MacosVm {
     fn resume(vm: &VmMetadata) -> Result<()> {
         let pid = vm
             .pid
-            .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
+            .ok_or_else(|| Error::Vm(format!("vm '{}' has no PID", vm.name)))?;
 
         let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
         nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGUSR2).map_err(|e| {
-            Error::Network(format!(
+            Error::Vm(format!(
                 "failed to send SIGUSR2 (resume) to ember-vz (pid {pid}): {e}"
             ))
         })
@@ -333,13 +333,13 @@ fn read_mac_from_ready_fd(read_file: std::fs::File, timeout: Duration) -> Result
     let poll_result = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
 
     if poll_result < 0 {
-        return Err(Error::Network(format!(
+        return Err(Error::Vm(format!(
             "poll on ready-fd failed: {}",
             std::io::Error::last_os_error()
         )));
     }
     if poll_result == 0 {
-        return Err(Error::Network(format!(
+        return Err(Error::Vm(format!(
             "timed out waiting for ember-vz to report VM readiness ({}s)",
             timeout.as_secs()
         )));
@@ -350,11 +350,11 @@ fn read_mac_from_ready_fd(read_file: std::fs::File, timeout: Duration) -> Result
     let mut line = String::new();
     reader
         .read_line(&mut line)
-        .map_err(|e| Error::Network(format!("failed to read MAC from ready-fd: {e}")))?;
+        .map_err(|e| Error::Vm(format!("failed to read MAC from ready-fd: {e}")))?;
 
     let mac = line.trim().to_string();
     if mac.is_empty() {
-        return Err(Error::Network(
+        return Err(Error::Vm(
             "ember-vz closed ready-fd without writing MAC address (VM may have crashed)".into(),
         ));
     }

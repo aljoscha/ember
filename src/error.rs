@@ -33,6 +33,10 @@ pub enum Error {
     #[error("network: {0}")]
     Network(String),
 
+    /// VM hypervisor lifecycle error.
+    #[error("vm: {0}")]
+    Vm(String),
+
     /// Image pull or unpack error.
     #[error("image: {0}")]
     Image(String),
