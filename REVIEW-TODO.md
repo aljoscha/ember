@@ -56,7 +56,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/cli/vm.rs:983` — Linux-only tool in shared `force_delete_vm`. Gate with
   `#[cfg(target_os = "linux")]`.
 
-- [ ] **`e2fsck` exit code handling is wrong**
+- [x] **`e2fsck` exit code handling is wrong**
   `src/backend/macos/storage.rs:364` — Checks `!= Some(1)` but e2fsck uses a bitmask.
   Should check error bits (`code & 0b1100 != 0`) or use `>= 2` like the Linux backend.
 

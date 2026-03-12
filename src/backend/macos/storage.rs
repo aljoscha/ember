@@ -368,8 +368,11 @@ impl StorageBackend for MacosStorage {
                 command: "e2fsck".to_string(),
                 source: e,
             })?;
-        // e2fsck returns exit code 1 if it fixed errors, which is OK.
-        if !output.status.success() && output.status.code() != Some(1) {
+        // e2fsck exit codes are a bitmask: bit 0 (1) = errors corrected (OK with -y),
+        // bit 1 (2) = reboot needed, bit 2 (4) = errors uncorrected, bit 3 (8) = operational error.
+        // Only treat exit >= 2 as failure, matching the Linux backend.
+        let code = output.status.code().unwrap_or(-1);
+        if code >= 2 {
             Error::check_command("e2fsck", output)?;
         }
 
