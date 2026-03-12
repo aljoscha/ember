@@ -78,9 +78,25 @@ struct Start: ParsableCommand {
         bootLoader.commandLine = bootArgs
         config.bootLoader = bootLoader
 
-        // CPU and memory
+        // CPU and memory — validate against AVF limits before configuring.
+        let minCPUs = VZVirtualMachineConfiguration.minimumAllowedCPUCount
+        let maxCPUs = VZVirtualMachineConfiguration.maximumAllowedCPUCount
+        guard cpus >= minCPUs && cpus <= maxCPUs else {
+            throw ValidationError(
+                "CPU count \(cpus) is outside AVF's allowed range (\(minCPUs)–\(maxCPUs))")
+        }
         config.cpuCount = cpus
-        config.memorySize = UInt64(memory) * 1024 * 1024
+
+        let memoryBytes = UInt64(memory) * 1024 * 1024
+        let minMem = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        let maxMem = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        guard memoryBytes >= minMem && memoryBytes <= maxMem else {
+            let minMiB = minMem / (1024 * 1024)
+            let maxMiB = maxMem / (1024 * 1024)
+            throw ValidationError(
+                "Memory \(memory) MiB is outside AVF's allowed range (\(minMiB)–\(maxMiB) MiB)")
+        }
+        config.memorySize = memoryBytes
 
         // Storage: raw ext4 disk image as virtio-blk (/dev/vda in guest)
         let diskAttachment = try VZDiskImageStorageDeviceAttachment(

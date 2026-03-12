@@ -64,7 +64,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/cli/init.rs:12-32` — Linux-specific flags visible to macOS users. Hide or
   document as Linux-only.
 
-- [ ] **No input validation on `ember-vz` CPU/memory values**
+- [x] **No input validation on `ember-vz` CPU/memory values**
   `ember-vz/Sources/EmberVZ/Start.swift:81-82` — Validate against AVF
   `minimumAllowed*`/`maximumAllowed*` before configuring.
 
