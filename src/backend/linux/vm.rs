@@ -179,7 +179,7 @@ fn configure_and_boot(
     let dns_servers = network::dns::detect_nameservers(wan_iface);
 
     // Build VM configuration.
-    let rootfs_path = zfs::volume::device_path(&vm.zvol_path);
+    let rootfs_path = zfs::volume::device_path(&vm.disk_path);
     let mut vm_config =
         firecracker::config::VmConfig::new(vm.cpus, vm.memory_mib, &vm.kernel_path, &rootfs_path);
     if let Some(ref boot_args) = vm.boot_args {

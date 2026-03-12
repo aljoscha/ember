@@ -100,8 +100,10 @@ pub struct VmMetadata {
     pub disk_size_gib: u32,
     /// Path to the kernel image.
     pub kernel_path: PathBuf,
-    /// ZFS zvol path (e.g., "tank/ember/vms/myvm").
-    pub zvol_path: String,
+    /// Path to the root disk. On Linux, a ZFS zvol (e.g., "tank/ember/vms/myvm").
+    /// On macOS, a raw disk image path (e.g., ".../vms/myvm/rootfs.img").
+    #[serde(alias = "zvol_path")]
+    pub disk_path: String,
     /// Custom kernel boot arguments. When set, replaces the default
     /// boot args; the `ip=` networking parameter is still appended.
     #[serde(default)]
@@ -143,7 +145,7 @@ impl VmMetadata {
             memory_mib: 0,
             disk_size_gib: 0,
             kernel_path: PathBuf::new(),
-            zvol_path: String::new(),
+            disk_path: String::new(),
             boot_args: None,
             subnet: None,
             network: None,
@@ -338,7 +340,7 @@ mod tests {
             memory_mib: 512,
             disk_size_gib: 4,
             kernel_path: PathBuf::from("/var/lib/ember/kernels/vmlinux"),
-            zvol_path: format!("tank/ember/vms/{name}"),
+            disk_path: format!("tank/ember/vms/{name}"),
             boot_args: None,
             subnet: None,
             network: None,

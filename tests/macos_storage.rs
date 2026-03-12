@@ -166,7 +166,7 @@ fn create_test_vm_manual(state_dir: &Path, vm_name: &str, image_name: &str) {
         "memory_mib": 256,
         "disk_size_gib": 1,
         "kernel_path": "/dev/null",
-        "zvol_path": rootfs.to_string_lossy(),
+        "disk_path": rootfs.to_string_lossy(),
         "api_socket": vm_dir.join("ember-vz.sock").to_string_lossy(),
         "created_at": "2024-01-01T00:00:00Z",
         "ssh": { "user": "root", "key": "/dev/null" }

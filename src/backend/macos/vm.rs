@@ -112,7 +112,7 @@ impl VmBackend for MacosVm {
             .arg("--kernel")
             .arg(&vm.kernel_path)
             .arg("--disk")
-            .arg(&vm.zvol_path)
+            .arg(&vm.disk_path)
             .arg("--cpus")
             .arg(vm.cpus.to_string())
             .arg("--memory")

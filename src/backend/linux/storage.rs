@@ -201,7 +201,7 @@ impl StorageBackend for LinuxStorage {
 
     /// Fork a VM's disk by snapshotting the source and cloning into a new VM.
     ///
-    /// Returns `(zvol_path, fork_snapshot_full_name)`.
+    /// Returns `(disk_path, fork_snapshot_full_name)`.
     fn clone_from_snapshot(
         &self,
         source_vm: &str,

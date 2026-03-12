@@ -74,7 +74,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 
 ## Low
 
-- [ ] **Linux-specific field names in shared types**
+- [x] **Linux-specific field names in shared types**
   `src/state/vm.rs` — `zvol_path` (should be `disk_path`), `api_socket`
   (Firecracker-specific), `NetworkInfo.tap_device`/`netmask` (empty on macOS).
   Rename with `#[serde(alias)]` for backward compat.

@@ -401,7 +401,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Clone base image → per-VM disk (instant, copy-on-write).
     println!("Cloning image for VM '{}'...", resolved.name);
     let vm_disk_path = storage.clone_for_vm(&image_name, &resolved.name)?;
-    let vm_zvol = vm_disk_path.to_string_lossy().to_string();
+    let vm_disk = vm_disk_path.to_string_lossy().to_string();
     {
         let storage = storage.clone();
         let sd = state_dir.to_path_buf();
@@ -417,7 +417,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         &store,
         &mut global_config,
         &storage,
-        &vm_zvol,
+        &vm_disk,
         image_size_mib,
         &image_ref,
     )?;
@@ -444,7 +444,7 @@ fn create_post_clone(
     store: &StateStore,
     global_config: &mut GlobalConfig,
     storage: &Storage,
-    vm_zvol: &str,
+    vm_disk: &str,
     image_size_mib: u64,
     image_ref: &str,
 ) -> anyhow::Result<()> {
@@ -492,7 +492,7 @@ fn create_post_clone(
         memory_mib: resolved.memory,
         disk_size_gib: resolved.disk_size,
         kernel_path,
-        zvol_path: vm_zvol.to_string(),
+        disk_path: vm_disk.to_string(),
         boot_args: resolved.boot_args.clone(),
         subnet: resolved.network.clone(),
         network: None,
@@ -569,7 +569,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("Forking '{}' → '{}'...", args.source, args.name);
     let (vm_disk_path, fork_snap_full) =
         storage.clone_from_snapshot(&args.source, &fork_snap_name, &args.name)?;
-    let vm_zvol = vm_disk_path.to_string_lossy().to_string();
+    let vm_disk = vm_disk_path.to_string_lossy().to_string();
 
     let mut rollback = Rollback::new();
     {
@@ -608,7 +608,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         memory_mib,
         disk_size_gib,
         kernel_path,
-        zvol_path: vm_zvol,
+        disk_path: vm_disk,
         boot_args: source.boot_args.clone(),
         subnet,
         network: None,
@@ -1065,12 +1065,12 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("Kernel:      {}", metadata.kernel_path.display());
             #[cfg(target_os = "linux")]
             {
-                println!("ZFS zvol:    {}", metadata.zvol_path);
+                println!("ZFS zvol:    {}", metadata.disk_path);
                 println!("API socket:  {}", metadata.api_socket.display());
             }
             #[cfg(target_os = "macos")]
             {
-                println!("Disk image:  {}", metadata.zvol_path);
+                println!("Disk image:  {}", metadata.disk_path);
             }
             println!("Created:     {}", metadata.created_at);
 
