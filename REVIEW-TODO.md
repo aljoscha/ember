@@ -26,9 +26,10 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/storage.rs:227-234` — Rootfs is deleted before cloning the snapshot.
   If the clone fails, VM has no disk. Clone to a temp file, then atomically rename.
 
-- [ ] **2,590 Swift build artifacts committed**
+- [x] **2,590 Swift build artifacts committed**
   `ember-vz/.build/` — Despite `.gitignore`, the entire build dir was committed. Remove
   from version control history.
+  **Already fixed**: `.build/` is gitignored and not tracked.
 
 - [ ] **ARP IP discovery bug — early return on non-matching lines**
   `src/backend/macos/network.rs:235` — `?` in `find_ip_in_arp_output` causes early return
