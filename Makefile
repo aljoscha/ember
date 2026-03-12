@@ -10,6 +10,7 @@ build:
 	cargo build
 ifeq ($(UNAME),Darwin)
 	cd ember-vz && swift build
+	codesign --force --sign - --entitlements ember-vz/entitlements.plist ember-vz/.build/debug/ember-vz
 	cp ember-vz/.build/debug/ember-vz target/debug/
 endif
 
@@ -17,6 +18,7 @@ release:
 	cargo build --release
 ifeq ($(UNAME),Darwin)
 	cd ember-vz && swift build -c release
+	codesign --force --sign - --entitlements ember-vz/entitlements.plist ember-vz/.build/release/ember-vz
 	cp ember-vz/.build/release/ember-vz target/release/
 endif
 
