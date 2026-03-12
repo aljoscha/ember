@@ -52,7 +52,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 - [x] **`image inspect` prints "ZFS zvol:" on macOS**
   `src/cli/image.rs:330` — Label should be platform-conditional ("Disk image:" on macOS).
 
-- [ ] **`udevadm settle` called on macOS**
+- [x] **`udevadm settle` called on macOS**
   `src/cli/vm.rs:983` — Linux-only tool in shared `force_delete_vm`. Gate with
   `#[cfg(target_os = "linux")]`.
 

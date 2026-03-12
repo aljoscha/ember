@@ -989,8 +989,11 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
     let net_backend = Network::new(store.clone());
     let _ = net_backend.teardown(metadata);
 
-    // Wait for udev to finish processing device events.
-    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    // Wait for udev to finish processing device events (Linux only).
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("udevadm").arg("settle").status();
+    }
 
     // Destroy storage via the backend.
     let config: GlobalConfig = store.read(&store.config_path())?;
