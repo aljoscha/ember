@@ -41,7 +41,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/vm.rs:100-159` — `read_raw` from `into_raw_fd()` is never closed if
   `cmd.spawn()` fails. Wrap in `File`/`OwnedFd` immediately.
 
-- [ ] **TOCTOU race in `stop()`/`force_stop()`**
+- [x] **TOCTOU race in `stop()`/`force_stop()`**
   `src/backend/macos/vm.rs:214, 242` — `is_running` check then `kill()`. Handle `ESRCH`
   from `kill()` directly instead of pre-checking.
 

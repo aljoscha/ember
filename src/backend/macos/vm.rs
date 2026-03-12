@@ -209,17 +209,19 @@ impl VmBackend for MacosVm {
             .pid
             .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
 
-        if !Self::is_running(pid) {
-            return Ok(());
-        }
-
-        // Send SIGTERM for graceful shutdown.
+        // Send SIGTERM for graceful shutdown. Handle ESRCH (process already
+        // exited) directly instead of pre-checking is_running() to avoid a
+        // TOCTOU race where the PID could be reused between check and kill.
         let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
-        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM).map_err(|e| {
-            Error::Network(format!(
-                "failed to send SIGTERM to ember-vz (pid {pid}): {e}"
-            ))
-        })?;
+        match nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM) {
+            Ok(()) => {}
+            Err(nix::errno::Errno::ESRCH) => return Ok(()), // already exited
+            Err(e) => {
+                return Err(Error::Network(format!(
+                    "failed to send SIGTERM to ember-vz (pid {pid}): {e}"
+                )))
+            }
+        }
 
         // Wait for the process to exit.
         if !wait_for_exit(pid, GRACEFUL_SHUTDOWN_TIMEOUT) {
@@ -237,16 +239,18 @@ impl VmBackend for MacosVm {
             .pid
             .ok_or_else(|| Error::Network(format!("vm '{}' has no PID", vm.name)))?;
 
-        if !Self::is_running(pid) {
-            return Ok(());
-        }
-
+        // Send SIGKILL directly, handling ESRCH (already exited) instead of
+        // pre-checking is_running() to avoid a TOCTOU race.
         let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
-        nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGKILL).map_err(|e| {
-            Error::Network(format!(
-                "failed to send SIGKILL to ember-vz (pid {pid}): {e}"
-            ))
-        })?;
+        match nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGKILL) {
+            Ok(()) => {}
+            Err(nix::errno::Errno::ESRCH) => return Ok(()), // already exited
+            Err(e) => {
+                return Err(Error::Network(format!(
+                    "failed to send SIGKILL to ember-vz (pid {pid}): {e}"
+                )))
+            }
+        }
 
         wait_for_exit(pid, FORCE_KILL_TIMEOUT);
         Ok(())
