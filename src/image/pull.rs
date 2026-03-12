@@ -220,6 +220,7 @@ pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
 
     let layers = resolve_layers(&oci_dir)?;
     for digest in &layers {
+        clear_opaque_dirs(&oci_dir, digest, &rootfs_dir)?;
         extract_layer(&oci_dir, digest, &rootfs_dir)?;
         process_whiteouts(&rootfs_dir)?;
     }
@@ -297,6 +298,73 @@ fn blob_path(oci_dir: &Path, digest: &str) -> Result<PathBuf> {
     Ok(oci_dir.join("blobs").join(algo).join(hash))
 }
 
+/// Pre-scan a layer tar for opaque whiteout markers (`.wh..wh..opq`) and
+/// clear existing directory contents before extraction.
+///
+/// OCI opaque whiteouts mean "only the current layer's files should exist
+/// in this directory". We must remove previous-layer entries *before*
+/// extracting, so the current layer's files are the only ones that remain.
+fn clear_opaque_dirs(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> {
+    let layer_path = blob_path(oci_dir, digest)?;
+
+    // List tar contents (headers only — fast even for large layers).
+    let tar_cmd = if cfg!(target_os = "macos") {
+        "gtar"
+    } else {
+        "tar"
+    };
+    let output = Command::new(tar_cmd)
+        .arg("tf")
+        .arg(&layer_path)
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: format!("{tar_cmd} tf"),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        // Non-fatal: if listing fails, fall back to the old behavior
+        // (opaque marker removed but directory not cleared).
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let path = Path::new(line);
+        let is_opaque = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == ".wh..wh..opq");
+        if !is_opaque {
+            continue;
+        }
+
+        // Clear existing entries in the parent directory.
+        let rel_dir = path.parent().unwrap_or(Path::new(""));
+        let abs_dir = rootfs_dir.join(rel_dir);
+        if abs_dir.is_dir() {
+            let entries = fs::read_dir(&abs_dir).map_err(|e| Error::Io {
+                path: abs_dir.clone(),
+                source: e,
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|e| Error::Io {
+                    path: abs_dir.clone(),
+                    source: e,
+                })?;
+                let p = entry.path();
+                if p.is_dir() {
+                    let _ = fs::remove_dir_all(&p);
+                } else {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Extract a single layer tar archive into the rootfs directory.
 ///
 /// On macOS, uses `fakeroot` + `gtar` so that ownership metadata from the tar
@@ -350,8 +418,9 @@ fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> 
 ///
 /// OCI layers use special marker files to represent deletions:
 ///   - `.wh.<name>` means the file `<name>` in that directory was deleted.
-///   - `.wh..wh..opq` means the directory is opaque (only current layer
-///     contents should remain). Opaque whiteouts are not yet handled.
+///   - `.wh..wh..opq` means the directory is opaque (previous-layer entries
+///     were already cleared by [`clear_opaque_dirs`]; this just removes the
+///     marker file).
 ///
 /// After processing, both the marker file and the target file are removed.
 ///

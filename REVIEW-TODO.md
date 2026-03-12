@@ -124,6 +124,6 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/storage.rs:330` — Relies on CLI layer to prevent shrink.
   Add a defensive size check.
 
-- [ ] **Incomplete OCI opaque whiteout handling**
+- [x] **Incomplete OCI opaque whiteout handling**
   `src/image/pull.rs:371-374` — `.wh..wh..opq` marker is removed but previous-layer
   entries are not cleared.
