@@ -1,8 +1,9 @@
-//! Docker-based kernel build for Firecracker microVMs.
+//! Container-based kernel build for ember microVMs.
 //!
-//! Builds a custom Linux kernel with Docker networking support inside a
-//! container. All build assets (Dockerfile, config fragment, URLs) are
-//! embedded in the binary — no runtime dependency on the `kernel/` directory.
+//! Builds a custom Linux kernel with Docker networking and AVF (Apple
+//! Virtualization Framework) support inside a container. All build assets
+//! (Dockerfile, config fragments, URLs) are embedded in the binary — no
+//! runtime dependency on the `kernel/` directory.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -70,6 +71,31 @@ CONFIG_NFT_CHAIN_NAT=y
 CONFIG_DUMMY=y
 ";
 
+const AVF_FRAGMENT: &str = "\
+# Kernel config fragment: Apple Virtualization Framework (AVF) support
+#
+# AVF uses virtio-pci (not virtio-mmio like Firecracker), a virtio console
+# (hvc0), and kernel-level DHCP for vmnet shared-mode networking. These
+# options are missing or disabled in the Firecracker CI base config.
+
+# PCI bus — AVF presents devices on a virtual PCI bus.
+CONFIG_PCI=y
+CONFIG_PCI_HOST_GENERIC=y
+
+# virtio transport over PCI (Firecracker uses MMIO; AVF uses PCI).
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_PCI_MODERN=y
+
+# virtio console — AVF serial console is hvc0, not ttyS0.
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HVC_DRIVER=y
+
+# Kernel-level IP auto-configuration (ip=dhcp boot parameter).
+# Required for vmnet shared-mode DHCP networking.
+CONFIG_IP_PNP=y
+CONFIG_IP_PNP_DHCP=y
+";
+
 // ---------------------------------------------------------------------------
 // Container tool detection
 // ---------------------------------------------------------------------------
@@ -96,9 +122,9 @@ pub fn detect_container_tool() -> anyhow::Result<String> {
 // Build orchestration
 // ---------------------------------------------------------------------------
 
-/// Build a kernel with Docker networking support inside a container.
+/// Build a kernel with Docker networking and AVF support inside a container.
 ///
-/// 1. Writes build assets (Dockerfile, docker.fragment) into `work_dir`
+/// 1. Writes build assets (Dockerfile, docker.fragment, avf.fragment) into `work_dir`
 /// 2. Builds the builder container image
 /// 3. Runs the full kernel build inside the container
 /// 4. Copies the resulting vmlinux to the state store's kernels/ directory
@@ -114,6 +140,8 @@ pub fn build(store: &StateStore, jobs: usize, tool: &str) -> anyhow::Result<Path
     std::fs::write(work.join("Dockerfile"), DOCKERFILE).context("failed to write Dockerfile")?;
     std::fs::write(work.join("docker.fragment"), DOCKER_FRAGMENT)
         .context("failed to write docker.fragment")?;
+    std::fs::write(work.join("avf.fragment"), AVF_FRAGMENT)
+        .context("failed to write avf.fragment")?;
 
     // Build the builder image.
     println!("Building container image ({BUILDER_IMAGE})...");
@@ -135,7 +163,7 @@ pub fn build(store: &StateStore, jobs: usize, tool: &str) -> anyhow::Result<Path
     // The build script mirrors the Makefile targets:
     //   1. Download Firecracker CI base config
     //   2. Shallow-clone the Amazon Linux kernel source
-    //   3. Merge base config + docker.fragment
+    //   3. Merge base config + docker.fragment + avf.fragment
     //   4. Strip BUILD_SALT for reproducibility
     //   5. Compile vmlinux
     let uid = nix::unistd::getuid();
@@ -148,9 +176,9 @@ pub fn build(store: &StateStore, jobs: usize, tool: &str) -> anyhow::Result<Path
          curl -fSL -o base.config '{BASE_CONFIG_URL}'\n\
          echo '==> Cloning kernel source (shallow, tag {KERNEL_TAG})...'\n\
          git clone --depth 1 --branch '{KERNEL_TAG}' '{KERNEL_REPO}' linux\n\
-         echo '==> Merging base config + docker.fragment...'\n\
+         echo '==> Merging base config + fragments...'\n\
          cd linux\n\
-         KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -m ../base.config ../docker.fragment\n\
+         KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -m ../base.config ../docker.fragment ../avf.fragment\n\
          sed -i 's/^CONFIG_BUILD_SALT=.*/CONFIG_BUILD_SALT=\"\"/' .config\n\
          make olddefconfig\n\
          echo '==> Building vmlinux ({jobs} jobs)...'\n\
