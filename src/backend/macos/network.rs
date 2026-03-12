@@ -232,8 +232,13 @@ fn find_ip_in_arp_output(arp_output: &str, mac: &str) -> Option<String> {
     for line in arp_output.lines() {
         // Format: "hostname (IP) at MAC on IFACE ..."
         // The MAC field comes after " at " and before " on ".
-        let after_at = line.split(" at ").nth(1)?;
-        let arp_mac = after_at.split(" on ").next()?;
+        // Skip lines that don't match (headers, blank lines, etc.).
+        let Some(after_at) = line.split(" at ").nth(1) else {
+            continue;
+        };
+        let Some(arp_mac) = after_at.split(" on ").next() else {
+            continue;
+        };
 
         if arp_mac == "(incomplete)" {
             continue;
@@ -363,6 +368,17 @@ compalhub.home (192.168.0.1) at 90:5c:44:55:9f:c8 on en0 ifscope [ethernet]
     fn arp_unknown_mac_returns_none() {
         let ip = find_ip_in_arp_output(SAMPLE_ARP, "00:00:00:00:00:00");
         assert_eq!(ip, None);
+    }
+
+    #[test]
+    fn arp_skips_non_arp_lines() {
+        // Regression: lines without " at " (e.g. headers or blank lines)
+        // must be skipped, not cause early return from the function.
+        let output = "\
+some-header-line without the expected format
+? (192.168.64.3) at ca:8a:b2:b8:2b:af on bridge100 ifscope [ethernet]";
+        let ip = find_ip_in_arp_output(output, "ca:8a:b2:b8:2b:af");
+        assert_eq!(ip, Some("192.168.64.3".to_string()));
     }
 
     // ── MAC normalization tests ──────────────────────────────────

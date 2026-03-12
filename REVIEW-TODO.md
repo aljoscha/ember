@@ -31,7 +31,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   from version control history.
   **Already fixed**: `.build/` is gitignored and not tracked.
 
-- [ ] **ARP IP discovery bug — early return on non-matching lines**
+- [x] **ARP IP discovery bug — early return on non-matching lines**
   `src/backend/macos/network.rs:235` — `?` in `find_ip_in_arp_output` causes early return
   on any line without `" at "`. Use `continue` on parse failure instead.
 
