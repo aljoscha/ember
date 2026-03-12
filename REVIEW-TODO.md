@@ -45,7 +45,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/vm.rs:214, 242` — `is_running` check then `kill()`. Handle `ESRCH`
   from `kill()` directly instead of pre-checking.
 
-- [ ] **`info` command shows Linux-specific output on macOS**
+- [x] **`info` command shows Linux-specific output on macOS**
   `src/cli/info.rs:12, 27-28` — Prints "ZFS pool:"/"Dataset:" unconditionally and
   references `--pool`/`--device` in error hint. Use `#[cfg]` for platform output.
 
