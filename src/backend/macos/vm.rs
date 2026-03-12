@@ -25,12 +25,11 @@ use crate::state::vm::{NetworkInfo, VmMetadata};
 /// macOS VM backend using Apple Virtualization Framework (via ember-vz).
 pub struct MacosVm;
 
-/// Default boot args for AVF guests.
+/// Base boot args for AVF guests (without network configuration).
 /// Uses `console=hvc0` (virtio console) instead of Linux's `console=ttyS0`.
-/// `ip=dhcp` triggers kernel-level DHCP (CONFIG_IP_PNP_DHCP) so the guest
-/// has network connectivity before userspace starts — needed since vmnet
-/// assigns IPs via DHCP rather than static configuration.
-const DEFAULT_BOOT_ARGS: &str = "console=hvc0 root=/dev/vda rw ip=dhcp";
+/// The `ip=` parameter is appended dynamically with the statically allocated
+/// guest IP — see [`build_boot_args`].
+const BASE_BOOT_ARGS: &str = "console=hvc0 root=/dev/vda rw";
 
 /// Timeout waiting for ember-vz to report VM readiness via ready-fd.
 /// AVF boot is typically fast (a few seconds), but allow headroom for
@@ -90,8 +89,8 @@ impl VmBackend for MacosVm {
         let vm_dir = config.state_dir.join("vms").join(&vm.name);
         let serial_log = vm_dir.join("console.log");
 
-        // Boot args: use custom if set, otherwise the AVF default.
-        let boot_args = vm.boot_args.as_deref().unwrap_or(DEFAULT_BOOT_ARGS);
+        // Build boot args with static IP from the network setup.
+        let boot_args = build_boot_args(vm);
 
         // Create a pipe for ready-fd communication.
         // ember-vz writes the guest MAC address to the write end once booted;
@@ -312,6 +311,27 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
         std::thread::sleep(POLL_INTERVAL);
     }
     !MacosVm::is_running(pid)
+}
+
+/// Build the full boot args string with static IP configuration.
+///
+/// Appends the kernel `ip=` parameter so the guest configures its network
+/// interface at boot without needing DHCP. Format:
+/// `ip=<client>::<gw>:<mask>:<hostname>:eth0:off`
+///
+/// If no network info is available (shouldn't happen in normal flow),
+/// falls back to base boot args without networking.
+fn build_boot_args(vm: &VmMetadata) -> String {
+    let base = vm.boot_args.as_deref().unwrap_or(BASE_BOOT_ARGS);
+
+    if let Some(ref net) = vm.network {
+        format!(
+            "{} ip={}::{}:{}:{}:eth0:off",
+            base, net.guest_ip, net.host_ip, net.netmask, vm.name
+        )
+    } else {
+        base.to_string()
+    }
 }
 
 /// Read the guest MAC address from the ready-fd pipe with a timeout.

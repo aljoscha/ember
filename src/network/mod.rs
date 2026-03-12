@@ -1,17 +1,24 @@
+#[cfg(target_os = "linux")]
 pub mod dns;
 pub mod ip;
+#[cfg(target_os = "linux")]
 pub mod nat;
+#[cfg(target_os = "linux")]
 pub mod tap;
+#[cfg(target_os = "linux")]
 pub mod wan;
 
+#[cfg(target_os = "linux")]
 use crate::state::store::StateStore;
+#[cfg(target_os = "linux")]
 use crate::state::vm::NetworkInfo;
 
-/// Best-effort cleanup of networking resources for a VM.
+/// Best-effort cleanup of networking resources for a VM (Linux only).
 ///
 /// Removes iptables NAT/forwarding rules, deletes the TAP device, and
 /// releases the IP allocation. Errors are silently ignored since this
 /// is called during cleanup paths where partial failure is acceptable.
+#[cfg(target_os = "linux")]
 pub fn cleanup(store: &StateStore, vm_name: &str, net_info: &NetworkInfo) {
     // Use the stored WAN interface (matches what was used to create the rules),
     // falling back to re-detection for backwards compatibility with older metadata.

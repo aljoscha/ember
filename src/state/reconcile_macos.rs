@@ -2,11 +2,9 @@
 //!
 //! Called on every command invocation to fix stale state:
 //!
-//! 1. For each VM in Running/Paused state, check if the ember-vz PID
-//!    is still alive. If dead, mark the VM as Stopped.
-//!
-//! 2. For running VMs with a "pending" guest IP, attempt discovery from
-//!    vmnet DHCP leases or ARP table and persist the result.
+//! For each VM in Running/Paused state, check if the ember-vz PID
+//! is still alive. If dead, mark the VM as Stopped and release its
+//! IP allocation.
 //!
 //! All operations are best-effort: errors are logged but never propagated,
 //! since reconciliation should not block normal CLI operation.
@@ -14,7 +12,8 @@
 use std::path::Path;
 
 use crate::backend::macos::vm::MacosVm;
-use crate::backend::{Network, NetworkBackend, VmBackend};
+use crate::backend::VmBackend;
+use crate::network;
 use crate::state::store::StateStore;
 use crate::state::vm::{self, VmStatus};
 
@@ -36,8 +35,6 @@ pub fn run(state_dir: &Path) {
         }
     };
 
-    let net_backend = Network::new(store.clone());
-
     for mut metadata in vms {
         match metadata.status {
             VmStatus::Running | VmStatus::Paused => {}
@@ -57,38 +54,20 @@ pub fn run(state_dir: &Path) {
         };
 
         if !MacosVm::is_running(pid) {
-            // Process is dead — mark stopped.
+            // Process is dead — mark stopped and release IP.
             eprintln!(
                 "Warning: VM '{}' process (pid {pid}) is dead, marking stopped",
                 metadata.name
             );
             mark_stopped(&store, &mut metadata);
-            continue;
-        }
-
-        // Process is alive — resolve pending guest IP if possible.
-        if let Some(ref net) = metadata.network {
-            if net.guest_ip == "pending" {
-                if let Some(ref mac) = net.guest_mac {
-                    if let Ok(ip) = net_backend.discover_guest_ip(mac) {
-                        let mut net = net.clone();
-                        net.guest_ip = ip;
-                        metadata.network = Some(net);
-                        if let Err(e) = vm::save(&store, &metadata) {
-                            eprintln!(
-                                "Warning: failed to save discovered IP for VM '{}': {e}",
-                                metadata.name
-                            );
-                        }
-                    }
-                }
-            }
         }
     }
 }
 
-/// Mark a VM as Stopped, clearing its PID and network info.
+/// Mark a VM as Stopped, clearing its PID and network info,
+/// and releasing its IP allocation.
 fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
+    let _ = network::ip::release(store, &metadata.name);
     metadata.status = VmStatus::Stopped;
     metadata.pid = None;
     metadata.network = None;

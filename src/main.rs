@@ -7,7 +7,6 @@ pub mod error;
 pub mod firecracker;
 pub mod image;
 pub mod kernel;
-#[cfg(target_os = "linux")]
 pub mod network;
 pub mod ssh;
 pub mod state;
@@ -85,7 +84,7 @@ fn main() -> anyhow::Result<()> {
 
     // Lightweight state reconciliation on every privileged command.
     // Linux: cleans up dead VMs, orphaned TAP devices. Requires root.
-    // macOS: cleans up dead VMs, resolves pending guest IPs from DHCP leases.
+    // macOS: cleans up dead VMs, releases orphaned IP allocations.
     #[cfg(target_os = "linux")]
     if needs_reconcile(&cli.command) {
         state::reconcile::run(&cli.state_dir);

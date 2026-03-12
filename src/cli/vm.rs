@@ -716,33 +716,6 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     // assigned by the hypervisor) back into the metadata.
     metadata.network = Some(started.network.clone());
 
-    // ── Guest IP discovery (macOS) ────────────────────────────────
-    // On macOS, the guest IP is assigned by vmnet DHCP after boot.
-    // Retry a few times since the lease may not appear immediately.
-    #[cfg(target_os = "macos")]
-    if let Some(ref mac) = started.network.guest_mac {
-        print!("Waiting for guest IP...");
-        let mut discovered_ip = None;
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            match net_backend.discover_guest_ip(mac) {
-                Ok(ip) => {
-                    discovered_ip = Some(ip);
-                    break;
-                }
-                Err(_) => continue,
-            }
-        }
-        if let Some(ip) = discovered_ip {
-            println!(" {ip}");
-            if let Some(ref mut net) = metadata.network {
-                net.guest_ip = ip;
-            }
-        } else {
-            println!(" not found (try 'ember vm inspect' later)");
-        }
-    }
-
     // ── Persist state ─────────────────────────────────────────────
 
     metadata.status = VmStatus::Running;

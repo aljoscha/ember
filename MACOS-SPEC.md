@@ -15,7 +15,7 @@ This document specifies how ember provides the same CLI experience on macOS by s
 |-------|-------|-------|
 | Firecracker (KVM) | Apple Virtualization Framework (AVF) | Native hypervisor, macOS 12+ |
 | ZFS zvols + snapshots | APFS clones (`cp -c`) + raw disk images | Zero-cost CoW clones |
-| TAP devices (ioctl) | vmnet framework (shared mode) | Built-in NAT + DHCP |
+| TAP devices (ioctl) | vmnet framework (shared mode) | Built-in NAT, static IP allocation |
 | iptables (NAT/masquerade) | vmnet (handles NAT internally) | No manual firewall rules |
 | `ip` command | Not needed | vmnet manages devices |
 | `sysctl ip_forward` | Not needed | vmnet handles routing |
@@ -76,7 +76,7 @@ The `--ready-fd` flag causes `ember-vz` to write the guest's vmnet-assigned MAC 
 1. Load VM metadata
 2. `ember-vz start` with kernel, disk image, CPU/memory config
 3. Wait for ready signal on fd 3 (guest MAC address)
-4. Discover guest IP from vmnet DHCP leases
+4. Guest IP is already known (statically allocated before boot)
 5. Wait for SSH (same exponential backoff as Linux)
 
 **Stop sequence:**
@@ -281,46 +281,35 @@ Run `ember debug storage-efficiency` to check.
 
 ### Why vmnet
 
-- **Built-in NAT + DHCP**: vmnet shared mode provides a complete network stack — NAT, DHCP, DNS forwarding — with zero configuration
+- **Built-in NAT**: vmnet shared mode provides NAT for outbound traffic with zero configuration
 - **No root required**: Shared mode networking works without `sudo`
 - **No manual firewall rules**: No `pf` or `iptables` equivalent needed
 - **Direct AVF integration**: `VZNATNetworkDeviceAttachment` connects directly to vmnet
 
 ### How It Works
 
-In shared mode, vmnet creates a virtual network (typically `192.168.64.0/24`) with:
-- A gateway that performs NAT for outbound traffic
-- A DHCP server that assigns IPs to guests
-- DNS forwarding to the host's configured DNS servers
+In shared mode, vmnet creates a virtual network (`192.168.64.0/24`) with a gateway (192.168.64.1) that performs NAT for outbound traffic.
 
-The guest boots, gets a DHCP lease, and can immediately access the internet. No kernel `ip=` parameter needed for networking (though it can still be used for static IP if preferred).
+Guest IPs are **statically allocated** from the vmnet subnet using the same `/30` block allocator as Linux (tracked in `network/allocations.json`). The allocated IP is passed to the kernel via the `ip=` boot parameter, so the guest has connectivity immediately at boot — no DHCP dependency.
 
-### Guest IP Discovery
-
-Since vmnet assigns IPs via DHCP, ember needs to discover the guest's IP after boot:
-
-1. **Primary**: Parse vmnet DHCP lease file (`/var/db/dhcpd_leases`) — match by MAC address (reported by `ember-vz` via ready-fd)
-2. **Fallback**: ARP scan the vmnet subnet for the known MAC address
-3. **Last resort**: Try SSH on all IPs in the vmnet range
-
-The discovered IP is stored in `vm.json` just like on Linux.
+This avoids relying on vmnet's built-in DHCP server, which can be blocked by VPN kill switches (e.g., Mullvad, Tailscale) that filter traffic on the vmnet bridge interface.
 
 ### DNS
 
 vmnet shared mode's DHCP advertises the gateway (192.168.64.1) as DNS server, but the gateway does not actually forward DNS queries. During image injection, a static `/etc/resolv.conf` with public DNS servers (8.8.8.8, 1.1.1.1) is written instead of the Linux-style symlink to `/proc/net/pnp`.
 
-### No IP Allocation State
+### IP Allocation
 
-Unlike Linux (which tracks /30 allocations in `allocations.json`), macOS delegates IP allocation entirely to vmnet's DHCP. The `network/allocations.json` file is not used on macOS.
+Like Linux, macOS uses `/30` block allocation from the vmnet subnet (`192.168.64.0/24`), tracked in `network/allocations.json`. This gives 64 concurrent VMs. The allocated guest IP is passed to the kernel via boot args: `ip=<guest>::192.168.64.1:255.255.255.0:<vmname>:eth0:off`.
 
 ### Per-VM Network Info
 
 ```rust
 pub struct NetworkInfo {
-    pub guest_ip: String,      // DHCP-assigned (e.g., "192.168.64.3")
-    pub host_ip: String,       // vmnet gateway (e.g., "192.168.64.1")
-    pub guest_mac: String,     // Assigned by AVF/vmnet
-    // No tap_device, no subnet allocation — vmnet handles it
+    pub guest_ip: String,      // Statically allocated (e.g., "192.168.64.2")
+    pub host_ip: String,       // vmnet gateway ("192.168.64.1")
+    pub guest_mac: String,     // Assigned by AVF/vmnet at boot
+    // No tap_device — vmnet handles the virtual interface
 }
 ```
 
@@ -371,7 +360,6 @@ pub trait StorageBackend {
 pub trait NetworkBackend {
     fn setup(vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo>;
     fn teardown(vm: &VmMetadata) -> Result<()>;
-    fn discover_guest_ip(mac: &str) -> Result<String>;
 }
 ```
 
@@ -441,8 +429,8 @@ pub use macos::*;
 | `ember init` | Creates ZFS pool + datasets | Creates directories only |
 | VM boot console | `console=ttyS0` | `console=hvc0` |
 | Disk device in guest | `/dev/vda` (virtio) | `/dev/vda` (virtio) |
-| Network config | Static IP via kernel `ip=` param | DHCP via vmnet |
-| Guest IP | Known at start time (allocated) | Discovered after boot (DHCP) |
+| Network config | Static IP via kernel `ip=` param | Static IP via kernel `ip=` param |
+| Guest IP | Known at start time (allocated) | Known at start time (allocated) |
 | Kernel preset | Firecracker CI kernel | AVF-compatible kernel |
 | Hypervisor process | `firecracker` (external binary) | `ember-vz` (bundled Swift binary) |
 | State directory | `/var/lib/ember/` | `~/Library/Application Support/ember/` |
