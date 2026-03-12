@@ -164,4 +164,4 @@ fn sum_img_blocks(dir: &Path, total: &mut u64) {
     }
 }
 
-use super::fmt::format_bytes_si as format_bytes;
+use super::fmt::format_bytes_binary as format_bytes;

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use clap::{Args, Subcommand};
 
+use super::fmt::format_bytes_binary;
 use crate::kernel;
 
 #[derive(Subcommand)]
@@ -102,7 +103,7 @@ fn list(state_dir: &Path) -> anyhow::Result<()> {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         let meta = entry.metadata()?;
-        let size_mib = meta.len() / (1024 * 1024);
+        let size = format_bytes_binary(meta.len());
 
         // Check if this file corresponds to a known preset.
         let preset_label = if name_str == kernel::KernelPreset::Stock.filename() {
@@ -119,7 +120,7 @@ fn list(state_dir: &Path) -> anyhow::Result<()> {
             ""
         };
 
-        println!("{name_str}  {size_mib} MiB{preset_label}{default_marker}");
+        println!("{name_str}  {size}{preset_label}{default_marker}");
     }
 
     Ok(())

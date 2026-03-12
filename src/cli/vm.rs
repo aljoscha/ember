@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
+use super::fmt::{format_bytes_binary, GIB, MIB};
 use super::init::GlobalConfig;
 use crate::backend::{Network, NetworkBackend, Storage, StorageBackend, Vm, VmBackend};
 use crate::config;
@@ -452,7 +453,10 @@ fn create_post_clone(
     let requested_size_mib = resolved.disk_size as u64 * 1024;
     let needs_resize = requested_size_mib > image_size_mib;
     if needs_resize {
-        println!("Growing disk to {} GiB...", resolved.disk_size);
+        println!(
+            "Growing disk to {}...",
+            format_bytes_binary(resolved.disk_size as u64 * GIB)
+        );
         storage.resize(
             &resolved.name,
             ByteSize::from_gib(resolved.disk_size as u64),
@@ -550,9 +554,9 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("invalid disk size: {e}"))?;
             if gib < source.disk_size_gib {
                 anyhow::bail!(
-                    "cannot shrink disk: requested {} GiB but source is {} GiB",
-                    gib,
-                    source.disk_size_gib
+                    "cannot shrink disk: requested {} but source is {}",
+                    format_bytes_binary(gib as u64 * GIB),
+                    format_bytes_binary(source.disk_size_gib as u64 * GIB)
                 );
             }
             gib
@@ -587,7 +591,10 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Grow disk if requested.
     let needs_resize = disk_size_gib > source.disk_size_gib;
     if needs_resize {
-        println!("Growing disk to {} GiB...", disk_size_gib);
+        println!(
+            "Growing disk to {}...",
+            format_bytes_binary(disk_size_gib as u64 * GIB)
+        );
         storage.resize(&args.name, ByteSize::from_gib(disk_size_gib as u64))?;
     }
 
@@ -918,16 +925,19 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let current_gib = metadata.disk_size_gib;
     if new_gib <= current_gib {
         anyhow::bail!(
-            "new disk size ({} GiB) must be larger than current size ({} GiB)",
-            new_gib,
-            current_gib
+            "new disk size ({}) must be larger than current size ({})",
+            format_bytes_binary(new_gib as u64 * GIB),
+            format_bytes_binary(current_gib as u64 * GIB)
         );
     }
 
     // Grow the disk via the storage backend (handles resize + ext4 expand).
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = Storage::new(&config);
-    println!("Resizing disk to {} GiB...", new_gib);
+    println!(
+        "Resizing disk to {}...",
+        format_bytes_binary(new_gib as u64 * GIB)
+    );
     storage.resize(&args.name, args.disk_size)?;
 
     // Update metadata.
@@ -935,8 +945,10 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     vm::save(&store, &metadata)?;
 
     println!(
-        "VM '{}' disk resized from {} GiB to {} GiB.",
-        args.name, current_gib, new_gib
+        "VM '{}' disk resized from {} to {}.",
+        args.name,
+        format_bytes_binary(current_gib as u64 * GIB),
+        format_bytes_binary(new_gib as u64 * GIB)
     );
     Ok(())
 }
@@ -1030,13 +1042,18 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             }
 
             println!(
-                "{:<20} {:<10} {:<40} {:>4} {:>6} {:>5}",
+                "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
                 "NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"
             );
             for vm in &vms {
                 println!(
-                    "{:<20} {:<10} {:<40} {:>4} {:>4}Mi {:>3}Gi",
-                    vm.name, vm.status, vm.image, vm.cpus, vm.memory_mib, vm.disk_size_gib,
+                    "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
+                    vm.name,
+                    vm.status,
+                    vm.image,
+                    vm.cpus,
+                    format_bytes_binary(vm.memory_mib as u64 * MIB),
+                    format_bytes_binary(vm.disk_size_gib as u64 * GIB),
                 );
             }
         }
@@ -1060,8 +1077,14 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("Status:      {}", metadata.status);
             println!("Image:       {}", metadata.image);
             println!("CPUs:        {}", metadata.cpus);
-            println!("Memory:      {} MiB", metadata.memory_mib);
-            println!("Disk:        {} GiB", metadata.disk_size_gib);
+            println!(
+                "Memory:      {}",
+                format_bytes_binary(metadata.memory_mib as u64 * MIB)
+            );
+            println!(
+                "Disk:        {}",
+                format_bytes_binary(metadata.disk_size_gib as u64 * GIB)
+            );
             println!("Kernel:      {}", metadata.kernel_path.display());
             #[cfg(target_os = "linux")]
             {

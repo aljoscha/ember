@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
+use super::fmt::{format_bytes_binary, MIB};
 use super::init::GlobalConfig;
 use super::vm::OutputFormat;
 use crate::backend::{Storage, StorageBackend};
@@ -229,8 +230,11 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             );
             for img in &registry.images {
                 println!(
-                    "{:<40} {:<30} {:>5} MiB {}",
-                    img.reference, img.local_name, img.size_mib, img.pulled_at
+                    "{:<40} {:<30} {:>10} {}",
+                    img.reference,
+                    img.local_name,
+                    format_bytes_binary(img.size_mib * MIB),
+                    img.pulled_at
                 );
             }
         }
@@ -331,7 +335,7 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
             println!("ZFS zvol:    {}", entry.zvol);
             #[cfg(target_os = "macos")]
             println!("Disk image:  {}", entry.zvol);
-            println!("Size:        {} MiB", entry.size_mib);
+            println!("Size:        {}", format_bytes_binary(entry.size_mib * MIB));
             println!("Pulled:      {}", entry.pulled_at);
         }
     }
@@ -378,7 +382,10 @@ fn create_image_from_rootfs(
 ) -> anyhow::Result<(u64, PathBuf, crate::cleanup::Rollback)> {
     let size_mib = image::ext4::estimate_size_mib(rootfs_dir)?;
     let ext4_path = work_dir.join("rootfs.ext4");
-    println!("  Creating ext4 image ({size_mib} MiB)...");
+    println!(
+        "  Creating ext4 image ({})...",
+        format_bytes_binary(size_mib * MIB)
+    );
     image::ext4::create(rootfs_dir, &ext4_path, size_mib)?;
 
     println!("  Importing image into storage...");
