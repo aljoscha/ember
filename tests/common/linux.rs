@@ -52,10 +52,7 @@ pub fn create_loop_device_sized(dir: &Path, size: &str) -> (String, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let dev = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
+    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
     (dev, file)
 }
 
@@ -66,9 +63,7 @@ pub fn detach_loop_device(dev: &str) {
 
 /// Destroy a ZFS pool (best-effort cleanup).
 pub fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool")
-        .args(["destroy", "-f", pool])
-        .status();
+    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
 /// RAII guard: destroys ZFS pool and detaches loop device on drop.
@@ -359,11 +354,7 @@ pub fn ssh_private_key_path() -> Option<PathBuf> {
             .args(["-c", &format!("eval echo ~{user}")])
             .output()
             .ok()?;
-        PathBuf::from(
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string(),
-        )
+        PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         PathBuf::from(std::env::var("HOME").ok()?)
     };

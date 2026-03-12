@@ -1,15 +1,12 @@
-//! Shared test helpers for macOS integration tests.
+//! Shared macOS test helpers for integration tests.
 //!
-//! Provides common utilities for locating binaries, creating test images,
-//! spawning ember-vz, and reading from ready-fd pipes.
+//! Provides ember-vz resolution, AVF kernel lookup, e2fsprogs/rootfs utilities,
+//! APFS clone helpers, manual VM setup, and process management helpers.
 //!
-//! Not all test files use all helpers — dead_code warnings are suppressed
-//! via `#[allow(dead_code)]` on the `mod common;` declaration in each test file.
-
-#[cfg(target_os = "linux")]
-pub mod linux;
-#[cfg(target_os = "macos")]
-pub mod macos;
+//! These are extracted from `common/mod.rs` (macOS-specific functions) and
+//! `macos_storage.rs` (manual VM setup helpers) to consolidate all
+//! macOS-specific helpers in one place. All functions are `pub` so test
+//! files can use them via `common::macos::`.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
@@ -18,32 +15,16 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// Ember CLI helpers
+// Ember init helper
 // ---------------------------------------------------------------------------
 
-/// Path to the ember binary built by cargo.
-pub fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-pub fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
 /// Run `ember init` with a temporary state directory, returning the state dir path.
+///
+/// macOS-specific: no `--pool` or `--device` flags needed (APFS uses temp dirs).
+/// Compare with `linux::setup_pool_and_init()` which creates a ZFS pool first.
 pub fn setup_init(tmp: &Path) -> PathBuf {
     let state_dir = tmp.join("state");
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
+    let output = super::ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -123,6 +104,9 @@ pub fn ensure_kernel() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Find an e2fsprogs tool by checking Homebrew paths before falling back to PATH.
+///
+/// macOS doesn't ship e2fsprogs (ext4 tools); they must be installed via
+/// Homebrew. This checks the standard Homebrew keg-only paths first.
 pub fn find_e2fsprogs_tool(name: &str) -> String {
     for prefix in [
         "/opt/homebrew/opt/e2fsprogs/sbin",
@@ -136,9 +120,12 @@ pub fn find_e2fsprogs_tool(name: &str) -> String {
     name.to_string()
 }
 
-/// Create a minimal ext4 rootfs image file.
-pub fn create_test_rootfs(dir: &Path, size_mb: u64) -> PathBuf {
-    let img = dir.join("rootfs.img");
+/// Create a minimal ext4 image file with the given name and size.
+///
+/// Returns the path to the created `.img` file.
+/// Requires Homebrew `e2fsprogs` (`brew install e2fsprogs`).
+pub fn create_test_image(dir: &Path, name: &str, size_mb: u64) -> PathBuf {
+    let img = dir.join(format!("{name}.img"));
 
     let status = Command::new("truncate")
         .args(["-s", &format!("{size_mb}M")])
@@ -162,6 +149,114 @@ pub fn create_test_rootfs(dir: &Path, size_mb: u64) -> PathBuf {
     );
 
     img
+}
+
+/// Create a minimal ext4 rootfs image file (convenience wrapper).
+///
+/// Same as `create_test_image(dir, "rootfs", size_mb)`.
+pub fn create_test_rootfs(dir: &Path, size_mb: u64) -> PathBuf {
+    create_test_image(dir, "rootfs", size_mb)
+}
+
+// ---------------------------------------------------------------------------
+// Manual VM setup helpers (bypass `ember vm create`)
+// ---------------------------------------------------------------------------
+//
+// These helpers manually construct VM state using APFS clones and JSON files.
+// They're useful for testing snapshot, resize, and delete operations without
+// requiring the full `ember vm create` pipeline.
+
+/// Register a test image in ember's state directory.
+///
+/// Copies the `.img` file to `images/data/` and writes a minimal
+/// `registry.json`. Uses the `library-{name}-{tag}` naming convention
+/// that matches OCI image references.
+pub fn register_test_image(state_dir: &Path, name: &str, tag: &str, img_path: &Path) {
+    let images_dir = state_dir.join("images").join("data");
+    let local_name = format!("library-{name}-{tag}");
+    let dest = images_dir.join(format!("{local_name}.img"));
+
+    std::fs::copy(img_path, &dest)
+        .unwrap_or_else(|e| panic!("failed to copy image to {}: {e}", dest.display()));
+
+    let registry_path = state_dir.join("images").join("registry.json");
+    let size = std::fs::metadata(&dest).unwrap().len();
+    let registry = serde_json::json!({
+        "images": [{
+            "reference": format!("docker.io/library/{name}:{tag}"),
+            "local_name": local_name,
+            "zvol": dest.to_string_lossy(),
+            "size_mib": size / (1024 * 1024),
+            "pulled_at": "2024-01-01T00:00:00Z"
+        }]
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Create a VM by manually setting up the storage layout and state files.
+///
+/// This bypasses `ember vm create` and instead creates the VM directory,
+/// APFS-clones the rootfs via `cp -c`, and writes minimal `vm.json`
+/// metadata. Sufficient for testing snapshot, delete, resize, and
+/// storage efficiency operations.
+pub fn create_test_vm_manual(state_dir: &Path, vm_name: &str, image_name: &str) {
+    let images_dir = state_dir.join("images").join("data");
+    let local_name = format!("library-{image_name}");
+    let src_img = images_dir.join(format!("{local_name}.img"));
+
+    let vm_dir = state_dir.join("vms").join(vm_name);
+    std::fs::create_dir_all(vm_dir.join("snapshots")).unwrap();
+
+    // APFS clone the base image → VM rootfs.
+    let rootfs = vm_dir.join("rootfs.img");
+    let status = Command::new("cp")
+        .arg("-c")
+        .arg(&src_img)
+        .arg(&rootfs)
+        .status()
+        .expect("failed to run cp -c");
+    assert!(
+        status.success(),
+        "cp -c clone failed — are source and destination on the same APFS volume?"
+    );
+
+    // Write minimal VM metadata (vm.json).
+    let metadata = serde_json::json!({
+        "name": vm_name,
+        "id": "00000000-0000-0000-0000-000000000000",
+        "status": "created",
+        "image": format!("docker.io/library/{image_name}"),
+        "cpus": 1,
+        "memory_mib": 256,
+        "disk_size_gib": 1,
+        "kernel_path": "/dev/null",
+        "disk_path": rootfs.to_string_lossy(),
+        "api_socket": vm_dir.join("ember-vz.sock").to_string_lossy(),
+        "created_at": "2024-01-01T00:00:00Z",
+        "ssh": { "user": "root", "key": "/dev/null" }
+    });
+    std::fs::write(
+        vm_dir.join("vm.json"),
+        serde_json::to_string_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Set up ember init, create a test image, register it, and create a VM.
+///
+/// Composite helper: `setup_init()` → `create_test_image()` →
+/// `register_test_image()` → `create_test_vm_manual()`.
+/// Returns the state directory path.
+pub fn setup_with_vm(tmp: &Path, test_name: &str, vm_name: &str) -> PathBuf {
+    let state_dir = setup_init(tmp);
+    let img = create_test_image(tmp, test_name, 64);
+    register_test_image(&state_dir, "testimg", "latest", &img);
+    create_test_vm_manual(&state_dir, vm_name, "testimg-latest");
+    state_dir
 }
 
 // ---------------------------------------------------------------------------
@@ -287,5 +382,61 @@ pub fn wait_for_exit(
             }
             Err(e) => panic!("error waiting for process: {e}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem / disk helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a numeric value from `dumpe2fs -h` output.
+///
+/// Looks for a line like `Block count:      524288` and returns the number.
+pub fn parse_dumpe2fs_value(output: &str, key: &str) -> u64 {
+    let prefix = format!("{key}:");
+    let line = output
+        .lines()
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("expected '{prefix}' in dumpe2fs output"));
+    line.split(':')
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("failed to parse '{key}' value: {e}\nline: {line}"))
+}
+
+/// Get free space in bytes for the volume containing the given path.
+pub fn get_free_space_bytes(path: &Path) -> u64 {
+    let output = Command::new("df")
+        .arg("-k")
+        .arg(path)
+        .output()
+        .expect("failed to run df");
+    assert!(output.status.success(), "df failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().nth(1).expect("df output too short");
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    // Field 3 is "Available" in 1024-byte blocks.
+    let avail_kb: u64 = fields[3].parse().expect("failed to parse df available");
+    avail_kb * 1024
+}
+
+/// Parse mount point from `hdiutil attach -plist` XML output.
+///
+/// Looks for the `<key>mount-point</key>` entry and returns the value.
+pub fn parse_hdiutil_mount_point(plist_xml: &str) -> Option<String> {
+    let marker = "<key>mount-point</key>";
+    let idx = plist_xml.find(marker)?;
+    let after = &plist_xml[idx + marker.len()..];
+    let start_tag = "<string>";
+    let end_tag = "</string>";
+    let s_start = after.find(start_tag)? + start_tag.len();
+    let s_end = after.find(end_tag)?;
+    if s_start <= s_end {
+        Some(after[s_start..s_end].to_string())
+    } else {
+        None
     }
 }
