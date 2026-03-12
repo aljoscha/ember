@@ -91,28 +91,28 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/cli/debug.rs:168` vs `src/cli/snapshot.rs:186` — One SI, one binary.
   Consolidate into a shared utility.
 
-- [ ] **Massive test helper duplication**
+- [x] **Massive test helper duplication**
   `tests/macos_*.rs` — Helpers copy-pasted across 6 files. Extract to
   `tests/common.rs`.
 
-- [ ] **No `compile_error!` for unsupported platforms**
+- [x] **No `compile_error!` for unsupported platforms**
   `src/backend/mod.rs` — Add fallback for non-Linux/macOS targets.
 
 - [ ] **`discover_guest_ip` returns error on Linux**
   `src/backend/linux/network.rs:91-97` — Trait method always errors. Consider a
   default impl that returns an error, or document the platform-specific calling convention.
 
-- [ ] **`ember-vz` `--network` option value is ignored**
+- [x] **`ember-vz` `--network` option value is ignored**
   `Start.swift:37, 97` — Always creates NAT regardless of value. Validate or remove.
 
-- [ ] **Boot args default mismatch**
+- [x] **Boot args default mismatch**
   `Start.swift:34` — Missing `ip=dhcp` vs Rust side. Unused in practice but confusing
   for manual ember-vz invocations.
 
-- [ ] **`inject_inittab` writes Firecracker-specific `ttyS0` console**
+- [x] **`inject_inittab` writes Firecracker-specific `ttyS0` console**
   `src/image/inject.rs:239-247` — AVF uses `hvc0`. May configure wrong console.
 
-- [ ] **Cargo.toml description is outdated**
+- [x] **Cargo.toml description is outdated**
   Says "Lightweight Firecracker VM manager with ZFS-backed storage" — no longer
   accurate with macOS/AVF support.
 

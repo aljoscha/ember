@@ -16,44 +16,8 @@
 //!   ./run-integration-tests.sh macos_image
 #![cfg(target_os = "macos")]
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Path to the ember binary built by cargo.
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-/// Run `ember init` with a temporary state directory.
-fn setup_init(tmp: &Path) -> PathBuf {
-    let state_dir = tmp.join("state");
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    state_dir
-}
+#[allow(dead_code)]
+mod common;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -64,10 +28,10 @@ fn setup_init(tmp: &Path) -> PathBuf {
 #[ignore]
 fn pull_alpine_creates_image_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Pull a small image (alpine is ~3 MB compressed).
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -107,10 +71,10 @@ fn pull_alpine_creates_image_file() {
 #[ignore]
 fn list_shows_pulled_image() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Pull first.
-    let pull = ember(&[
+    let pull = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -124,7 +88,7 @@ fn list_shows_pulled_image() {
     );
 
     // Table output should contain the image.
-    let list = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
+    let list = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let stdout = String::from_utf8_lossy(&list.stdout);
     assert!(list.status.success());
     assert!(
@@ -137,7 +101,7 @@ fn list_shows_pulled_image() {
     );
 
     // JSON output should contain structured image data.
-    let json_list = ember(&[
+    let json_list = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -162,10 +126,10 @@ fn list_shows_pulled_image() {
 #[ignore]
 fn delete_removes_image_and_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Pull.
-    let pull = ember(&[
+    let pull = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -178,7 +142,7 @@ fn delete_removes_image_and_file() {
     assert!(img_path.exists());
 
     // Delete.
-    let del = ember(&[
+    let del = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -200,7 +164,7 @@ fn delete_removes_image_and_file() {
     );
 
     // Image list should be empty.
-    let list = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
+    let list = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let list_stdout = String::from_utf8_lossy(&list.stdout);
     assert!(
         list_stdout.contains("No images found"),
@@ -213,10 +177,10 @@ fn delete_removes_image_and_file() {
 #[ignore]
 fn pull_same_image_twice_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // First pull.
-    let pull1 = ember(&[
+    let pull1 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -230,7 +194,7 @@ fn pull_same_image_twice_is_idempotent() {
     );
 
     // Second pull should report it already exists.
-    let pull2 = ember(&[
+    let pull2 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",

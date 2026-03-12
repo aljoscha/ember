@@ -36,6 +36,9 @@ pub type Storage = macos::MacosStorage;
 #[cfg(target_os = "macos")]
 pub type Network = macos::MacosNetwork;
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("ember only supports Linux and macOS");
+
 // ---------------------------------------------------------------------------
 // Common types returned by backend traits
 // ---------------------------------------------------------------------------

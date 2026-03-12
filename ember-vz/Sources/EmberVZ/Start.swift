@@ -32,7 +32,7 @@ struct Start: ParsableCommand {
     var memory: Int = 512
 
     @Option(name: .long, help: "Kernel boot arguments")
-    var bootArgs: String = "console=hvc0 root=/dev/vda rw"
+    var bootArgs: String = "console=hvc0 root=/dev/vda rw ip=dhcp"
 
     @Option(help: "Network mode: 'shared' (vmnet NAT)")
     var network: String = "shared"
@@ -109,7 +109,11 @@ struct Start: ParsableCommand {
             VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
         ]
 
-        // Network: vmnet shared mode (NAT + DHCP, no root required)
+        // Network: vmnet shared mode (NAT + DHCP, no root required).
+        // Only "shared" is supported; reject anything else early.
+        guard network == "shared" else {
+            throw ValidationError("Unsupported network mode '\(network)'. Only 'shared' is supported.")
+        }
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         networkDevice.attachment = VZNATNetworkDeviceAttachment()
         networkDevice.macAddress = VZMACAddress.randomLocallyAdministered()

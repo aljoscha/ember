@@ -21,44 +21,15 @@
 //!   ./run-integration-tests.sh macos_storage
 #![cfg(target_os = "macos")]
 
+#[allow(dead_code)]
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/// Path to the ember binary built by cargo.
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-/// Run `ember init` with a temporary state directory.
-fn setup_init(tmp: &Path) -> PathBuf {
-    let state_dir = tmp.join("state");
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    state_dir
-}
 
 /// Create a minimal ext4 image file using mkfs.ext4 from Homebrew e2fsprogs.
 fn create_test_image(dir: &Path, name: &str, size_mb: u64) -> PathBuf {
@@ -71,7 +42,7 @@ fn create_test_image(dir: &Path, name: &str, size_mb: u64) -> PathBuf {
         .expect("failed to run truncate");
     assert!(status.success(), "truncate failed");
 
-    let mkfs = find_e2fsprogs_tool("mkfs.ext4");
+    let mkfs = common::find_e2fsprogs_tool("mkfs.ext4");
     let output = Command::new(&mkfs)
         .args(["-F", "-q"])
         .arg(&img)
@@ -86,19 +57,6 @@ fn create_test_image(dir: &Path, name: &str, size_mb: u64) -> PathBuf {
     );
 
     img
-}
-
-/// Find an e2fsprogs tool by checking Homebrew paths before falling back to PATH.
-fn find_e2fsprogs_tool(name: &str) -> String {
-    let arm_path = format!("/opt/homebrew/opt/e2fsprogs/sbin/{name}");
-    if Path::new(&arm_path).exists() {
-        return arm_path;
-    }
-    let intel_path = format!("/usr/local/opt/e2fsprogs/sbin/{name}");
-    if Path::new(&intel_path).exists() {
-        return intel_path;
-    }
-    name.to_string()
 }
 
 /// Register a test image in ember's state directory by copying the .img and
@@ -180,7 +138,7 @@ fn create_test_vm_manual(state_dir: &Path, vm_name: &str, image_name: &str) {
 
 /// Set up ember init, create a test image, register it, and create a VM.
 fn setup_with_vm(tmp: &Path, test_name: &str, vm_name: &str) -> PathBuf {
-    let state_dir = setup_init(tmp);
+    let state_dir = common::setup_init(tmp);
     let img = create_test_image(tmp, test_name, 64);
     register_test_image(&state_dir, "testimg", "latest", &img);
     create_test_vm_manual(&state_dir, vm_name, "testimg-latest");
@@ -204,7 +162,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     assert!(rootfs.exists(), "rootfs.img should exist after setup");
 
     // --- Create snapshot ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -227,7 +185,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     assert!(snap_file.exists(), "snapshot file should exist");
 
     // --- Create second snapshot ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -242,14 +200,14 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     );
 
     // --- List snapshots ---
-    let output = ember(&["--state-dir", state, "snapshot", "list", "testvm"]);
+    let output = common::ember(&["--state-dir", state, "snapshot", "list", "testvm"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     assert!(stdout.contains("snap1"), "expected 'snap1' in: {stdout}");
     assert!(stdout.contains("snap2"), "expected 'snap2' in: {stdout}");
 
     // --- JSON list ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -270,7 +228,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     );
 
     // --- Restore snapshot ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -287,7 +245,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     assert!(rootfs.exists(), "rootfs.img should exist after restore");
 
     // --- Delete snapshots ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -302,7 +260,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     );
     assert!(!snap_file.exists(), "snap1.img should be gone after delete");
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -317,7 +275,7 @@ fn storage_lifecycle_create_clone_snapshot_restore() {
     );
 
     // --- Snapshot list should now be empty ---
-    let output = ember(&["--state-dir", state, "snapshot", "list", "testvm"]);
+    let output = common::ember(&["--state-dir", state, "snapshot", "list", "testvm"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     assert!(
@@ -334,7 +292,7 @@ fn snapshot_create_duplicate_fails() {
     let state_dir = setup_with_vm(tmp.path(), "snapdup", "dupvm");
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -344,7 +302,7 @@ fn snapshot_create_duplicate_fails() {
     ]);
     assert!(output.status.success());
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -368,7 +326,7 @@ fn snapshot_create_base_name_rejected() {
     let state_dir = setup_with_vm(tmp.path(), "snapbase", "basevm");
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&["--state-dir", state, "snapshot", "create", "basevm", "base"]);
+    let output = common::ember(&["--state-dir", state, "snapshot", "create", "basevm", "base"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -385,7 +343,7 @@ fn snapshot_restore_nonexistent_fails() {
     let state_dir = setup_with_vm(tmp.path(), "snaprestnosnap", "novm");
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -409,7 +367,7 @@ fn snapshot_delete_nonexistent_fails() {
     let state_dir = setup_with_vm(tmp.path(), "snapdelnosnap", "delnovm");
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "snapshot",
@@ -433,7 +391,7 @@ fn snapshot_list_empty() {
     let state_dir = setup_with_vm(tmp.path(), "snapempty", "emptyvm");
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&["--state-dir", state, "snapshot", "list", "emptyvm"]);
+    let output = common::ember(&["--state-dir", state, "snapshot", "list", "emptyvm"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
     assert!(
@@ -450,7 +408,7 @@ fn snapshot_list_empty() {
 #[ignore]
 fn apfs_clone_does_not_reduce_free_space() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
     let img = create_test_image(tmp.path(), "cowtest", 64);
     register_test_image(&state_dir, "cowimg", "latest", &img);
 
@@ -482,7 +440,7 @@ fn apfs_clone_does_not_reduce_free_space() {
 #[ignore]
 fn storage_efficiency_shows_savings() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
     let state = state_dir.to_str().unwrap();
     let img = create_test_image(tmp.path(), "efftest", 64);
     register_test_image(&state_dir, "effimg", "latest", &img);
@@ -492,7 +450,7 @@ fn storage_efficiency_shows_savings() {
         let vm_name = format!("effvm{i}");
         create_test_vm_manual(&state_dir, &vm_name, "effimg-latest");
 
-        let output = ember(&[
+        let output = common::ember(&[
             "--state-dir",
             state,
             "snapshot",
@@ -507,7 +465,7 @@ fn storage_efficiency_shows_savings() {
         );
     }
 
-    let output = ember(&["--state-dir", state, "debug", "storage-efficiency"]);
+    let output = common::ember(&["--state-dir", state, "debug", "storage-efficiency"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -539,13 +497,13 @@ fn vm_delete_removes_storage() {
     let state = state_dir.to_str().unwrap();
 
     // Create a snapshot too.
-    let output = ember(&["--state-dir", state, "snapshot", "create", "delvm", "snap1"]);
+    let output = common::ember(&["--state-dir", state, "snapshot", "create", "delvm", "snap1"]);
     assert!(output.status.success());
 
     let vm_dir = state_dir.join("vms").join("delvm");
     assert!(vm_dir.exists(), "VM dir should exist before delete");
 
-    let output = ember(&["--state-dir", state, "vm", "delete", "delvm"]);
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "delvm"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -578,7 +536,7 @@ fn resize_grows_disk() {
     );
 
     // --- Resize to 2 GiB ---
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -607,7 +565,7 @@ fn resize_grows_disk() {
     );
 
     // --- Verify metadata updated ---
-    let inspect = ember(&[
+    let inspect = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -626,7 +584,7 @@ fn resize_grows_disk() {
 
     // --- Verify ext4 filesystem was expanded ---
     // Use dumpe2fs to check the block count reflects ~2 GiB.
-    let dumpe2fs = find_e2fsprogs_tool("dumpe2fs");
+    let dumpe2fs = common::find_e2fsprogs_tool("dumpe2fs");
     let output = Command::new(&dumpe2fs)
         .arg("-h")
         .arg(&rootfs)
@@ -662,7 +620,7 @@ fn resize_shrink_fails() {
     let state = state_dir.to_str().unwrap();
 
     // metadata has disk_size_gib: 1; try same size.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -692,7 +650,7 @@ fn resize_multiple_grows() {
     let rootfs = state_dir.join("vms").join("multivm").join("rootfs.img");
 
     // Resize 1 GiB → 2 GiB.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -712,7 +670,7 @@ fn resize_multiple_grows() {
     );
 
     // Resize 2 GiB → 4 GiB.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -732,7 +690,7 @@ fn resize_multiple_grows() {
     );
 
     // Verify metadata tracks the latest size.
-    let inspect = ember(&[
+    let inspect = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -824,7 +782,7 @@ fn cp_c_fails_gracefully_on_non_apfs() {
 
     // `ember init` should succeed but warn about non-APFS.
     // The warning is printed to stderr by check_apfs_volume().
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
+    let output = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),

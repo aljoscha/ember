@@ -14,44 +14,8 @@
 //!   ./run-integration-tests.sh macos_init
 #![cfg(target_os = "macos")]
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Path to the ember binary built by cargo.
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-/// Run `ember init` with a temporary state directory, returning the state dir path.
-fn setup_init(tmp: &Path) -> PathBuf {
-    let state_dir = tmp.join("state");
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    state_dir
-}
+#[allow(dead_code)]
+mod common;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -62,7 +26,7 @@ fn setup_init(tmp: &Path) -> PathBuf {
 #[ignore]
 fn init_creates_directory_structure() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Required directories.
     let expected_dirs = ["images/data", "vms", "kernels", "network"];
@@ -82,7 +46,7 @@ fn init_creates_directory_structure() {
 #[ignore]
 fn init_writes_config_json() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     let config_path = state_dir.join("config.json");
     assert!(config_path.exists(), "config.json not found");
@@ -105,10 +69,10 @@ fn init_writes_config_json() {
 #[ignore]
 fn init_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Run init again on the same state directory.
-    let output = ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
+    let output = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -133,7 +97,7 @@ fn init_works_without_root() {
     );
 
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = setup_init(tmp.path());
+    let state_dir = common::setup_init(tmp.path());
 
     // Verify basic structure was created.
     assert!(state_dir.join("config.json").exists());

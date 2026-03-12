@@ -20,8 +20,10 @@
 //!   ./run-integration-tests.sh macos_ember_vz
 #![cfg(target_os = "macos")]
 
+#[allow(dead_code)]
+mod common;
+
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,9 +35,6 @@ use nix::unistd::Pid;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Cache location for the downloaded test kernel.
-const KERNEL_CACHE_PATH: &str = "/tmp/ember-test-vmlinux";
-
 /// How long to wait for "vm started" on stderr before giving up.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -45,117 +44,6 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Locate the `ember-vz` Swift helper binary.
-///
-/// Resolution order:
-/// 1. `EMBER_VZ` env var
-/// 2. `ember-vz/.build/release/ember-vz` (relative to project root)
-/// 3. `ember-vz/.build/debug/ember-vz`
-fn ember_vz_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("EMBER_VZ") {
-        let path = PathBuf::from(&p);
-        assert!(path.exists(), "EMBER_VZ={p} does not exist");
-        return Some(path);
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for subdir in ["release", "debug"] {
-        let path = manifest_dir.join(format!("ember-vz/.build/{subdir}/ember-vz"));
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-/// Get a bootable kernel for AVF tests.
-///
-/// Resolution order:
-/// 1. `EMBER_TEST_KERNEL` env var (explicit override)
-/// 2. Cached download at `/tmp/ember-test-vmlinux`
-/// 3. Fresh download from Firecracker CI S3 bucket (architecture-matched)
-///
-/// Returns `None` if the download fails (test should skip gracefully).
-fn ensure_kernel() -> Option<PathBuf> {
-    // Honor explicit override.
-    if let Ok(p) = std::env::var("EMBER_TEST_KERNEL") {
-        let path = PathBuf::from(&p);
-        assert!(
-            path.exists(),
-            "EMBER_TEST_KERNEL points to non-existent file: {p}"
-        );
-        return Some(path);
-    }
-
-    // Use cached kernel if present.
-    let cache = PathBuf::from(KERNEL_CACHE_PATH);
-    if cache.exists() {
-        return Some(cache);
-    }
-
-    // Check for locally built kernel in kernel/vmlinux.
-    // On macOS (AVF), the kernel must include CONFIG_VIRTIO_PCI — the stock
-    // Firecracker CI kernel only has CONFIG_VIRTIO_MMIO, so we cannot simply
-    // download it.  Build an AVF kernel with:
-    //   cd kernel && make docker-build ARCH=arm64 FRAGMENTS="avf.fragment"
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let local_kernel = manifest_dir.join("kernel/vmlinux");
-    if local_kernel.exists() {
-        eprintln!("Using locally built kernel: {}", local_kernel.display());
-        // Cache it for future runs.
-        let _ = std::fs::copy(&local_kernel, &cache);
-        return Some(cache);
-    }
-
-    eprintln!(
-        "Skipping: no AVF-compatible kernel found.\n\
-         Build one with: cd kernel && make docker-build ARCH=arm64 FRAGMENTS=\"avf.fragment\""
-    );
-    None
-}
-
-/// Find an e2fsprogs tool by checking Homebrew paths before falling back to PATH.
-fn find_e2fsprogs_tool(name: &str) -> String {
-    let arm_path = format!("/opt/homebrew/opt/e2fsprogs/sbin/{name}");
-    if Path::new(&arm_path).exists() {
-        return arm_path;
-    }
-    let intel_path = format!("/usr/local/opt/e2fsprogs/sbin/{name}");
-    if Path::new(&intel_path).exists() {
-        return intel_path;
-    }
-    name.to_string()
-}
-
-/// Create a minimal ext4 rootfs image file.
-fn create_test_rootfs(dir: &Path, size_mb: u64) -> PathBuf {
-    let img = dir.join("rootfs.img");
-
-    let status = Command::new("truncate")
-        .args(["-s", &format!("{size_mb}M")])
-        .arg(&img)
-        .status()
-        .expect("failed to run truncate");
-    assert!(status.success(), "truncate failed");
-
-    let mkfs = find_e2fsprogs_tool("mkfs.ext4");
-    let output = Command::new(&mkfs)
-        .args(["-F", "-q"])
-        .arg(&img)
-        .output()
-        .unwrap_or_else(|_| {
-            panic!("failed to run {mkfs} — is e2fsprogs installed? (brew install e2fsprogs)")
-        });
-    assert!(
-        output.status.success(),
-        "mkfs.ext4 failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    img
-}
 
 /// Send SIGTERM to a process.
 fn send_sigterm(pid: u32) {
@@ -205,7 +93,7 @@ fn wait_with_timeout(
 fn ember_vz_boot_serial_and_network() {
     // --- Prerequisites ---
 
-    let ember_vz = match ember_vz_bin() {
+    let ember_vz = match common::ember_vz_bin() {
         Some(p) => {
             eprintln!("Using ember-vz: {}", p.display());
             p
@@ -216,7 +104,7 @@ fn ember_vz_boot_serial_and_network() {
         }
     };
 
-    let kernel = match ensure_kernel() {
+    let kernel = match common::ensure_kernel() {
         Some(k) => {
             eprintln!("Using kernel: {}", k.display());
             k
@@ -230,7 +118,7 @@ fn ember_vz_boot_serial_and_network() {
     // --- Setup ---
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
     // --- Spawn ember-vz ---
