@@ -1,31 +1,27 @@
 # Session Prompt
 
-Read @REVIEW-TODO.md for the review issue list. For macOS design context, see @MACOS-SPEC.md. For Linux context, see @SPEC.md.
+Read @TEST-TODO.md for the task list. For test architecture, see @TEST-SPEC.md. For macOS design context, see @MACOS-SPEC.md. For Linux context, see @SPEC.md.
 
-Pick the first unchecked task (`- [ ]`) from REVIEW-TODO.md. Fix only that single issue. Follow the existing architecture and coding conventions.
+Pick the first unchecked task (`- [ ]`) from TEST-TODO.md. Implement, verify, check off, commit, stop.
 
-Use agent teams when it would speed things up — for example, to research crate APIs, explore the codebase, or implement independent pieces in parallel.
+Use agent teams when it would speed things up — for example, to explore existing test files, research patterns, or implement independent pieces in parallel.
 
 ## Workflow
 
 * **Read this file again after each context compaction.**
 * Code should be simple and clean, well-commented explaining what/how/why.
 * Before committing, verify that what you produced is high quality and works.
-* If a fix touches shared types (e.g. renaming `zvol_path`), update all call sites in the same pass.
 * If a fix is in Swift (`ember-vz`), rebuild with `cd ember-vz && swift build` to verify.
-
-## Bug fixes: red/green TDD
-
-When fixing an actual bug (not a refactor or cosmetic change), use red/green TDD:
-
-1. **Red**: Write a test first that reproduces the bug. This can be a unit test or an integration test — don't shy away from adding new integration tests. Run the test and confirm it fails (red).
-2. **Green**: Implement the fix. Run the test again and confirm it passes (green).
-3. Run the full test suite (`cargo test` and/or `./run-integration-tests.sh`) to make sure nothing else broke.
+* Follow the design in TEST-SPEC.md closely — especially the `TestEnv` abstraction and file structure.
+* All integration tests must drive the `ember` CLI binary (black-box testing). No internal function calls.
+* Platform differences go in `TestEnv` setup or `#[cfg(target_os)]` blocks, not separate files.
+* When extracting helpers into `common/`, grep for all copies across test files to make sure nothing is missed.
 
 ## After each task
 
-1. Verify the code compiles (`cargo build`). For Swift changes, also `cd ember-vz && swift build`.
+1. Verify the code compiles: `cargo build --tests`.
 2. Run `cargo fmt`.
-3. Mark the completed task as done (`- [x]`) in REVIEW-TODO.md.
-4. Create a jj change with a descriptive message that explains what was fixed and why.
-5. Continue with the next unchecked task.
+3. Run `./run-integration-tests.sh <suite>` for any modified test file to verify tests still pass.
+4. Mark the completed task as done (`- [x]`) in TEST-TODO.md.
+5. Create a jj change with a descriptive message (e.g. `tests: extract Linux helpers into common/linux.rs`).
+6. Continue with the next unchecked task.
