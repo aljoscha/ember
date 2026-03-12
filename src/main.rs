@@ -17,7 +17,6 @@ pub mod zfs;
 use clap::Parser;
 #[cfg(target_os = "linux")]
 use cli::kernel::KernelCommand;
-#[cfg(target_os = "linux")]
 use cli::vm::VmCommand;
 use cli::{Cli, Command};
 
@@ -56,9 +55,8 @@ fn needs_root(command: &Command) -> bool {
 
 /// Returns true for commands that should trigger state reconciliation.
 ///
-/// Reconciliation cleans up after crashes (dead VMs, orphaned TAP devices)
-/// and requires root. Skip it for read-only and SSH-client commands.
-#[cfg(target_os = "linux")]
+/// Reconciliation cleans up after crashes (dead VMs, orphaned resources)
+/// and may require root on Linux. Skip it for read-only and SSH-client commands.
 fn needs_reconcile(command: &Command) -> bool {
     !matches!(
         command,
@@ -93,7 +91,9 @@ fn main() -> anyhow::Result<()> {
         state::reconcile::run(&cli.state_dir);
     }
     #[cfg(target_os = "macos")]
-    state::reconcile_macos::run(&cli.state_dir);
+    if needs_reconcile(&cli.command) {
+        state::reconcile_macos::run(&cli.state_dir);
+    }
 
     match &cli.command {
         Command::Init(args) => cli::init::run(args, &cli.state_dir),

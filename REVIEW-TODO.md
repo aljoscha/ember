@@ -79,7 +79,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   (Firecracker-specific), `NetworkInfo.tap_device`/`netmask` (empty on macOS).
   Rename with `#[serde(alias)]` for backward compat.
 
-- [ ] **macOS reconciliation runs unconditionally**
+- [x] **macOS reconciliation runs unconditionally**
   `src/main.rs:95-96` — No `needs_reconcile` guard. Even `ember version` triggers
   a state dir scan.
 
