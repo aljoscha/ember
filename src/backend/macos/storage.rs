@@ -222,16 +222,24 @@ impl StorageBackend for MacosStorage {
 
         let rootfs = self.vm_rootfs(vm_name);
 
-        // Remove current rootfs before cloning, so cp -c doesn't fail on
-        // an existing destination file.
-        if rootfs.exists() {
-            fs::remove_file(&rootfs).map_err(|e| Error::Io {
-                path: rootfs.clone(),
+        // Clone to a temporary file first, then atomically rename.
+        // This prevents data loss if the clone fails — the original rootfs
+        // is only replaced once the new clone is fully written.
+        let tmp_rootfs = rootfs.with_extension("img.restoring");
+        if tmp_rootfs.exists() {
+            fs::remove_file(&tmp_rootfs).map_err(|e| Error::Io {
+                path: tmp_rootfs.clone(),
                 source: e,
             })?;
         }
 
-        apfs_clone(&snap_path, &rootfs)?;
+        apfs_clone(&snap_path, &tmp_rootfs)?;
+
+        // Atomic rename replaces the old rootfs in one operation.
+        fs::rename(&tmp_rootfs, &rootfs).map_err(|e| Error::Io {
+            path: rootfs,
+            source: e,
+        })?;
         Ok(())
     }
 

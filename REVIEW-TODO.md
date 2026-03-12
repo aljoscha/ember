@@ -22,7 +22,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 
 ## High
 
-- [ ] **Non-atomic `restore_snapshot` — data loss risk**
+- [x] **Non-atomic `restore_snapshot` — data loss risk**
   `src/backend/macos/storage.rs:227-234` — Rootfs is deleted before cloning the snapshot.
   If the clone fails, VM has no disk. Clone to a temp file, then atomically rename.
 
