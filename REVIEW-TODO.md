@@ -37,7 +37,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 
 ## Medium
 
-- [ ] **File descriptor leak on spawn failure**
+- [x] **File descriptor leak on spawn failure**
   `src/backend/macos/vm.rs:100-159` — `read_raw` from `into_raw_fd()` is never closed if
   `cmd.spawn()` fails. Wrap in `File`/`OwnedFd` immediately.
 

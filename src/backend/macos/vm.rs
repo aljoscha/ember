@@ -99,13 +99,11 @@ impl VmBackend for MacosVm {
         let (read_owned, write_owned) =
             nix::unistd::pipe().map_err(|e| Error::Network(format!("pipe: {e}")))?;
 
-        // Convert OwnedFd to raw fds for use with from_raw_fd / pre_exec.
-        let read_raw = read_owned.into_raw_fd();
-        let write_raw = write_owned.into_raw_fd();
-
-        // SAFETY: We just created write_raw above and it's a valid open fd.
-        // We wrap it in a File so it gets closed when dropped (after spawn).
-        let write_file = unsafe { std::fs::File::from_raw_fd(write_raw) };
+        // Wrap both pipe ends in File immediately so they are closed on drop,
+        // even if cmd.spawn() fails (prevents fd leak on the read end).
+        // SAFETY: read_owned/write_owned are valid open fds from pipe().
+        let read_file = unsafe { std::fs::File::from_raw_fd(read_owned.into_raw_fd()) };
+        let write_file = unsafe { std::fs::File::from_raw_fd(write_owned.into_raw_fd()) };
         let write_fd_num = write_file.as_raw_fd();
 
         // Build the ember-vz start command.
@@ -164,7 +162,7 @@ impl VmBackend for MacosVm {
 
         // Read the MAC address from the ready-fd pipe.
         // ember-vz writes "<MAC>\n" once the VM has booted.
-        let mac = match read_mac_from_ready_fd(read_raw, READY_TIMEOUT) {
+        let mac = match read_mac_from_ready_fd(read_file, READY_TIMEOUT) {
             Ok(mac) => mac,
             Err(e) => {
                 // Boot failed or timed out — kill the orphaned helper.
@@ -317,11 +315,7 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 /// The ember-vz helper writes `<MAC>\n` to the pipe once the VM has
 /// successfully booted. We use a poll-based approach with a timeout
 /// to avoid blocking forever if the VM fails to start.
-fn read_mac_from_ready_fd(read_fd: i32, timeout: Duration) -> Result<String> {
-    // SAFETY: read_fd is a valid fd from nix::unistd::pipe().
-    // We wrap it in a File for automatic cleanup via Drop.
-    let read_file = unsafe { std::fs::File::from_raw_fd(read_fd) };
-
+fn read_mac_from_ready_fd(read_file: std::fs::File, timeout: Duration) -> Result<String> {
     // Use poll() to wait for data with a timeout, so we don't block
     // forever if ember-vz crashes before writing the MAC.
     let mut pollfd = libc::pollfd {
