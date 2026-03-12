@@ -9,7 +9,8 @@ import Virtualization
 /// so the parent process (ember) can discover the guest IP via DHCP leases.
 ///
 /// Signal handling:
-///   SIGTERM  → graceful shutdown (VZVirtualMachine.stop)
+///   SIGTERM  → graceful ACPI shutdown (VZVirtualMachine.requestStop),
+///              with forceful fallback after 5s (VZVirtualMachine.stop)
 ///   SIGKILL  → force stop (handled by OS)
 ///   SIGUSR1  → pause VM
 ///   SIGUSR2  → resume VM
@@ -154,21 +155,47 @@ struct Start: ParsableCommand {
         _vmRef = vm
         _delegateRef = delegate
 
-        // Install SIGTERM handler: graceful shutdown via VZVirtualMachine.stop().
+        // Install SIGTERM handler: graceful ACPI shutdown via requestStop(),
+        // falling back to forceful stop() after 5 seconds.
         // We must ignore the default SIGTERM behavior first, then use a DispatchSource
-        // to receive the signal and call stop() on the main queue.
+        // to receive the signal and call requestStop() on the main queue.
         signal(SIGTERM, SIG_IGN)
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         sigtermSource.setEventHandler {
-            fputs("received SIGTERM, stopping VM gracefully...\n", stderr)
+            fputs("received SIGTERM, requesting ACPI shutdown...\n", stderr)
             guard let vm = _vmRef else { Darwin.exit(0) }
-            vm.stop { error in
-                if let error = error {
-                    fputs("warning: graceful stop failed: \(error.localizedDescription)\n", stderr)
+
+            // Try ACPI power button (guest can shut down cleanly)
+            if vm.canRequestStop {
+                do {
+                    try vm.requestStop()
+                    fputs("ACPI shutdown requested, waiting for guest...\n", stderr)
+                } catch {
+                    fputs("warning: ACPI request failed: \(error.localizedDescription), forcing stop...\n", stderr)
+                    vm.stop { _ in Darwin.exit(0) }
+                    return
                 }
-                // The delegate's guestDidStop will handle exit, but if stop() fails
-                // we exit here as a fallback.
-                Darwin.exit(0)
+            } else {
+                fputs("VM cannot request stop in current state, forcing stop...\n", stderr)
+                vm.stop { _ in Darwin.exit(0) }
+                return
+            }
+
+            // Fallback: if guest hasn't stopped after 5 seconds, force stop.
+            // The Rust side will SIGKILL after 10s, so we force-stop well before that.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                guard let vm = _vmRef else { return }
+                if vm.state != .stopped {
+                    fputs("guest did not respond to ACPI shutdown, forcing stop...\n", stderr)
+                    vm.stop { error in
+                        if let error = error {
+                            fputs("warning: force stop failed: \(error.localizedDescription)\n", stderr)
+                        }
+                        // The delegate's guestDidStop will handle exit, but if stop() fails
+                        // we exit here as a fallback.
+                        Darwin.exit(0)
+                    }
+                }
             }
         }
         sigtermSource.resume()

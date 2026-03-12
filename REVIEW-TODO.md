@@ -4,7 +4,7 @@ Issues from the macOS-support branch code review, ordered by priority.
 
 ## Critical
 
-- [ ] **ember-vz: `stop()` uses forceful kill, not graceful ACPI shutdown**
+- [x] **ember-vz: `stop()` uses forceful kill, not graceful ACPI shutdown**
   `ember-vz/Sources/EmberVZ/Start.swift:165` — `VZVirtualMachine.stop()` is an immediate
   forceful stop. Should use `VZVirtualMachine.requestStop()` to send an ACPI power button
   event so the guest can cleanly unmount filesystems.
