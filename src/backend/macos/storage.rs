@@ -344,6 +344,21 @@ impl StorageBackend for MacosStorage {
             )));
         }
 
+        // Defensive guard: refuse to shrink the image.
+        let current_size = std::fs::metadata(&rootfs)
+            .map_err(|e| Error::Io {
+                path: rootfs.clone(),
+                source: e,
+            })?
+            .len();
+        if new_size.bytes() <= current_size {
+            return Err(Error::Image(format!(
+                "cannot shrink disk from {} to {} bytes",
+                current_size,
+                new_size.bytes()
+            )));
+        }
+
         // Grow the raw image file to the new size.
         let output = Command::new("truncate")
             .arg("-s")

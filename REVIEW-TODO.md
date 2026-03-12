@@ -120,7 +120,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/backend/macos/storage.rs:579-587` — String matching on stderr messages is
   version-dependent. Consider a more robust check.
 
-- [ ] **No shrink guard in storage backend**
+- [x] **No shrink guard in storage backend**
   `src/backend/macos/storage.rs:330` — Relies on CLI layer to prevent shrink.
   Add a defensive size check.
 
