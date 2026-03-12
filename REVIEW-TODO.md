@@ -83,7 +83,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/main.rs:95-96` — No `needs_reconcile` guard. Even `ember version` triggers
   a state dir scan.
 
-- [ ] **Docstrings reference Linux-only concepts**
+- [x] **Docstrings reference Linux-only concepts**
   `src/cli/vm.rs:809, 851, 640` — "Firecracker PATCH /vm API", "ZFS clone @base".
   Make generic or add platform notes.
 

@@ -637,12 +637,12 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Start a VM: set up networking, spawn Firecracker, configure via API, boot.
+/// Start a VM: set up networking, spawn the hypervisor, boot.
 ///
-/// Workflow: validate state → allocate IP → create TAP device → set iptables
-/// → clean stale socket → spawn firecracker → wait for API socket
-/// → configure machine (CPU, memory, kernel, rootfs, network) → start instance
-/// → update metadata.
+/// Linux: allocate IP → create TAP device → set iptables → spawn Firecracker
+/// → configure via API → start instance.
+/// macOS: spawn ember-vz → wait for ready signal → discover guest IP via DHCP.
+/// Both: update metadata with running state.
 ///
 /// Uses a [`Rollback`] guard to ensure all resources (IP allocation, TAP device,
 /// iptables rules, Firecracker process) are cleaned up if any step fails.
@@ -806,9 +806,9 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Pause a running VM via the Firecracker PATCH /vm API.
+/// Pause a running VM via the hypervisor backend.
 ///
-/// Workflow: validate VM is running → send PATCH /vm { state: "Paused" } → update metadata.
+/// Workflow: validate VM is running → pause via backend → update metadata.
 /// Network and PID are preserved — the VM can be resumed or stopped from this state.
 fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
@@ -853,9 +853,9 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resume a paused VM via the Firecracker PATCH /vm API.
+/// Resume a paused VM via the hypervisor backend.
 ///
-/// Workflow: validate VM is paused → send PATCH /vm { state: "Resumed" } → update metadata.
+/// Workflow: validate VM is paused → resume via backend → update metadata.
 /// Network and PID were preserved during pause, so the VM resumes exactly where it left off.
 fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
