@@ -9,10 +9,11 @@ Issues from the macOS-support branch code review, ordered by priority.
   forceful stop. Should use `VZVirtualMachine.requestStop()` to send an ACPI power button
   event so the guest can cleanly unmount filesystems.
 
-- [ ] **ember-vz: `pause`/`resume` completion handler signatures wrong**
+- [x] **ember-vz: `pause`/`resume` completion handler signatures wrong**
   `ember-vz/Sources/EmberVZ/Start.swift:187, 209` — Uses `Result<Void, Error>` but AVF's
   `pause`/`resume` completion handlers take `(Error?) -> Void`. Will fail under strict
   Swift 6 type checking.
+  **Not an issue**: AVF on this SDK uses `Result<Void, Error>`, existing code is correct.
 
 - [ ] **`pause`/`resume` CLI commands broken on macOS**
   `src/cli/vm.rs:830-839, 872-881` — Both check `metadata.api_socket.exists()` (Firecracker
