@@ -87,7 +87,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/cli/vm.rs:809, 851, 640` — "Firecracker PATCH /vm API", "ZFS clone @base".
   Make generic or add platform notes.
 
-- [ ] **Duplicate `format_bytes` functions**
+- [x] **Duplicate `format_bytes` functions**
   `src/cli/debug.rs:168` vs `src/cli/snapshot.rs:186` — One SI, one binary.
   Consolidate into a shared utility.
 

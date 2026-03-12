@@ -1,6 +1,7 @@
 pub mod cp;
 pub mod debug;
 pub mod exec;
+pub(crate) mod fmt;
 pub mod image;
 pub mod info;
 pub mod init;

@@ -164,20 +164,4 @@ fn sum_img_blocks(dir: &Path, total: &mut u64) {
     }
 }
 
-/// Format bytes as a human-readable string (e.g., "2.1 GB").
-fn format_bytes(bytes: u64) -> String {
-    const GB: f64 = 1_000_000_000.0;
-    const MB: f64 = 1_000_000.0;
-    const KB: f64 = 1_000.0;
-
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
+use super::fmt::format_bytes_si as format_bytes;

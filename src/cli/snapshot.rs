@@ -182,22 +182,7 @@ fn format_epoch(epoch: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}:{sec:02} UTC")
 }
 
-/// Format a byte count as a human-readable string (KiB, MiB, GiB).
-fn format_bytes(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    const GIB: u64 = 1024 * MIB;
-
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes} B")
-    }
-}
+use super::fmt::format_bytes_binary as format_bytes;
 
 /// Delete a snapshot from a VM.
 ///
