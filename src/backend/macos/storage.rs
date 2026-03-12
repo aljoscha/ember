@@ -587,13 +587,33 @@ impl StorageBackend for MacosStorage {
                 source: e,
             })?;
 
-        // debugfs exits 0 even on some errors; check stderr for real failures.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("No such file or directory")
-            && !stderr.contains("File not found by ext2_lookup")
-        {
+        // Check exit code first.
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(Error::Image(format!(
-                "debugfs failed to inject SSH key: {stderr}"
+                "debugfs exited with {}: {stderr}",
+                output.status
+            )));
+        }
+
+        // Verify the authorized_keys file was actually written.
+        // This is more robust than parsing stderr strings, which vary by
+        // debugfs version. If the file doesn't exist after the write,
+        // something went wrong regardless of what stderr says.
+        let verify = Command::new(&debugfs)
+            .args(["-R", &format!("stat {ak_path}")])
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "debugfs verify".to_string(),
+                source: e,
+            })?;
+        let verify_stderr = String::from_utf8_lossy(&verify.stderr);
+        if verify_stderr.contains("File not found") {
+            let write_stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Image(format!(
+                "debugfs SSH key injection failed — authorized_keys not found after write.\n\
+                 debugfs stderr: {write_stderr}"
             )));
         }
 

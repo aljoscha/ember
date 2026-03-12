@@ -116,7 +116,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   Says "Lightweight Firecracker VM manager with ZFS-backed storage" — no longer
   accurate with macOS/AVF support.
 
-- [ ] **`debugfs` error detection is fragile**
+- [x] **`debugfs` error detection is fragile**
   `src/backend/macos/storage.rs:579-587` — String matching on stderr messages is
   version-dependent. Consider a more robust check.
 
