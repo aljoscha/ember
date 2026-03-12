@@ -15,7 +15,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   Swift 6 type checking.
   **Not an issue**: AVF on this SDK uses `Result<Void, Error>`, existing code is correct.
 
-- [ ] **`pause`/`resume` CLI commands broken on macOS**
+- [x] **`pause`/`resume` CLI commands broken on macOS**
   `src/cli/vm.rs:830-839, 872-881` — Both check `metadata.api_socket.exists()` (Firecracker
   socket) before dispatching. On macOS, ember-vz uses signals and the socket never exists.
   Gate the socket check with `#[cfg(target_os = "linux")]`.

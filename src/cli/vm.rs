@@ -827,15 +827,20 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    let socket_path = &metadata.api_socket;
-    if !socket_path.exists() {
-        anyhow::bail!(
-            "vm '{}' is marked as running but API socket not found at {}\n\
-             Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
-            args.name,
-            socket_path.display(),
-            args.name
-        );
+    // On Linux, verify the Firecracker API socket exists before attempting pause.
+    // On macOS, pause uses signals to the ember-vz process (no socket needed).
+    #[cfg(target_os = "linux")]
+    {
+        let socket_path = &metadata.api_socket;
+        if !socket_path.exists() {
+            anyhow::bail!(
+                "vm '{}' is marked as running but API socket not found at {}\n\
+                 Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
+                args.name,
+                socket_path.display(),
+                args.name
+            );
+        }
     }
 
     println!("Pausing VM '{}'...", args.name);
@@ -869,15 +874,20 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    let socket_path = &metadata.api_socket;
-    if !socket_path.exists() {
-        anyhow::bail!(
-            "vm '{}' is marked as paused but API socket not found at {}\n\
-             Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
-            args.name,
-            socket_path.display(),
-            args.name
-        );
+    // On Linux, verify the Firecracker API socket exists before attempting resume.
+    // On macOS, resume uses signals to the ember-vz process (no socket needed).
+    #[cfg(target_os = "linux")]
+    {
+        let socket_path = &metadata.api_socket;
+        if !socket_path.exists() {
+            anyhow::bail!(
+                "vm '{}' is marked as paused but API socket not found at {}\n\
+                 Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
+                args.name,
+                socket_path.display(),
+                args.name
+            );
+        }
     }
 
     println!("Resuming VM '{}'...", args.name);
