@@ -49,7 +49,7 @@ Issues from the macOS-support branch code review, ordered by priority.
   `src/cli/info.rs:12, 27-28` — Prints "ZFS pool:"/"Dataset:" unconditionally and
   references `--pool`/`--device` in error hint. Use `#[cfg]` for platform output.
 
-- [ ] **`image inspect` prints "ZFS zvol:" on macOS**
+- [x] **`image inspect` prints "ZFS zvol:" on macOS**
   `src/cli/image.rs:330` — Label should be platform-conditional ("Disk image:" on macOS).
 
 - [ ] **`udevadm settle` called on macOS**

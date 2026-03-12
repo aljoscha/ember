@@ -327,7 +327,10 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
         OutputFormat::Table => {
             println!("Reference:   {}", entry.reference);
             println!("Local name:  {}", entry.local_name);
+            #[cfg(target_os = "linux")]
             println!("ZFS zvol:    {}", entry.zvol);
+            #[cfg(target_os = "macos")]
+            println!("Disk image:  {}", entry.zvol);
             println!("Size:        {} MiB", entry.size_mib);
             println!("Pulled:      {}", entry.pulled_at);
         }
