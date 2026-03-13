@@ -15,7 +15,7 @@
 ## Phase B: Unify Pure CLI Tests (no hypervisor needed)
 
 - [x] Unify `init.rs` + `macos_init.rs` → single `init.rs`. Delete `macos_init.rs`
-- [ ] Unify `image.rs` + `macos_image.rs` → single `image.rs`. Delete `macos_image.rs`
+- [x] Unify `image.rs` + `macos_image.rs` → single `image.rs`. Delete `macos_image.rs`
 - [ ] Unify `snapshot.rs` + snapshot tests from `macos_storage.rs` → single `snapshot.rs`
 - [ ] Unify `resize.rs` + resize tests from `macos_storage.rs` → single `resize.rs`
 - [ ] Unify `fork.rs` — remove `#![cfg(target_os = "linux")]`, use `TestEnv`
