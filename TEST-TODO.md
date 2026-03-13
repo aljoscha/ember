@@ -26,10 +26,10 @@
 - [x] Add `TestEnv::with_running_vm()` constructor (platform-specific prerequisites, returns Option)
 - [x] Unify `vm.rs` + `macos_vm.rs` + `macos_network.rs` → single `vm.rs`. Delete `macos_vm.rs`, `macos_network.rs`
 - [x] Unify `ssh.rs` — remove `#![cfg(target_os = "linux")]`, use `TestEnv`
-- [ ] Verify: `cargo build --tests` on macOS; `./run-integration-tests.sh vm ssh`
+- [x] Verify: `cargo build --tests` on macOS; `./run-integration-tests.sh vm ssh`
 
 ## Phase D: Cleanup
 
-- [ ] Slim `macos_storage.rs` — remove snapshot/resize tests that moved to unified files, keep APFS-specific tests only
-- [ ] Update `run-integration-tests.sh` if needed (should auto-detect, but verify)
-- [ ] Final verify: full `./run-integration-tests.sh` on macOS, confirm test count matches expectations
+- [x] Slim `macos_storage.rs` — remove snapshot/resize tests that moved to unified files, keep APFS-specific tests only
+- [x] Update `run-integration-tests.sh` if needed (should auto-detect, but verify)
+- [x] Final verify: full `./run-integration-tests.sh` on macOS, confirm test count matches expectations
