@@ -16,279 +16,10 @@
 //! To run:
 //!   ./run-integration-tests.sh ssh
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+#[allow(dead_code)]
+mod common;
 
-// ---------------------------------------------------------------------------
-// Shared helpers (same pattern as vm.rs, init.rs, image.rs)
-// ---------------------------------------------------------------------------
-
-fn test_pool(name: &str) -> String {
-    format!("embertest_{name}_{}", std::process::id())
-}
-
-fn create_loop_device_sized(dir: &Path, size: &str) -> (String, PathBuf) {
-    let file = dir.join("pool.img");
-
-    let status = Command::new("truncate")
-        .args(["-s", size])
-        .arg(&file)
-        .status()
-        .expect("failed to run truncate");
-    assert!(status.success(), "truncate failed");
-
-    let output = Command::new("losetup")
-        .args(["--find", "--show"])
-        .arg(&file)
-        .output()
-        .expect("failed to run losetup");
-    assert!(
-        output.status.success(),
-        "losetup failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    (dev, file)
-}
-
-fn detach_loop_device(dev: &str) {
-    let _ = Command::new("losetup").args(["-d", dev]).status();
-}
-
-fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
-}
-
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-struct PoolCleanup {
-    pool: String,
-    dev: String,
-}
-
-impl Drop for PoolCleanup {
-    fn drop(&mut self) {
-        destroy_pool(&self.pool);
-        detach_loop_device(&self.dev);
-    }
-}
-
-fn setup_pool_init_and_build_ubuntu(
-    test_name: &str,
-    tmp: &tempfile::TempDir,
-) -> (String, PathBuf, PoolCleanup) {
-    let pool = test_pool(test_name);
-    let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "8G");
-
-    let cleanup = PoolCleanup {
-        pool: pool.clone(),
-        dev: loop_dev.clone(),
-    };
-
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-        "--device",
-        &loop_dev,
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    let dockerfile = format!(
-        "{}/images/Dockerfile.ubuntu-slim",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "image",
-        "build",
-        "ubuntu-slim",
-        "-f",
-        &dockerfile,
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "image build ubuntu-slim failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    (pool, state_dir, cleanup)
-}
-
-fn firecracker_available() -> bool {
-    let fc = Command::new("which")
-        .arg("firecracker")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !fc {
-        eprintln!("Skipping: firecracker not found in PATH");
-        return false;
-    }
-
-    if !Path::new("/dev/kvm").exists() {
-        eprintln!("Skipping: /dev/kvm not available (no hardware virtualization)");
-        return false;
-    }
-
-    true
-}
-
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-const KERNEL_CACHE_PATH: &str = "/tmp/ember-test-vmlinux";
-const KERNEL_URL: &str =
-    "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102";
-
-fn ensure_kernel() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("EMBER_TEST_KERNEL") {
-        let path = PathBuf::from(&p);
-        assert!(
-            path.exists(),
-            "EMBER_TEST_KERNEL points to non-existent file: {p}"
-        );
-        return Some(path);
-    }
-
-    let cache = PathBuf::from(KERNEL_CACHE_PATH);
-    if cache.exists() {
-        return Some(cache);
-    }
-
-    let tmp = PathBuf::from(format!(
-        "{KERNEL_CACHE_PATH}.{:?}",
-        std::thread::current().id()
-    ));
-    eprintln!("Downloading Firecracker kernel from {KERNEL_URL}...");
-    let status = Command::new("curl")
-        .args(["-fsSL", "-o"])
-        .arg(&tmp)
-        .arg(KERNEL_URL)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            let _ = std::fs::rename(&tmp, &cache);
-            eprintln!("Kernel cached at {KERNEL_CACHE_PATH}");
-            Some(cache)
-        }
-        _ => {
-            let _ = std::fs::remove_file(&tmp);
-            eprintln!("Failed to download kernel — skipping Firecracker tests");
-            None
-        }
-    }
-}
-
-fn ssh_private_key_path() -> Option<PathBuf> {
-    let home = if let Ok(user) = std::env::var("SUDO_USER") {
-        let output = Command::new("sh")
-            .args(["-c", &format!("eval echo ~{user}")])
-            .output()
-            .ok()?;
-        PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        PathBuf::from(std::env::var("HOME").ok()?)
-    };
-
-    let ssh_dir = home.join(".ssh");
-    for name in &["id_ed25519", "id_ecdsa", "id_rsa"] {
-        let path = ssh_dir.join(name);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn ssh_exec(guest_ip: &str, key_path: &Path, command: &str) -> Result<String, String> {
-    let output = Command::new("ssh")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "ConnectTimeout=5",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "LogLevel=ERROR",
-            "-i",
-        ])
-        .arg(key_path)
-        .arg(format!("root@{guest_ip}"))
-        .arg(command)
-        .output()
-        .map_err(|e| format!("failed to execute ssh: {e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
-}
-
-fn wait_for_ssh(guest_ip: &str, key_path: &Path) -> bool {
-    let delays_ms = [
-        500, 1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000,
-        5000,
-    ];
-
-    for (i, delay) in delays_ms.iter().enumerate() {
-        eprintln!(
-            "  SSH attempt {}/{}: connecting to {guest_ip}...",
-            i + 1,
-            delays_ms.len()
-        );
-
-        match ssh_exec(guest_ip, key_path, "true") {
-            Ok(_) => {
-                eprintln!("  SSH connected on attempt {}", i + 1);
-                return true;
-            }
-            Err(e) => {
-                eprintln!("  SSH attempt {} failed: {e}", i + 1);
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(*delay));
-    }
-
-    false
-}
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Helpers: start a VM and return info needed for SSH tests
@@ -298,13 +29,13 @@ struct RunningVm {
     state_dir: PathBuf,
     vm_name: String,
     // Fields are dropped in declaration order: vm first, then pool, then tmpdir.
-    _cleanup: PoolCleanup,
+    _cleanup: common::linux::PoolCleanup,
     _tmp: tempfile::TempDir,
 }
 
 impl Drop for RunningVm {
     fn drop(&mut self) {
-        stop_and_delete_vm(&self.state_dir, &self.vm_name);
+        common::linux::stop_and_delete_vm(&self.state_dir, &self.vm_name);
     }
 }
 
@@ -312,27 +43,28 @@ impl Drop for RunningVm {
 ///
 /// Skips (returns None) if prerequisites are missing.
 fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
-    if !firecracker_available() {
+    if !common::linux::firecracker_available() {
         return None;
     }
-    if !docker_available() {
+    if !common::linux::docker_available() {
         eprintln!("Skipping: docker not available (needed to build ubuntu-slim image)");
         return None;
     }
-    let kernel_path = ensure_kernel()?;
-    let ssh_key = ssh_private_key_path();
+    let kernel_path = common::linux::ensure_kernel()?;
+    let ssh_key = common::linux::ssh_private_key_path();
     if ssh_key.is_none() {
         eprintln!("Skipping: no SSH private key found for the invoking user");
         return None;
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, cleanup) = setup_pool_init_and_build_ubuntu(test_name, &tmp);
+    let (_pool, state_dir, cleanup) =
+        common::linux::setup_pool_init_and_build_ubuntu(test_name, &tmp);
     let state = state_dir.to_str().unwrap();
     let kernel = kernel_path.to_str().unwrap();
 
     // Create VM.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -355,7 +87,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
     );
 
     // Start VM.
-    let output = ember(&["--state-dir", state, "vm", "start", vm_name]);
+    let output = common::ember(&["--state-dir", state, "vm", "start", vm_name]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -364,7 +96,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
     );
 
     // Extract guest IP from inspect.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -385,7 +117,7 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
     let ssh_key = ssh_key.unwrap();
     eprintln!("Waiting for SSH to become available at {guest_ip}...");
     assert!(
-        wait_for_ssh(&guest_ip, &ssh_key),
+        common::linux::wait_for_ssh(&guest_ip, &ssh_key),
         "SSH not reachable at {guest_ip}:22 after timeout"
     );
 
@@ -395,13 +127,6 @@ fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
         _cleanup: cleanup,
         _tmp: tmp,
     })
-}
-
-/// Stop and delete a VM (best-effort cleanup).
-fn stop_and_delete_vm(state_dir: &Path, vm_name: &str) {
-    let state = state_dir.to_str().unwrap();
-    let _ = ember(&["--state-dir", state, "vm", "stop", vm_name, "--force"]);
-    let _ = ember(&["--state-dir", state, "vm", "delete", vm_name, "--force"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +144,7 @@ fn exec_command_returns_stdout() {
     let state = vm.state_dir.to_str().unwrap();
 
     // Run a simple command via `ember exec`.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "exec",
@@ -441,7 +166,7 @@ fn exec_command_returns_stdout() {
     eprintln!("ember exec echo: {}", stdout.trim());
 
     // Run a command that produces meaningful output.
-    let output = ember(&["--state-dir", state, "exec", "execvm", "--", "uname", "-r"]);
+    let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "uname", "-r"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -456,7 +181,7 @@ fn exec_command_returns_stdout() {
     eprintln!("Guest kernel: {kernel_version}");
 
     // Run a command that fails — verify non-zero exit code is propagated.
-    let output = ember(&["--state-dir", state, "exec", "execvm", "--", "false"]);
+    let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "false"]);
     assert!(
         !output.status.success(),
         "expected 'false' command to return non-zero exit code"
@@ -482,7 +207,7 @@ fn cp_upload_and_download() {
     std::fs::write(&local_src, test_content).unwrap();
 
     // Upload: local → VM.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "cp",
@@ -497,7 +222,7 @@ fn cp_upload_and_download() {
     );
 
     // Verify the file arrived on the guest via exec.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "exec",
@@ -521,7 +246,7 @@ fn cp_upload_and_download() {
 
     // Download: VM → local.
     let local_dst = tmp_dir.path().join("downloaded.txt");
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "cp",
@@ -549,17 +274,17 @@ fn cp_upload_and_download() {
 fn exec_on_stopped_vm_fails() {
     // This test only needs ZFS (no Firecracker) — create a VM but don't start it.
     let tmp = tempfile::tempdir().unwrap();
-    let pool = test_pool("sshexecstopped");
+    let pool = common::linux::test_pool("sshexecstopped");
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "512M");
+    let (loop_dev, _img) = common::linux::create_loop_device_sized(tmp.path(), "512M");
 
-    let _cleanup = PoolCleanup {
+    let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
     };
 
     // Init.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -575,7 +300,7 @@ fn exec_on_stopped_vm_fails() {
     );
 
     // Pull alpine.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -594,7 +319,7 @@ fn exec_on_stopped_vm_fails() {
 
     // Create VM (not started).
     let state = state_dir.to_str().unwrap();
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -613,7 +338,7 @@ fn exec_on_stopped_vm_fails() {
     );
 
     // Try exec on a non-running VM — should fail.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "exec",
@@ -635,7 +360,7 @@ fn exec_on_stopped_vm_fails() {
     // Try cp on a non-running VM — should also fail.
     let local_file = tmp.path().join("test.txt");
     std::fs::write(&local_file, "test").unwrap();
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "cp",

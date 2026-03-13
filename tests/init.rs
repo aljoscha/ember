@@ -10,119 +10,23 @@
 //! The tests create and destroy temporary ZFS pools backed by loopback
 //! devices, so they are safe to run on a system with ZFS installed.
 
-use std::path::PathBuf;
-use std::process::Command;
-
-/// Unique pool name per test to avoid collisions.
-fn test_pool(name: &str) -> String {
-    format!("embertest_{name}_{}", std::process::id())
-}
-
-/// Create a loopback file and attach it to a loop device.
-/// Returns (loop_device_path, backing_file_path).
-fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
-    let file = dir.join("pool.img");
-
-    // Create a 64MB sparse file for the pool.
-    let status = Command::new("truncate")
-        .args(["-s", "64M"])
-        .arg(&file)
-        .status()
-        .expect("failed to run truncate");
-    assert!(status.success(), "truncate failed");
-
-    let output = Command::new("losetup")
-        .args(["--find", "--show"])
-        .arg(&file)
-        .output()
-        .expect("failed to run losetup");
-    assert!(
-        output.status.success(),
-        "losetup failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    (dev, file)
-}
-
-/// Detach a loop device (best-effort cleanup).
-fn detach_loop_device(dev: &str) {
-    let _ = Command::new("losetup").args(["-d", dev]).status();
-}
-
-/// Destroy a ZFS pool (best-effort cleanup).
-fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
-}
-
-/// Path to the ember binary built by cargo.
-fn ember_bin() -> PathBuf {
-    // `cargo test` puts the test binary in target/debug/deps, but the
-    // main binary is at target/debug/ember.
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop(); // remove deps/
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-/// Assert that a ZFS pool exists.
-fn assert_pool_exists(pool: &str) {
-    let output = Command::new("zpool")
-        .args(["list", "-H", pool])
-        .output()
-        .expect("failed to run zpool");
-    assert!(output.status.success(), "expected pool '{pool}' to exist");
-}
-
-/// Assert that a ZFS dataset exists.
-fn assert_dataset_exists(dataset: &str) {
-    let output = Command::new("zfs")
-        .args(["list", "-H", dataset])
-        .output()
-        .expect("failed to run zfs");
-    assert!(
-        output.status.success(),
-        "expected dataset '{dataset}' to exist"
-    );
-}
+#[allow(dead_code)]
+mod common;
 
 #[test]
 #[ignore]
 fn init_creates_new_pool_and_datasets() {
-    let pool = test_pool("newpool");
+    let pool = common::linux::test_pool("newpool");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
+    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
 
-    // Cleanup on exit (even if test panics).
-    struct Cleanup {
-        pool: String,
-        dev: String,
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            destroy_pool(&self.pool);
-            detach_loop_device(&self.dev);
-        }
-    }
-    let _cleanup = Cleanup {
+    let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
     };
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -140,10 +44,10 @@ fn init_creates_new_pool_and_datasets() {
     );
 
     // Verify ZFS pool and datasets were created.
-    assert_pool_exists(&pool);
-    assert_dataset_exists(&format!("{pool}/ember"));
-    assert_dataset_exists(&format!("{pool}/ember/images"));
-    assert_dataset_exists(&format!("{pool}/ember/vms"));
+    common::linux::assert_pool_exists(&pool);
+    common::linux::assert_dataset_exists(&format!("{pool}/ember"));
+    common::linux::assert_dataset_exists(&format!("{pool}/ember/images"));
+    common::linux::assert_dataset_exists(&format!("{pool}/ember/vms"));
 
     // Verify state directory structure.
     assert!(state_dir.join("kernels").is_dir());
@@ -164,28 +68,18 @@ fn init_creates_new_pool_and_datasets() {
 #[test]
 #[ignore]
 fn init_idempotent_with_existing_pool() {
-    let pool = test_pool("existing");
+    let pool = common::linux::test_pool("existing");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
+    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
 
-    struct Cleanup {
-        pool: String,
-        dev: String,
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            destroy_pool(&self.pool);
-            detach_loop_device(&self.dev);
-        }
-    }
-    let _cleanup = Cleanup {
+    let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
     };
 
     // First init — creates everything.
-    let output1 = ember(&[
+    let output1 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -202,7 +96,7 @@ fn init_idempotent_with_existing_pool() {
 
     // Second init — pool and datasets already exist, should succeed.
     // Note: no --device needed since pool already exists.
-    let output2 = ember(&[
+    let output2 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -224,23 +118,23 @@ fn init_idempotent_with_existing_pool() {
     );
 
     // Everything should still be intact.
-    assert_pool_exists(&pool);
-    assert_dataset_exists(&format!("{pool}/ember"));
-    assert_dataset_exists(&format!("{pool}/ember/images"));
-    assert_dataset_exists(&format!("{pool}/ember/vms"));
+    common::linux::assert_pool_exists(&pool);
+    common::linux::assert_dataset_exists(&format!("{pool}/ember"));
+    common::linux::assert_dataset_exists(&format!("{pool}/ember/images"));
+    common::linux::assert_dataset_exists(&format!("{pool}/ember/vms"));
     assert!(stdout2.contains("ember initialized successfully"));
 }
 
 #[test]
 #[ignore]
 fn init_fails_without_device_when_pool_missing() {
-    let pool = test_pool("nodevice");
+    let pool = common::linux::test_pool("nodevice");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
 
     // No cleanup needed — pool should never be created.
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -263,27 +157,17 @@ fn init_fails_without_device_when_pool_missing() {
 #[test]
 #[ignore]
 fn init_custom_dataset_name() {
-    let pool = test_pool("customds");
+    let pool = common::linux::test_pool("customds");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
+    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
 
-    struct Cleanup {
-        pool: String,
-        dev: String,
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            destroy_pool(&self.pool);
-            detach_loop_device(&self.dev);
-        }
-    }
-    let _cleanup = Cleanup {
+    let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
     };
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -303,9 +187,9 @@ fn init_custom_dataset_name() {
     );
 
     // Verify custom dataset name was used.
-    assert_dataset_exists(&format!("{pool}/mydata"));
-    assert_dataset_exists(&format!("{pool}/mydata/images"));
-    assert_dataset_exists(&format!("{pool}/mydata/vms"));
+    common::linux::assert_dataset_exists(&format!("{pool}/mydata"));
+    common::linux::assert_dataset_exists(&format!("{pool}/mydata/images"));
+    common::linux::assert_dataset_exists(&format!("{pool}/mydata/vms"));
 
     // Config should reflect custom dataset name.
     let config_str = std::fs::read_to_string(state_dir.join("config.json")).unwrap();

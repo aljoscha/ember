@@ -13,158 +13,17 @@
 //! To run:
 //!   ./run-integration-tests.sh image
 
-use std::path::PathBuf;
-use std::process::Command;
-
-/// Unique pool name per test to avoid collisions.
-fn test_pool(name: &str) -> String {
-    format!("embertest_{name}_{}", std::process::id())
-}
-
-/// Create a loopback file and attach it to a loop device.
-/// Returns (loop_device_path, backing_file_path).
-fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
-    let file = dir.join("pool.img");
-
-    // 512 MB sparse file — images need space for the zvol + ext4 overhead.
-    let status = Command::new("truncate")
-        .args(["-s", "512M"])
-        .arg(&file)
-        .status()
-        .expect("failed to run truncate");
-    assert!(status.success(), "truncate failed");
-
-    let output = Command::new("losetup")
-        .args(["--find", "--show"])
-        .arg(&file)
-        .output()
-        .expect("failed to run losetup");
-    assert!(
-        output.status.success(),
-        "losetup failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    (dev, file)
-}
-
-/// Detach a loop device (best-effort cleanup).
-fn detach_loop_device(dev: &str) {
-    let _ = Command::new("losetup").args(["-d", dev]).status();
-}
-
-/// Destroy a ZFS pool (best-effort cleanup).
-fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
-}
-
-/// Path to the ember binary built by cargo.
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop(); // remove deps/
-    }
-    path.push("ember");
-    path
-}
-
-/// Run ember with the given args, returning the Output.
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-/// RAII guard: destroys pool and detaches loop device on drop.
-struct PoolCleanup {
-    pool: String,
-    dev: String,
-}
-
-impl Drop for PoolCleanup {
-    fn drop(&mut self) {
-        destroy_pool(&self.pool);
-        detach_loop_device(&self.dev);
-    }
-}
-
-/// Assert that a ZFS dataset (zvol, filesystem, etc.) exists.
-fn assert_dataset_exists(dataset: &str) {
-    let output = Command::new("zfs")
-        .args(["list", "-H", dataset])
-        .output()
-        .expect("failed to run zfs");
-    assert!(
-        output.status.success(),
-        "expected dataset '{dataset}' to exist"
-    );
-}
-
-/// Assert that a ZFS snapshot exists.
-fn assert_snapshot_exists(snapshot: &str) {
-    let output = Command::new("zfs")
-        .args(["list", "-t", "snapshot", "-H", snapshot])
-        .output()
-        .expect("failed to run zfs");
-    assert!(
-        output.status.success(),
-        "expected snapshot '{snapshot}' to exist"
-    );
-}
-
-/// Assert that a ZFS dataset does NOT exist.
-fn assert_dataset_absent(dataset: &str) {
-    let output = Command::new("zfs")
-        .args(["list", "-H", dataset])
-        .output()
-        .expect("failed to run zfs");
-    assert!(
-        !output.status.success(),
-        "expected dataset '{dataset}' to NOT exist"
-    );
-}
-
-/// Set up a ZFS pool and run `ember init`. Returns (pool_name, state_dir, cleanup_guard).
-fn setup_pool_and_init(test_name: &str, tmp: &tempfile::TempDir) -> (String, PathBuf, PoolCleanup) {
-    let pool = test_pool(test_name);
-    let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
-
-    let cleanup = PoolCleanup {
-        pool: pool.clone(),
-        dev: loop_dev.clone(),
-    };
-
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-        "--device",
-        &loop_dev,
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    (pool, state_dir, cleanup)
-}
+#[allow(dead_code)]
+mod common;
 
 #[test]
 #[ignore]
 fn pull_creates_zvol_and_base_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = setup_pool_and_init("imgpull", &tmp);
+    let (pool, state_dir, _cleanup) = common::linux::setup_pool_and_init("imgpull", &tmp);
 
     // Pull a small image (alpine is ~3 MB compressed).
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -184,20 +43,20 @@ fn pull_creates_zvol_and_base_snapshot() {
 
     // Verify the ZFS zvol was created.
     let zvol = format!("{pool}/ember/images/library-alpine-latest");
-    assert_dataset_exists(&zvol);
+    common::linux::assert_dataset_exists(&zvol);
 
     // Verify the @base snapshot exists (used for per-VM cloning).
-    assert_snapshot_exists(&format!("{zvol}@base"));
+    common::linux::assert_snapshot_exists(&format!("{zvol}@base"));
 }
 
 #[test]
 #[ignore]
 fn list_shows_pulled_image() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = setup_pool_and_init("imglist", &tmp);
+    let (_pool, state_dir, _cleanup) = common::linux::setup_pool_and_init("imglist", &tmp);
 
     // Pull an image first.
-    let pull_output = ember(&[
+    let pull_output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -211,7 +70,7 @@ fn list_shows_pulled_image() {
     );
 
     // Table output should contain the image.
-    let list_output = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
+    let list_output = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(
         list_output.status.success(),
@@ -228,7 +87,7 @@ fn list_shows_pulled_image() {
     );
 
     // JSON output should contain structured image data.
-    let json_output = ember(&[
+    let json_output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -253,10 +112,10 @@ fn list_shows_pulled_image() {
 #[ignore]
 fn delete_removes_image_and_zvol() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = setup_pool_and_init("imgdel", &tmp);
+    let (pool, state_dir, _cleanup) = common::linux::setup_pool_and_init("imgdel", &tmp);
 
     // Pull an image.
-    let pull_output = ember(&[
+    let pull_output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -270,10 +129,10 @@ fn delete_removes_image_and_zvol() {
     );
 
     let zvol = format!("{pool}/ember/images/library-alpine-latest");
-    assert_dataset_exists(&zvol);
+    common::linux::assert_dataset_exists(&zvol);
 
     // Delete the image.
-    let del_output = ember(&[
+    let del_output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -288,10 +147,10 @@ fn delete_removes_image_and_zvol() {
     );
 
     // ZFS zvol and snapshot should be gone.
-    assert_dataset_absent(&zvol);
+    common::linux::assert_dataset_absent(&zvol);
 
     // Image list should be empty.
-    let list_output = ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
+    let list_output = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "image", "list"]);
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(
         list_stdout.contains("No images found"),
@@ -303,10 +162,10 @@ fn delete_removes_image_and_zvol() {
 #[ignore]
 fn pull_same_image_twice_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = setup_pool_and_init("imgidempotent", &tmp);
+    let (_pool, state_dir, _cleanup) = common::linux::setup_pool_and_init("imgidempotent", &tmp);
 
     // First pull.
-    let pull1 = ember(&[
+    let pull1 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",
@@ -320,7 +179,7 @@ fn pull_same_image_twice_is_idempotent() {
     );
 
     // Second pull of the same image.
-    let pull2 = ember(&[
+    let pull2 = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "image",

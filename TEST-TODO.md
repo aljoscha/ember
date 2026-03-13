@@ -9,7 +9,7 @@
 - [x] Create `tests/common/macos.rs` — move macOS helpers out of `common/mod.rs` + extract from `macos_storage.rs` (see TEST-SPEC.md "What's in common/macos.rs")
 - [x] Rewrite `tests/common/mod.rs` — cross-platform base with `ember_bin()`, `ember()`, conditional submodule includes, and `TestEnv` struct with `init()`, `with_image()`, `with_vm()` constructors
 - [x] Update macOS test files to use new module paths (`common::macos::setup_init` etc.)
-- [ ] Update Linux test files to use `common::linux::` helpers, delete local copies. One file at a time: `init.rs`, `image.rs`, `snapshot.rs`, `resize.rs`, `fork.rs`, `vm.rs`, `ssh.rs`
+- [x] Update Linux test files to use `common::linux::` helpers, delete local copies. One file at a time: `init.rs`, `image.rs`, `snapshot.rs`, `resize.rs`, `fork.rs`, `vm.rs`, `ssh.rs`
 - [ ] Verify: `cargo build --tests` passes on macOS; run `./run-integration-tests.sh` for a few suites
 
 ## Phase B: Unify Pure CLI Tests (no hypervisor needed)

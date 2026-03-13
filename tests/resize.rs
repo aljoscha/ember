@@ -14,219 +14,8 @@
 //! To run:
 //!   ./run-integration-tests.sh resize
 
-use std::path::PathBuf;
-use std::process::Command;
-
-// ---------------------------------------------------------------------------
-// Shared helpers (same pattern as other integration tests)
-// ---------------------------------------------------------------------------
-
-fn test_pool(name: &str) -> String {
-    format!("embertest_{name}_{}", std::process::id())
-}
-
-fn create_loop_device(dir: &std::path::Path) -> (String, PathBuf) {
-    let file = dir.join("pool.img");
-
-    let status = Command::new("truncate")
-        .args(["-s", "512M"])
-        .arg(&file)
-        .status()
-        .expect("failed to run truncate");
-    assert!(status.success(), "truncate failed");
-
-    let output = Command::new("losetup")
-        .args(["--find", "--show"])
-        .arg(&file)
-        .output()
-        .expect("failed to run losetup");
-    assert!(
-        output.status.success(),
-        "losetup failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let dev = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    (dev, file)
-}
-
-fn detach_loop_device(dev: &str) {
-    let _ = Command::new("losetup").args(["-d", dev]).status();
-}
-
-fn destroy_pool(pool: &str) {
-    let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
-}
-
-fn ember_bin() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("ember");
-    path
-}
-
-fn ember(args: &[&str]) -> std::process::Output {
-    Command::new(ember_bin())
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
-}
-
-struct PoolCleanup {
-    pool: String,
-    dev: String,
-}
-
-impl Drop for PoolCleanup {
-    fn drop(&mut self) {
-        destroy_pool(&self.pool);
-        detach_loop_device(&self.dev);
-    }
-}
-
-/// Set up a ZFS pool, run `ember init`, pull alpine, and create a VM.
-/// Returns (pool_name, state_dir, cleanup_guard).
-fn setup_pool_and_vm(
-    test_name: &str,
-    vm_name: &str,
-    disk_size: &str,
-    tmp: &tempfile::TempDir,
-) -> (String, PathBuf, PoolCleanup) {
-    let pool = test_pool(test_name);
-    let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
-
-    let cleanup = PoolCleanup {
-        pool: pool.clone(),
-        dev: loop_dev.clone(),
-    };
-
-    // Init pool.
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-        "--device",
-        &loop_dev,
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    // Pull alpine image.
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "image",
-        "pull",
-        "alpine:latest",
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "image pull failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    // Create a dummy kernel (no actual booting needed).
-    let kernel = tmp.path().join("vmlinux-dummy");
-    std::fs::write(&kernel, b"not a real kernel").unwrap();
-
-    // Create a VM (--no-start, no Firecracker needed).
-    let output = ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "vm",
-        "create",
-        vm_name,
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--disk-size",
-        disk_size,
-        "--no-start",
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    (pool, state_dir, cleanup)
-}
-
-/// Get the ZFS volsize property in bytes.
-fn get_zvol_size_bytes(zvol: &str) -> u64 {
-    let output = Command::new("zfs")
-        .args(["get", "-Hp", "-o", "value", "volsize", zvol])
-        .output()
-        .expect("failed to run zfs get volsize");
-    assert!(
-        output.status.success(),
-        "zfs get volsize failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<u64>()
-        .expect("failed to parse volsize")
-}
-
-/// Wait for a ZFS zvol device node to appear, up to ~5 seconds.
-fn wait_for_zvol_device(device_path: &str) -> bool {
-    for _ in 0..50 {
-        if std::path::Path::new(device_path).exists() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    false
-}
-
-/// Mount a zvol, run a closure with the mount path, then unmount.
-fn with_mounted_zvol<F, T>(zvol_device: &str, f: F) -> T
-where
-    F: FnOnce(&std::path::Path) -> T,
-{
-    let mount_dir = tempfile::tempdir().unwrap();
-    let mount_path = mount_dir.path();
-
-    let status = Command::new("mount")
-        .args(["-o", "rw"])
-        .arg(zvol_device)
-        .arg(mount_path)
-        .status()
-        .expect("failed to run mount");
-    assert!(
-        status.success(),
-        "failed to mount {zvol_device} at {}",
-        mount_path.display()
-    );
-
-    let result = f(mount_path);
-
-    let status = Command::new("umount")
-        .arg(mount_path)
-        .status()
-        .expect("failed to run umount");
-    assert!(
-        status.success(),
-        "failed to unmount {}",
-        mount_path.display()
-    );
-
-    result
-}
+#[allow(dead_code)]
+mod common;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -237,13 +26,14 @@ where
 #[ignore]
 fn resize_stopped_vm_grows_disk() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = setup_pool_and_vm("vmresize", "resizevm", "1G", &tmp);
+    let (pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm_with_disk("vmresize", "resizevm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/resizevm");
     let zvol_device = format!("/dev/zvol/{vm_zvol}");
 
     // Verify initial metadata shows 1 GiB.
-    let inspect = ember(&[
+    let inspect = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -261,7 +51,7 @@ fn resize_stopped_vm_grows_disk() {
     );
 
     // Verify initial ZFS volsize.
-    let initial_bytes = get_zvol_size_bytes(&vm_zvol);
+    let initial_bytes = common::linux::get_zvol_size_bytes(&vm_zvol);
     assert_eq!(
         initial_bytes,
         1 * 1024 * 1024 * 1024,
@@ -269,7 +59,7 @@ fn resize_stopped_vm_grows_disk() {
     );
 
     // -- Resize to 2 GiB --
-    let resize_output = ember(&[
+    let resize_output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -290,7 +80,7 @@ fn resize_stopped_vm_grows_disk() {
     );
 
     // -- Verify ZFS volsize grew --
-    let new_bytes = get_zvol_size_bytes(&vm_zvol);
+    let new_bytes = common::linux::get_zvol_size_bytes(&vm_zvol);
     assert_eq!(
         new_bytes,
         2 * 1024 * 1024 * 1024,
@@ -298,7 +88,7 @@ fn resize_stopped_vm_grows_disk() {
     );
 
     // -- Verify metadata updated --
-    let inspect2 = ember(&[
+    let inspect2 = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -318,14 +108,14 @@ fn resize_stopped_vm_grows_disk() {
     // -- Verify ext4 filesystem was expanded --
     // Mount the zvol and check that available space reflects the new size.
     assert!(
-        wait_for_zvol_device(&zvol_device),
+        common::linux::wait_for_zvol_device(&zvol_device),
         "zvol device {zvol_device} did not appear within timeout"
     );
 
-    with_mounted_zvol(&zvol_device, |mount| {
+    common::linux::with_mounted_zvol(&zvol_device, |mount| {
         // Use statvfs to check total filesystem size. After resize2fs,
         // the ext4 filesystem should be close to 2 GiB.
-        let output = Command::new("df")
+        let output = std::process::Command::new("df")
             .args(["--output=size", "-B1"])
             .arg(mount)
             .output()
@@ -355,11 +145,12 @@ fn resize_stopped_vm_grows_disk() {
 #[ignore]
 fn resize_shrink_fails() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = setup_pool_and_vm("vmresizeshrink", "shrinkvm", "2G", &tmp);
+    let (_pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm_with_disk("vmresizeshrink", "shrinkvm", "2G", &tmp);
     let state = state_dir.to_str().unwrap();
 
     // Try to shrink from 2 GiB to 1 GiB.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -379,7 +170,7 @@ fn resize_shrink_fails() {
     );
 
     // Try same size.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -404,17 +195,17 @@ fn resize_shrink_fails() {
 #[ignore]
 fn resize_nonexistent_vm_fails() {
     let tmp = tempfile::tempdir().unwrap();
-    let pool = test_pool("vmresizenovm");
+    let pool = common::linux::test_pool("vmresizenovm");
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
+    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
 
-    let _cleanup = PoolCleanup {
+    let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
     };
 
     // Just init, no VM created.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
         "init",
@@ -431,7 +222,7 @@ fn resize_nonexistent_vm_fails() {
 
     let state = state_dir.to_str().unwrap();
 
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -451,12 +242,13 @@ fn resize_nonexistent_vm_fails() {
 #[ignore]
 fn resize_multiple_grows() {
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = setup_pool_and_vm("vmresizemulti", "multivm", "1G", &tmp);
+    let (pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm_with_disk("vmresizemulti", "multivm", "1G", &tmp);
     let state = state_dir.to_str().unwrap();
     let vm_zvol = format!("{pool}/ember/vms/multivm");
 
     // Resize 1 GiB → 2 GiB.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -470,10 +262,13 @@ fn resize_multiple_grows() {
         "first resize failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(get_zvol_size_bytes(&vm_zvol), 2 * 1024 * 1024 * 1024);
+    assert_eq!(
+        common::linux::get_zvol_size_bytes(&vm_zvol),
+        2 * 1024 * 1024 * 1024
+    );
 
     // Resize 2 GiB → 4 GiB.
-    let output = ember(&[
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -487,10 +282,13 @@ fn resize_multiple_grows() {
         "second resize failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(get_zvol_size_bytes(&vm_zvol), 4 * 1024 * 1024 * 1024);
+    assert_eq!(
+        common::linux::get_zvol_size_bytes(&vm_zvol),
+        4 * 1024 * 1024 * 1024
+    );
 
     // Verify metadata tracks the latest size.
-    let inspect = ember(&[
+    let inspect = common::ember(&[
         "--state-dir",
         state,
         "vm",
