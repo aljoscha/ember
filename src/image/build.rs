@@ -66,12 +66,17 @@ fn detect_container_tool() -> Result<String> {
     ))
 }
 
-/// Check that `fakeroot` and `gtar` are available (macOS only).
+/// Check that `gtar` (and `fakeroot` if non-root) are available (macOS only).
 ///
-/// These tools are needed to preserve file ownership when extracting tar
-/// archives as a non-root user.
+/// fakeroot is needed to preserve file ownership when extracting tar
+/// archives as a non-root user. When running as root, tar can set
+/// ownership natively.
 fn check_fakeroot_tools() -> Result<()> {
-    for (tool, pkg) in [("fakeroot", "fakeroot"), ("gtar", "gnu-tar")] {
+    let mut tools: Vec<(&str, &str)> = vec![("gtar", "gnu-tar")];
+    if super::pull::needs_fakeroot() {
+        tools.push(("fakeroot", "fakeroot"));
+    }
+    for (tool, pkg) in tools {
         let ok = Command::new("which")
             .arg(tool)
             .output()
@@ -175,24 +180,35 @@ fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf>
     // On macOS, use fakeroot + gtar to preserve ownership metadata from the
     // tarball. Without fakeroot, tar as non-root can't chown, and mkfs.ext4 -d
     // later bakes the macOS user's uid/gid into the ext4 image.
+    // When running as root, fakeroot is skipped (root can chown natively).
     if cfg!(target_os = "macos") {
+        let use_fakeroot = super::pull::needs_fakeroot();
         let state_file = work_dir.join("fakeroot.state");
-        let mut cmd = Command::new("fakeroot");
-        cmd.arg("-s").arg(&state_file);
-        if state_file.exists() {
-            cmd.arg("-i").arg(&state_file);
-        }
-        cmd.arg("--")
-            .arg("gtar")
-            .arg("xf")
+        let mut cmd = if use_fakeroot {
+            let mut c = Command::new("fakeroot");
+            c.arg("-s").arg(&state_file);
+            if state_file.exists() {
+                c.arg("-i").arg(&state_file);
+            }
+            c.arg("--").arg("gtar");
+            c
+        } else {
+            Command::new("gtar")
+        };
+        cmd.arg("xf")
             .arg(&tarball)
             .arg("-C")
             .arg(&rootfs_dir);
+        let label = if use_fakeroot {
+            "fakeroot gtar xf"
+        } else {
+            "gtar xf"
+        };
         let output = cmd.output().map_err(|e| Error::CommandExec {
-            command: "fakeroot gtar xf".to_string(),
+            command: label.to_string(),
             source: e,
         })?;
-        Error::check_command("fakeroot gtar xf", output)?;
+        Error::check_command(label, output)?;
     } else {
         let output = Command::new("tar")
             .args(["xf"])

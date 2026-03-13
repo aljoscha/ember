@@ -14,6 +14,17 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+/// Whether we need fakeroot on macOS (non-root user).
+///
+/// When running as root, tar/mkfs.ext4 can set ownership natively, so
+/// fakeroot is unnecessary. This also avoids the arm64/arm64e DYLD
+/// injection incompatibility on newer macOS runners.
+///
+/// Always returns `false` on non-macOS (fakeroot is never used there).
+pub(crate) fn needs_fakeroot() -> bool {
+    cfg!(target_os = "macos") && !nix::unistd::geteuid().is_root()
+}
+
 /// A parsed OCI image reference.
 ///
 /// Examples of accepted inputs:
@@ -181,7 +192,9 @@ fn install_hint(name: &str) -> String {
 pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
     check_tool("skopeo")?;
     if cfg!(target_os = "macos") {
-        check_tool("fakeroot")?;
+        if needs_fakeroot() {
+            check_tool("fakeroot")?;
+        }
         check_tool("gtar")?;
     }
 
@@ -377,26 +390,36 @@ fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> 
     let layer_path = blob_path(oci_dir, digest)?;
 
     if cfg!(target_os = "macos") {
+        let use_fakeroot = needs_fakeroot();
         let state_file = rootfs_dir
             .parent()
             .expect("rootfs_dir has parent")
             .join("fakeroot.state");
-        let mut cmd = Command::new("fakeroot");
-        cmd.arg("-s").arg(&state_file);
-        if state_file.exists() {
-            cmd.arg("-i").arg(&state_file);
-        }
-        cmd.arg("--")
-            .arg("gtar")
-            .arg("xf")
+        let mut cmd = if use_fakeroot {
+            let mut c = Command::new("fakeroot");
+            c.arg("-s").arg(&state_file);
+            if state_file.exists() {
+                c.arg("-i").arg(&state_file);
+            }
+            c.arg("--").arg("gtar");
+            c
+        } else {
+            Command::new("gtar")
+        };
+        cmd.arg("xf")
             .arg(&layer_path)
             .arg("-C")
             .arg(rootfs_dir);
+        let label = if use_fakeroot {
+            "fakeroot gtar xf"
+        } else {
+            "gtar xf"
+        };
         let output = cmd.output().map_err(|e| Error::CommandExec {
-            command: "fakeroot gtar xf".to_string(),
+            command: label.to_string(),
             source: e,
         })?;
-        Error::check_command("fakeroot gtar xf", output)?;
+        Error::check_command(label, output)?;
     } else {
         let output = Command::new("tar")
             .arg("xf")
