@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    name: Build & Clippy (${{ matrix.os }})
+    name: Build, Lint & Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
