@@ -44,13 +44,16 @@ pub fn ember(args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
 }
 
-/// Check that Docker is available (needed for building ubuntu-slim image).
-pub fn docker_available() -> bool {
-    Command::new("docker")
+/// Assert that Docker is available.
+///
+/// Panics with a clear message if `docker info` fails.
+pub fn require_docker() {
+    let ok = std::process::Command::new("docker")
         .arg("info")
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(ok, "docker is not available (needed to build images)");
 }
 
 /// Stop and delete a VM (best-effort cleanup).
@@ -177,21 +180,19 @@ impl TestEnv {
         env
     }
 
-    /// Full running VM. Returns `None` if prerequisites are missing.
+    /// Full running VM.
     ///
     /// Linux: needs Firecracker in PATH + `/dev/kvm` + bootable kernel.
     /// macOS: needs `ember-vz` binary + AVF-compatible kernel.
     ///
     /// Creates a VM with a real kernel, starts it, and waits briefly for
     /// boot. Tests using this should explicitly stop the VM when done.
-    pub fn with_running_vm(test_name: &str, vm_name: &str) -> Option<Self> {
+    /// Panics if prerequisites are missing.
+    pub fn with_running_vm(test_name: &str, vm_name: &str) -> Self {
         #[cfg(target_os = "linux")]
         {
-            if !linux::firecracker_available() {
-                eprintln!("Skipping: firecracker not available");
-                return None;
-            }
-            let kernel = linux::ensure_kernel()?;
+            linux::require_firecracker();
+            let kernel = linux::ensure_kernel();
             let env = Self::with_image(test_name);
 
             let output = ember(&[
@@ -225,13 +226,13 @@ impl TestEnv {
                 "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
             );
 
-            Some(env)
+            env
         }
 
         #[cfg(target_os = "macos")]
         {
-            let _ = macos::ember_vz_bin()?;
-            let kernel = macos::ensure_kernel()?;
+            let _ = macos::ember_vz_bin();
+            let kernel = macos::ensure_kernel();
             let env = Self::with_image(test_name);
 
             let output = ember(&[
@@ -265,12 +266,11 @@ impl TestEnv {
                 "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
             );
 
-            Some(env)
+            env
         }
     }
 
     /// Full running VM with SSH access (ubuntu-slim image with sshd).
-    /// Returns `None` if prerequisites are missing.
     ///
     /// Linux: needs Firecracker + Docker + `/dev/kvm` + bootable kernel.
     /// macOS: needs ember-vz + Docker + AVF-compatible kernel.
@@ -278,19 +278,14 @@ impl TestEnv {
     /// Builds `ubuntu-slim` via Docker, creates a VM, starts it, and waits
     /// for SSH to become available via `ember exec`. Tests using this should
     /// explicitly stop/delete the VM when done.
-    pub fn with_running_ssh_vm(test_name: &str, vm_name: &str) -> Option<Self> {
-        if !docker_available() {
-            eprintln!("Skipping: docker not available (needed to build ubuntu-slim)");
-            return None;
-        }
+    /// Panics if prerequisites are missing.
+    pub fn with_running_ssh_vm(test_name: &str, vm_name: &str) -> Self {
+        require_docker();
 
         #[cfg(target_os = "linux")]
         {
-            if !linux::firecracker_available() {
-                eprintln!("Skipping: firecracker not available");
-                return None;
-            }
-            let kernel = linux::ensure_kernel()?;
+            linux::require_firecracker();
+            let kernel = linux::ensure_kernel();
 
             // Ubuntu-slim needs a larger pool than alpine (8G).
             let tmp = tempfile::tempdir().unwrap();
@@ -339,14 +334,14 @@ impl TestEnv {
             // command. Systemd + sshd can take 30-60s to come up.
             wait_for_ssh_via_exec(env.state(), vm_name);
 
-            Some(env)
+            env
         }
 
         #[cfg(target_os = "macos")]
         {
             let _ = test_name; // Only used on Linux for ZFS pool naming.
-            let _ = macos::ember_vz_bin()?;
-            let kernel = macos::ensure_kernel()?;
+            let _ = macos::ember_vz_bin();
+            let kernel = macos::ensure_kernel();
 
             let tmp = tempfile::tempdir().unwrap();
             let state_dir = macos::setup_init(tmp.path());
@@ -413,7 +408,7 @@ impl TestEnv {
             // command. Systemd + sshd can take 30-60s to come up.
             wait_for_ssh_via_exec(env.state(), vm_name);
 
-            Some(env)
+            env
         }
     }
 }

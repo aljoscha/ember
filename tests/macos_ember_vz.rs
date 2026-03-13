@@ -93,27 +93,11 @@ fn wait_with_timeout(
 fn ember_vz_boot_serial_and_network() {
     // --- Prerequisites ---
 
-    let ember_vz = match common::macos::ember_vz_bin() {
-        Some(p) => {
-            eprintln!("Using ember-vz: {}", p.display());
-            p
-        }
-        None => {
-            eprintln!("Skipping: ember-vz not found (run 'swift build' in ember-vz/)");
-            return;
-        }
-    };
+    let ember_vz = common::macos::ember_vz_bin();
+    eprintln!("Using ember-vz: {}", ember_vz.display());
 
-    let kernel = match common::macos::ensure_kernel() {
-        Some(k) => {
-            eprintln!("Using kernel: {}", k.display());
-            k
-        }
-        None => {
-            eprintln!("Skipping: no kernel available (set EMBER_TEST_KERNEL or allow download)");
-            return;
-        }
-    };
+    let kernel = common::macos::ensure_kernel();
+    eprintln!("Using kernel: {}", kernel.display());
 
     // --- Setup ---
 

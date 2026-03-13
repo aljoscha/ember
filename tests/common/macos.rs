@@ -44,22 +44,28 @@ pub fn setup_init(tmp: &Path) -> PathBuf {
 /// 1. `EMBER_VZ` env var
 /// 2. `ember-vz/.build/release/ember-vz` (relative to project root)
 /// 3. `ember-vz/.build/debug/ember-vz`
-pub fn ember_vz_bin() -> Option<PathBuf> {
+///
+/// Panics if no binary is found.
+pub fn ember_vz_bin() -> PathBuf {
     if let Ok(p) = std::env::var("EMBER_VZ") {
         let path = PathBuf::from(&p);
         assert!(path.exists(), "EMBER_VZ={p} does not exist");
-        return Some(path);
+        return path;
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for subdir in ["release", "debug"] {
         let path = manifest_dir.join(format!("ember-vz/.build/{subdir}/ember-vz"));
         if path.exists() {
-            return Some(path);
+            return path;
         }
     }
 
-    None
+    panic!(
+        "ember-vz binary not found.\n\
+         Build it with: cd ember-vz && swift build\n\
+         Or set EMBER_VZ to the binary path."
+    );
 }
 
 /// Get a bootable kernel for AVF tests.
@@ -69,19 +75,19 @@ pub fn ember_vz_bin() -> Option<PathBuf> {
 /// 2. Cached at `/tmp/ember-test-vmlinux`
 /// 3. Local build at `kernel/vmlinux`
 ///
-/// Returns `None` if no kernel is available (test should skip gracefully).
-pub fn ensure_kernel() -> Option<PathBuf> {
+/// Panics if no kernel is available.
+pub fn ensure_kernel() -> PathBuf {
     const KERNEL_CACHE_PATH: &str = "/tmp/ember-test-vmlinux";
 
     if let Ok(p) = std::env::var("EMBER_TEST_KERNEL") {
         let path = PathBuf::from(&p);
         assert!(path.exists(), "EMBER_TEST_KERNEL={p} does not exist");
-        return Some(path);
+        return path;
     }
 
     let cache = PathBuf::from(KERNEL_CACHE_PATH);
     if cache.exists() {
-        return Some(cache);
+        return cache;
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -89,14 +95,14 @@ pub fn ensure_kernel() -> Option<PathBuf> {
     if local_kernel.exists() {
         eprintln!("Using locally built kernel: {}", local_kernel.display());
         let _ = std::fs::copy(&local_kernel, &cache);
-        return Some(cache);
+        return cache;
     }
 
-    eprintln!(
-        "Skipping: no AVF-compatible kernel found.\n\
-         Build one with: cd kernel && make docker-build ARCH=arm64 FRAGMENTS=\"avf.fragment\""
+    panic!(
+        "No AVF-compatible kernel found.\n\
+         Build one with: cd kernel && make docker-build ARCH=arm64 FRAGMENTS=\"avf.fragment\"\n\
+         Or set EMBER_TEST_KERNEL to the kernel path."
     );
-    None
 }
 
 // ---------------------------------------------------------------------------

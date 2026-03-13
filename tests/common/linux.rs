@@ -239,36 +239,32 @@ pub fn get_zvol_size_bytes(zvol: &str) -> u64 {
 // Firecracker / kernel helpers
 // ---------------------------------------------------------------------------
 
-/// Check that Firecracker prerequisites are met: binary in PATH and /dev/kvm.
+/// Assert that Firecracker prerequisites are met: binary in PATH and /dev/kvm.
 ///
-/// Returns false (with an eprintln message) if anything is missing,
-/// allowing tests to skip gracefully.
-pub fn firecracker_available() -> bool {
+/// Panics with a clear message if anything is missing.
+pub fn require_firecracker() {
     let fc = Command::new("which")
         .arg("firecracker")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    if !fc {
-        eprintln!("Skipping: firecracker not found in PATH");
-        return false;
-    }
-
-    if !Path::new("/dev/kvm").exists() {
-        eprintln!("Skipping: /dev/kvm not available (no hardware virtualization)");
-        return false;
-    }
-
-    true
+    assert!(fc, "firecracker not found in PATH");
+    assert!(
+        Path::new("/dev/kvm").exists(),
+        "/dev/kvm not available (no hardware virtualization)"
+    );
 }
 
-/// Check that Docker is available (needed for building ubuntu-slim image).
-pub fn docker_available() -> bool {
-    Command::new("docker")
+/// Assert that Docker is available.
+///
+/// Panics with a clear message if `docker info` fails.
+pub fn require_docker() {
+    let ok = Command::new("docker")
         .arg("info")
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(ok, "docker is not available (needed to build ubuntu-slim)");
 }
 
 /// Path where the downloaded Firecracker kernel is cached.
@@ -285,8 +281,8 @@ const KERNEL_URL: &str =
 /// 2. Cached download at `/tmp/ember-test-vmlinux`
 /// 3. Fresh download from the Firecracker CI S3 bucket
 ///
-/// Returns `None` if download fails (test should skip gracefully).
-pub fn ensure_kernel() -> Option<PathBuf> {
+/// Panics if no kernel can be obtained.
+pub fn ensure_kernel() -> PathBuf {
     // Honor explicit override.
     if let Ok(p) = std::env::var("EMBER_TEST_KERNEL") {
         let path = PathBuf::from(&p);
@@ -294,13 +290,13 @@ pub fn ensure_kernel() -> Option<PathBuf> {
             path.exists(),
             "EMBER_TEST_KERNEL points to non-existent file: {p}"
         );
-        return Some(path);
+        return path;
     }
 
     // Use cached download if present.
     let cache = PathBuf::from(KERNEL_CACHE_PATH);
     if cache.exists() {
-        return Some(cache);
+        return cache;
     }
 
     // Download to a unique temp file, then rename atomically to avoid
@@ -320,12 +316,14 @@ pub fn ensure_kernel() -> Option<PathBuf> {
         Ok(s) if s.success() => {
             let _ = std::fs::rename(&tmp, &cache);
             eprintln!("Kernel cached at {KERNEL_CACHE_PATH}");
-            Some(cache)
+            cache
         }
         _ => {
             let _ = std::fs::remove_file(&tmp);
-            eprintln!("Failed to download kernel — skipping Firecracker tests");
-            None
+            panic!(
+                "Failed to download Firecracker kernel from {KERNEL_URL}.\n\
+                 Set EMBER_TEST_KERNEL to provide a kernel manually."
+            );
         }
     }
 }

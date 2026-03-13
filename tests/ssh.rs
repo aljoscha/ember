@@ -6,8 +6,7 @@
 //! The running-VM SSH tests (`exec_command_returns_stdout`,
 //! `cp_upload_and_download`) use `TestEnv::with_running_ssh_vm()` which
 //! boots ubuntu-slim (with sshd). These require Docker + a hypervisor
-//! (Firecracker on Linux, ember-vz on macOS) and skip gracefully if
-//! prerequisites are missing.
+//! (Firecracker on Linux, ember-vz on macOS).
 //!
 //! To run:
 //!   ./run-integration-tests.sh ssh
@@ -74,14 +73,11 @@ fn exec_on_stopped_vm_fails() {
 /// Test `ember exec`: run a command on a running VM and verify output.
 ///
 /// Uses ubuntu-slim (built via Docker) which includes sshd.
-/// Requires hypervisor + Docker. Skips if prerequisites are missing.
+/// Requires hypervisor + Docker.
 #[test]
 #[ignore]
 fn exec_command_returns_stdout() {
-    let env = match common::TestEnv::with_running_ssh_vm("sshexec", "execvm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_ssh_vm("sshexec", "execvm");
     let state = env.state();
 
     // Run a simple command via `ember exec`.
@@ -135,14 +131,11 @@ fn exec_command_returns_stdout() {
 /// Test `ember cp`: upload a file to VM, then download it back.
 ///
 /// Uses ubuntu-slim (built via Docker) which includes sshd.
-/// Requires hypervisor + Docker. Skips if prerequisites are missing.
+/// Requires hypervisor + Docker.
 #[test]
 #[ignore]
 fn cp_upload_and_download() {
-    let env = match common::TestEnv::with_running_ssh_vm("sshcp", "cpvm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_ssh_vm("sshcp", "cpvm");
     let state = env.state();
     let tmp_dir = tempfile::tempdir().unwrap();
 

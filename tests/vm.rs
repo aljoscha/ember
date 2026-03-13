@@ -2,8 +2,7 @@
 //!
 //! Cross-platform tests use `TestEnv` to abstract platform setup.
 //! Tests that only need a stopped VM use `TestEnv::with_vm()`.
-//! Tests that need a running VM use `TestEnv::with_running_vm()`,
-//! which returns `None` if hypervisor prerequisites are missing.
+//! Tests that need a running VM use `TestEnv::with_running_vm()`.
 //! Platform-specific networking tests are gated with `#[cfg(target_os)]`.
 //!
 //! To run:
@@ -277,14 +276,10 @@ fn vm_resume_created_fails() {
 /// Full VM lifecycle: start → verify running → stop → verify stopped → delete.
 ///
 /// Requires hypervisor prerequisites (Firecracker on Linux, ember-vz on macOS).
-/// Skips if prerequisites are missing.
 #[test]
 #[ignore]
 fn vm_start_stop_lifecycle() {
-    let env = match common::TestEnv::with_running_vm("vmlifecycle", "lifecyclevm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_vm("vmlifecycle", "lifecyclevm");
     let state = env.state();
 
     // Verify running via inspect.
@@ -369,10 +364,7 @@ fn vm_start_stop_lifecycle() {
 #[test]
 #[ignore]
 fn vm_delete_running_requires_force() {
-    let env = match common::TestEnv::with_running_vm("vmdelrunning", "runningvm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_vm("vmdelrunning", "runningvm");
     let state = env.state();
 
     // Try delete without --force — should fail.
@@ -411,10 +403,7 @@ fn vm_delete_running_requires_force() {
 #[test]
 #[ignore]
 fn vm_pause_resume_lifecycle() {
-    let env = match common::TestEnv::with_running_vm("vmpauseresume", "prvm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_vm("vmpauseresume", "prvm");
     let state = env.state();
 
     // Verify running.
@@ -552,10 +541,7 @@ fn vm_pause_resume_lifecycle() {
 #[test]
 #[ignore]
 fn vm_stop_paused() {
-    let env = match common::TestEnv::with_running_vm("vmstoppaused", "spvm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_vm("vmstoppaused", "spvm");
     let state = env.state();
 
     // Pause.
@@ -602,14 +588,11 @@ fn vm_stop_paused() {
 /// Force-stop a running VM: verify `vm stop --force` sends SIGKILL and
 /// transitions status from running to stopped.
 ///
-/// Requires hypervisor prerequisites. Skips if unavailable.
+/// Requires hypervisor prerequisites.
 #[test]
 #[ignore]
 fn vm_force_stop() {
-    let env = match common::TestEnv::with_running_vm("vmforcestop", "forcevm") {
-        Some(e) => e,
-        None => return,
-    };
+    let env = common::TestEnv::with_running_vm("vmforcestop", "forcevm");
     let state = env.state();
 
     // Verify running.
@@ -686,27 +669,12 @@ fn vm_force_stop() {
 #[test]
 #[ignore]
 fn networking_ssh_and_internet() {
-    if !common::linux::firecracker_available() {
-        return;
-    }
+    common::linux::require_firecracker();
+    common::require_docker();
+    let kernel_path = common::linux::ensure_kernel();
 
-    if !common::linux::docker_available() {
-        eprintln!("Skipping: docker not available (needed to build ubuntu-slim image)");
-        return;
-    }
-
-    let kernel_path = match common::linux::ensure_kernel() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let ssh_key = match common::linux::ssh_private_key_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("Skipping: no SSH private key found for the invoking user");
-            return;
-        }
-    };
+    let ssh_key = common::linux::ssh_private_key_path()
+        .expect("no SSH private key found (~/.ssh/id_ed25519, id_ecdsa, or id_rsa)");
 
     let tmp = tempfile::tempdir().unwrap();
     let (pool, state_dir, _cleanup) =
@@ -959,24 +927,11 @@ fn vm_boots_with_static_ip() {
     const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
     const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-    let ember_vz = match common::macos::ember_vz_bin() {
-        Some(p) => {
-            eprintln!("Using ember-vz: {}", p.display());
-            p
-        }
-        None => {
-            eprintln!("Skipping: ember-vz not found");
-            return;
-        }
-    };
+    let ember_vz = common::macos::ember_vz_bin();
+    eprintln!("Using ember-vz: {}", ember_vz.display());
 
-    let kernel = match common::macos::ensure_kernel() {
-        Some(k) => {
-            eprintln!("Using kernel: {}", k.display());
-            k
-        }
-        None => return,
-    };
+    let kernel = common::macos::ensure_kernel();
+    eprintln!("Using kernel: {}", kernel.display());
 
     let tmp = tempfile::tempdir().unwrap();
     let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
