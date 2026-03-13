@@ -18,7 +18,7 @@
 - [x] Unify `image.rs` + `macos_image.rs` → single `image.rs`. Delete `macos_image.rs`
 - [x] Unify `snapshot.rs` + snapshot tests from `macos_storage.rs` → single `snapshot.rs`
 - [x] Unify `resize.rs` + resize tests from `macos_storage.rs` → single `resize.rs`
-- [ ] Unify `fork.rs` — remove `#![cfg(target_os = "linux")]`, use `TestEnv`
+- [x] Unify `fork.rs` — remove `#![cfg(target_os = "linux")]`, use `TestEnv`
 - [ ] Verify: `cargo build --tests` on macOS; `./run-integration-tests.sh` for unified suites
 
 ## Phase C: Unify Running-VM Tests

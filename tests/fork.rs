@@ -1,14 +1,9 @@
-//! Integration tests for `ember vm fork` (Linux-only).
+//! Integration tests for `ember vm fork`.
 //!
-//! These tests require:
-#![cfg(target_os = "linux")]
-//!
-//! - Root privileges
-//! - Working ZFS installation
-//! - Network access (to pull OCI images from Docker Hub)
-//! - `skopeo` installed
-//!
-//! They are marked `#[ignore]` so `cargo test` skips them by default.
+//! Cross-platform tests use `TestEnv::with_vm()` to abstract platform setup.
+//! All shared tests use `--no-start` so no hypervisor is needed.
+//! Platform-specific storage verification (ZFS snapshot cleanup on Linux)
+//! is gated with `#[cfg(target_os)]`.
 //!
 //! To run:
 //!   ./run-integration-tests.sh fork
@@ -17,21 +12,16 @@
 mod common;
 
 // ---------------------------------------------------------------------------
-// Tests
+// Cross-platform tests
 // ---------------------------------------------------------------------------
 
-/// Basic fork lifecycle: fork a stopped VM, verify ZFS state, inspect metadata.
+/// Basic fork: fork a stopped VM, verify metadata.
 #[test]
 #[ignore]
 fn fork_basic() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_and_vm("forkbasic", "source", &tmp);
-    let state = state_dir.to_str().unwrap();
+    let env = common::TestEnv::with_vm("forkbasic", "source");
+    let state = env.state();
 
-    let source_zvol = format!("{pool}/ember/vms/source");
-    let forked_zvol = format!("{pool}/ember/vms/child");
-
-    // Fork the source VM.
     let output = common::ember(&[
         "--state-dir",
         state,
@@ -48,13 +38,7 @@ fn fork_basic() {
         "vm fork failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // The forked VM's zvol should exist.
-    common::linux::assert_zvol_exists(&forked_zvol);
-
-    // The fork snapshot should exist on the source.
-    common::linux::assert_snapshot_exists(&format!("{source_zvol}@fork-child"));
-
-    // Inspect the forked VM — verify it inherited source's image and has forked_from set.
+    // Inspect the forked VM.
     let output = common::ember(&[
         "--state-dir",
         state,
@@ -71,19 +55,27 @@ fn fork_basic() {
 
     assert_eq!(meta["image"], "docker.io/library/alpine:latest");
     assert_eq!(meta["status"], "created");
-    assert_eq!(meta["forked_from"], format!("{source_zvol}@fork-child"),);
+    assert!(
+        !meta["forked_from"].is_null(),
+        "expected forked_from to be set"
+    );
 
-    eprintln!("Basic fork verified.");
+    // Platform-specific storage verification.
+    #[cfg(target_os = "linux")]
+    {
+        let source_zvol = format!("{}/ember/vms/source", env.pool);
+        let forked_zvol = format!("{}/ember/vms/child", env.pool);
+        common::linux::assert_zvol_exists(&forked_zvol);
+        common::linux::assert_snapshot_exists(&format!("{source_zvol}@fork-child"));
+    }
 }
 
 /// Fork with CLI overrides for cpus and memory.
 #[test]
 #[ignore]
 fn fork_with_overrides() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_and_vm("forkoverride", "src", &tmp);
-    let state = state_dir.to_str().unwrap();
+    let env = common::TestEnv::with_vm("forkoverride", "src");
+    let state = env.state();
 
     let output = common::ember(&[
         "--state-dir",
@@ -105,7 +97,6 @@ fn fork_with_overrides() {
         "vm fork failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Inspect and verify overrides took effect.
     let output = common::ember(&[
         "--state-dir",
         state,
@@ -122,120 +113,14 @@ fn fork_with_overrides() {
 
     assert_eq!(meta["cpus"], 4, "cpus override not applied");
     assert_eq!(meta["memory_mib"], 1024, "memory override not applied");
-
-    eprintln!("Fork with overrides verified.");
-}
-
-/// Deleting a forked VM cleans up the fork snapshot on the source.
-#[test]
-#[ignore]
-fn fork_delete_cleans_up_snapshot() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_and_vm("forkdel", "base", &tmp);
-    let state = state_dir.to_str().unwrap();
-
-    let base_zvol = format!("{pool}/ember/vms/base");
-    let forked_zvol = format!("{pool}/ember/vms/forked");
-
-    // Fork the VM.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "fork",
-        "base",
-        "forked",
-        "--no-start",
-    ]);
-    assert!(
-        output.status.success(),
-        "vm fork failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Verify fork snapshot exists on source.
-    common::linux::assert_snapshot_exists(&format!("{base_zvol}@fork-forked"));
-    common::linux::assert_zvol_exists(&forked_zvol);
-
-    // Delete the forked VM.
-    let output = common::ember(&["--state-dir", state, "vm", "delete", "forked"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "vm delete failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    // The forked VM's zvol should be gone.
-    common::linux::assert_zvol_absent(&forked_zvol);
-
-    // The fork snapshot on the source should also be cleaned up.
-    common::linux::assert_snapshot_absent(&format!("{base_zvol}@fork-forked"));
-
-    // The source VM should still exist and be intact.
-    common::linux::assert_zvol_exists(&base_zvol);
-
-    eprintln!("Fork snapshot cleanup on delete verified.");
-}
-
-/// Deleting the source VM still works even when a fork snapshot exists
-/// (because source destroy is recursive).
-#[test]
-#[ignore]
-fn fork_delete_source_with_dependent_snapshot() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) =
-        common::linux::setup_pool_and_vm("forksrcdel", "origin", &tmp);
-    let state = state_dir.to_str().unwrap();
-
-    let origin_zvol = format!("{pool}/ember/vms/origin");
-
-    // Fork the VM.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "fork",
-        "origin",
-        "clone1",
-        "--no-start",
-    ]);
-    assert!(
-        output.status.success(),
-        "vm fork failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Delete the forked VM first (to remove the clone dependency).
-    let output = common::ember(&["--state-dir", state, "vm", "delete", "clone1"]);
-    assert!(
-        output.status.success(),
-        "vm delete clone1 failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Now delete the source VM — should succeed since fork snapshot was cleaned.
-    let output = common::ember(&["--state-dir", state, "vm", "delete", "origin"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "vm delete origin failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    common::linux::assert_zvol_absent(&origin_zvol);
-
-    eprintln!("Source deletion after fork cleanup verified.");
 }
 
 /// Forking a non-existent VM should fail.
 #[test]
 #[ignore]
 fn fork_nonexistent_source_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_and_vm("forknoexist", "realvm", &tmp);
-    let state = state_dir.to_str().unwrap();
+    let env = common::TestEnv::with_vm("forknoexist", "realvm");
+    let state = env.state();
 
     let output = common::ember(&[
         "--state-dir",
@@ -256,10 +141,8 @@ fn fork_nonexistent_source_fails() {
 #[test]
 #[ignore]
 fn fork_duplicate_name_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_and_vm("forkdup", "existing", &tmp);
-    let state = state_dir.to_str().unwrap();
+    let env = common::TestEnv::with_vm("forkdup", "existing");
+    let state = env.state();
 
     let output = common::ember(&[
         "--state-dir",
@@ -285,12 +168,9 @@ fn fork_duplicate_name_fails() {
 #[test]
 #[ignore]
 fn fork_shrink_disk_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_and_vm("forkshrink", "bigvm", &tmp);
-    let state = state_dir.to_str().unwrap();
+    let env = common::TestEnv::with_vm("forkshrink", "bigvm");
+    let state = env.state();
 
-    // Default disk size is 8G, try to shrink to 1G.
     let output = common::ember(&[
         "--state-dir",
         state,
@@ -313,7 +193,100 @@ fn fork_shrink_disk_fails() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Linux-specific tests
+// ---------------------------------------------------------------------------
+
+/// Deleting a forked VM cleans up the fork snapshot on the source.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn fork_delete_cleans_up_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) = common::linux::setup_pool_and_vm("forkdel", "base", &tmp);
+    let state = state_dir.to_str().unwrap();
+
+    let base_zvol = format!("{pool}/ember/vms/base");
+    let forked_zvol = format!("{pool}/ember/vms/forked");
+
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "base",
+        "forked",
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm fork failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    common::linux::assert_snapshot_exists(&format!("{base_zvol}@fork-forked"));
+    common::linux::assert_zvol_exists(&forked_zvol);
+
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "forked"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm delete failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    common::linux::assert_zvol_absent(&forked_zvol);
+    common::linux::assert_snapshot_absent(&format!("{base_zvol}@fork-forked"));
+    common::linux::assert_zvol_exists(&base_zvol);
+}
+
+/// Deleting the source VM after the fork is cleaned up should succeed.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn fork_delete_source_with_dependent_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm("forksrcdel", "origin", &tmp);
+    let state = state_dir.to_str().unwrap();
+
+    let origin_zvol = format!("{pool}/ember/vms/origin");
+
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "fork",
+        "origin",
+        "clone1",
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm fork failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "clone1"]);
+    assert!(
+        output.status.success(),
+        "vm delete clone1 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "origin"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm delete origin failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    common::linux::assert_zvol_absent(&origin_zvol);
+}
+
 /// Fork preserves data from the source VM's disk.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn fork_preserves_disk_data() {
@@ -326,38 +299,15 @@ fn fork_preserves_disk_data() {
     let source_device = format!("/dev/zvol/{source_zvol}");
     let forked_device = format!("/dev/zvol/{forked_zvol}");
 
-    // Wait for the source zvol device.
-    for _ in 0..50 {
-        if std::path::Path::new(&source_device).exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
     assert!(
-        std::path::Path::new(&source_device).exists(),
+        common::linux::wait_for_zvol_device(&source_device),
         "source zvol device did not appear"
     );
 
     // Write a marker file to the source VM's disk.
-    let mount_dir = tempfile::tempdir().unwrap();
-    let status = std::process::Command::new("mount")
-        .arg(&source_device)
-        .arg(mount_dir.path())
-        .status()
-        .expect("mount failed");
-    assert!(status.success(), "failed to mount source zvol");
-
-    std::fs::write(
-        mount_dir.path().join("fork-test-marker.txt"),
-        "hello from source\n",
-    )
-    .unwrap();
-
-    let status = std::process::Command::new("umount")
-        .arg(mount_dir.path())
-        .status()
-        .expect("umount failed");
-    assert!(status.success(), "failed to umount source zvol");
+    common::linux::with_mounted_zvol(&source_device, |mount| {
+        std::fs::write(mount.join("fork-test-marker.txt"), "hello from source\n").unwrap();
+    });
 
     // Fork the VM.
     let output = common::ember(&[
@@ -376,38 +326,17 @@ fn fork_preserves_disk_data() {
         "vm fork failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Wait for the forked zvol device.
-    for _ in 0..50 {
-        if std::path::Path::new(&forked_device).exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    // Verify the forked VM has the marker file.
     assert!(
-        std::path::Path::new(&forked_device).exists(),
+        common::linux::wait_for_zvol_device(&forked_device),
         "forked zvol device did not appear"
     );
 
-    // Mount the forked VM's disk and verify the marker file is there.
-    let fork_mount = tempfile::tempdir().unwrap();
-    let status = std::process::Command::new("mount")
-        .arg(&forked_device)
-        .arg(fork_mount.path())
-        .status()
-        .expect("mount failed");
-    assert!(status.success(), "failed to mount forked zvol");
-
-    let content = std::fs::read_to_string(fork_mount.path().join("fork-test-marker.txt")).unwrap();
-    assert_eq!(
-        content, "hello from source\n",
-        "forked VM should have data from source"
-    );
-
-    let status = std::process::Command::new("umount")
-        .arg(fork_mount.path())
-        .status()
-        .expect("umount failed");
-    assert!(status.success(), "failed to umount forked zvol");
-
-    eprintln!("Fork data preservation verified.");
+    common::linux::with_mounted_zvol(&forked_device, |mount| {
+        let content = std::fs::read_to_string(mount.join("fork-test-marker.txt")).unwrap();
+        assert_eq!(
+            content, "hello from source\n",
+            "forked VM should have data from source"
+        );
+    });
 }
