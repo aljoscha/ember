@@ -142,6 +142,63 @@ fn vm_delete() {
     );
 }
 
+/// `ember vm list` shows table and JSON output correctly.
+///
+/// Creates two VMs, verifies both appear in table output and JSON array.
+#[test]
+#[ignore]
+fn vm_list() {
+    let env = common::TestEnv::with_vm("vmlist", "vm-alpha");
+    let state = env.state();
+
+    // Create a second VM with a dummy kernel.
+    let kernel_tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(kernel_tmp.path(), b"not a real kernel").unwrap();
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "vm-beta",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel_tmp.path().to_str().unwrap(),
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "second vm create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Table output: both VMs should appear.
+    let list_output = common::ember(&["--state-dir", state, "vm", "list"]);
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(list_output.status.success());
+    assert!(
+        list_stdout.contains("vm-alpha"),
+        "expected 'vm-alpha' in list: {list_stdout}"
+    );
+    assert!(
+        list_stdout.contains("vm-beta"),
+        "expected 'vm-beta' in list: {list_stdout}"
+    );
+
+    // JSON output: should be an array with two entries.
+    let json_output = common::ember(&["--state-dir", state, "vm", "list", "--format", "json"]);
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    assert!(json_output.status.success());
+    let parsed: serde_json::Value = serde_json::from_str(&json_stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {json_stdout}"));
+    let arr = parsed.as_array().expect("expected JSON array from vm list");
+    assert_eq!(arr.len(), 2, "expected 2 VMs in JSON list, got: {arr:?}");
+
+    let names: Vec<&str> = arr.iter().map(|v| v["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"vm-alpha"), "missing vm-alpha in {names:?}");
+    assert!(names.contains(&"vm-beta"), "missing vm-beta in {names:?}");
+}
+
 /// Stopping a created (not running) VM should fail with a state error.
 #[test]
 #[ignore]
@@ -535,6 +592,79 @@ fn vm_stop_paused() {
 
     // Cleanup.
     let del = common::ember(&["--state-dir", state, "vm", "delete", "spvm"]);
+    assert!(
+        del.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del.stderr)
+    );
+}
+
+/// Force-stop a running VM: verify `vm stop --force` sends SIGKILL and
+/// transitions status from running to stopped.
+///
+/// Requires hypervisor prerequisites. Skips if unavailable.
+#[test]
+#[ignore]
+fn vm_force_stop() {
+    let env = match common::TestEnv::with_running_vm("vmforcestop", "forcevm") {
+        Some(e) => e,
+        None => return,
+    };
+    let state = env.state();
+
+    // Verify running.
+    let inspect = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "forcevm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
+    assert_eq!(json["status"], "running");
+
+    // Force stop.
+    let stop = common::ember(&["--state-dir", state, "vm", "stop", "forcevm", "--force"]);
+    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
+    let stop_stderr = String::from_utf8_lossy(&stop.stderr);
+    assert!(
+        stop.status.success(),
+        "vm stop --force failed.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
+    );
+    assert!(
+        stop_stdout.contains("stopped") || stop_stdout.contains("Force-stopping"),
+        "expected stop confirmation in output: {stop_stdout}"
+    );
+
+    // Verify stopped.
+    let inspect2 = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "forcevm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect2.status.success());
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after force stop");
+    assert_eq!(
+        json2["status"], "stopped",
+        "expected stopped after force stop, got: {}",
+        json2["status"]
+    );
+    assert!(
+        json2["pid"].is_null(),
+        "expected pid to be null after force stop"
+    );
+
+    // Cleanup.
+    let del = common::ember(&["--state-dir", state, "vm", "delete", "forcevm"]);
     assert!(
         del.status.success(),
         "vm delete failed: {}",
