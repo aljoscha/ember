@@ -44,6 +44,24 @@ pub fn ember(args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("failed to execute ember: {e}"))
 }
 
+/// Check that Docker is available (needed for building ubuntu-slim image).
+pub fn docker_available() -> bool {
+    Command::new("docker")
+        .arg("info")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Stop and delete a VM (best-effort cleanup).
+///
+/// Uses `--force` to handle any state. Ignores errors since this is
+/// typically called during test teardown.
+pub fn stop_and_delete_vm(state_dir: &str, vm_name: &str) {
+    let _ = ember(&["--state-dir", state_dir, "vm", "stop", vm_name, "--force"]);
+    let _ = ember(&["--state-dir", state_dir, "vm", "delete", vm_name, "--force"]);
+}
+
 // ---------------------------------------------------------------------------
 // TestEnv — cross-platform test environment
 // ---------------------------------------------------------------------------
@@ -250,4 +268,169 @@ impl TestEnv {
             Some(env)
         }
     }
+
+    /// Full running VM with SSH access (ubuntu-slim image with sshd).
+    /// Returns `None` if prerequisites are missing.
+    ///
+    /// Linux: needs Firecracker + Docker + `/dev/kvm` + bootable kernel.
+    /// macOS: needs ember-vz + Docker + AVF-compatible kernel.
+    ///
+    /// Builds `ubuntu-slim` via Docker, creates a VM, starts it, and waits
+    /// for SSH to become available via `ember exec`. Tests using this should
+    /// explicitly stop/delete the VM when done.
+    pub fn with_running_ssh_vm(test_name: &str, vm_name: &str) -> Option<Self> {
+        if !docker_available() {
+            eprintln!("Skipping: docker not available (needed to build ubuntu-slim)");
+            return None;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if !linux::firecracker_available() {
+                eprintln!("Skipping: firecracker not available");
+                return None;
+            }
+            let kernel = linux::ensure_kernel()?;
+
+            // Ubuntu-slim needs a larger pool than alpine (8G).
+            let tmp = tempfile::tempdir().unwrap();
+            let (pool, state_dir, cleanup) =
+                linux::setup_pool_init_and_build_ubuntu(test_name, &tmp);
+
+            let env = TestEnv {
+                state_dir,
+                pool,
+                _cleanup: Box::new(cleanup),
+                _tmp: tmp,
+            };
+
+            let output = ember(&[
+                "--state-dir",
+                env.state(),
+                "vm",
+                "create",
+                vm_name,
+                "--image",
+                "ubuntu-slim",
+                "--kernel",
+                kernel.to_str().unwrap(),
+                "--cpus",
+                "1",
+                "--memory",
+                "512M",
+                "--no-start",
+            ]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            let output = ember(&["--state-dir", env.state(), "vm", "start", vm_name]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            // Wait for SSH to be ready by retrying `ember exec` with a simple
+            // command. Systemd + sshd can take 30-60s to come up.
+            wait_for_ssh_via_exec(env.state(), vm_name);
+
+            Some(env)
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = test_name; // Only used on Linux for ZFS pool naming.
+            let _ = macos::ember_vz_bin()?;
+            let kernel = macos::ensure_kernel()?;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = macos::setup_init(tmp.path());
+
+            // Build ubuntu-slim image via Docker.
+            let dockerfile = format!(
+                "{}/images/Dockerfile.ubuntu-slim",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let output = ember(&[
+                "--state-dir",
+                state_dir.to_str().unwrap(),
+                "image",
+                "build",
+                "ubuntu-slim",
+                "-f",
+                &dockerfile,
+            ]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "image build ubuntu-slim failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            let env = TestEnv {
+                state_dir,
+                _cleanup: Box::new(()),
+                _tmp: tmp,
+            };
+
+            let output = ember(&[
+                "--state-dir",
+                env.state(),
+                "vm",
+                "create",
+                vm_name,
+                "--image",
+                "ubuntu-slim",
+                "--kernel",
+                kernel.to_str().unwrap(),
+                "--cpus",
+                "1",
+                "--memory",
+                "256M",
+                "--no-start",
+            ]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            let output = ember(&["--state-dir", env.state(), "vm", "start", vm_name]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            // Wait for SSH to be ready by retrying `ember exec` with a simple
+            // command. Systemd + sshd can take 30-60s to come up.
+            wait_for_ssh_via_exec(env.state(), vm_name);
+
+            Some(env)
+        }
+    }
+}
+
+/// Wait for SSH to become available by retrying `ember exec <vm> -- true`.
+///
+/// Retries every 3 seconds for up to ~120 seconds. Panics if SSH never
+/// becomes reachable (test should fail with a clear error).
+fn wait_for_ssh_via_exec(state_dir: &str, vm_name: &str) {
+    eprintln!("Waiting for SSH to become available on {vm_name}...");
+    for attempt in 1..=40 {
+        let output = ember(&["--state-dir", state_dir, "exec", vm_name, "--", "true"]);
+        if output.status.success() {
+            eprintln!("SSH ready on attempt {attempt}");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    panic!("SSH not available on {vm_name} after 120 seconds");
 }

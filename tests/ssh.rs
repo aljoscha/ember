@@ -4,8 +4,10 @@
 //! `TestEnv::with_vm()` (no hypervisor needed).
 //!
 //! The running-VM SSH tests (`exec_command_returns_stdout`,
-//! `cp_upload_and_download`) are currently Linux-only because they
-//! require `docker` (to build `ubuntu-slim` with sshd) and Firecracker.
+//! `cp_upload_and_download`) use `TestEnv::with_running_ssh_vm()` which
+//! boots ubuntu-slim (with sshd). These require Docker + a hypervisor
+//! (Firecracker on Linux, ember-vz on macOS) and skip gracefully if
+//! prerequisites are missing.
 //!
 //! To run:
 //!   ./run-integration-tests.sh ssh
@@ -66,244 +68,148 @@ fn exec_on_stopped_vm_fails() {
 }
 
 // ---------------------------------------------------------------------------
-// Linux-specific tests (require Firecracker + docker + SSH)
+// Cross-platform tests (require running VM with SSH)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
-mod linux_ssh {
-    use super::common;
-    use std::path::PathBuf;
+/// Test `ember exec`: run a command on a running VM and verify output.
+///
+/// Uses ubuntu-slim (built via Docker) which includes sshd.
+/// Requires hypervisor + Docker. Skips if prerequisites are missing.
+#[test]
+#[ignore]
+fn exec_command_returns_stdout() {
+    let env = match common::TestEnv::with_running_ssh_vm("sshexec", "execvm") {
+        Some(e) => e,
+        None => return,
+    };
+    let state = env.state();
 
-    struct RunningVm {
-        state_dir: PathBuf,
-        vm_name: String,
-        _cleanup: common::linux::PoolCleanup,
-        _tmp: tempfile::TempDir,
-    }
+    // Run a simple command via `ember exec`.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "exec",
+        "execvm",
+        "--",
+        "echo",
+        "hello-from-ember",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "ember exec failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("hello-from-ember"),
+        "expected 'hello-from-ember' in exec output: {stdout}"
+    );
+    eprintln!("ember exec echo: {}", stdout.trim());
 
-    impl Drop for RunningVm {
-        fn drop(&mut self) {
-            common::linux::stop_and_delete_vm(&self.state_dir, &self.vm_name);
-        }
-    }
+    // Run a command that produces meaningful output.
+    let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "uname", "-r"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "ember exec uname failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let kernel_version = stdout.trim();
+    assert!(
+        !kernel_version.is_empty(),
+        "expected non-empty kernel version"
+    );
+    eprintln!("Guest kernel: {kernel_version}");
 
-    /// Spin up a running ubuntu-slim VM with SSH. Returns None if prerequisites are missing.
-    fn start_ubuntu_vm(test_name: &str, vm_name: &str) -> Option<RunningVm> {
-        if !common::linux::firecracker_available() {
-            return None;
-        }
-        if !common::linux::docker_available() {
-            eprintln!("Skipping: docker not available (needed to build ubuntu-slim image)");
-            return None;
-        }
-        let kernel_path = common::linux::ensure_kernel()?;
-        let ssh_key = common::linux::ssh_private_key_path();
-        if ssh_key.is_none() {
-            eprintln!("Skipping: no SSH private key found for the invoking user");
-            return None;
-        }
+    // Run a command that fails — verify non-zero exit code is propagated.
+    let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "false"]);
+    assert!(
+        !output.status.success(),
+        "expected 'false' command to return non-zero exit code"
+    );
 
-        let tmp = tempfile::tempdir().unwrap();
-        let (_pool, state_dir, cleanup) =
-            common::linux::setup_pool_init_and_build_ubuntu(test_name, &tmp);
-        let state = state_dir.to_str().unwrap();
-        let kernel = kernel_path.to_str().unwrap();
+    // Cleanup.
+    common::stop_and_delete_vm(state, "execvm");
+}
 
-        // Create VM.
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "vm",
-            "create",
-            vm_name,
-            "--image",
-            "ubuntu-slim",
-            "--cpus",
-            "1",
-            "--memory",
-            "512M",
-            "--kernel",
-            kernel,
-            "--no-start",
-        ]);
-        assert!(
-            output.status.success(),
-            "vm create failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Test `ember cp`: upload a file to VM, then download it back.
+///
+/// Uses ubuntu-slim (built via Docker) which includes sshd.
+/// Requires hypervisor + Docker. Skips if prerequisites are missing.
+#[test]
+#[ignore]
+fn cp_upload_and_download() {
+    let env = match common::TestEnv::with_running_ssh_vm("sshcp", "cpvm") {
+        Some(e) => e,
+        None => return,
+    };
+    let state = env.state();
+    let tmp_dir = tempfile::tempdir().unwrap();
 
-        // Start VM.
-        let output = common::ember(&["--state-dir", state, "vm", "start", vm_name]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
-        );
+    // Create a local file with known content.
+    let test_content = "ember-cp-test-content-42\nline two\n";
+    let local_src = tmp_dir.path().join("upload.txt");
+    std::fs::write(&local_src, test_content).unwrap();
 
-        // Extract guest IP from inspect.
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "vm",
-            "inspect",
-            vm_name,
-            "--format",
-            "json",
-        ]);
-        assert!(output.status.success());
-        let json: serde_json::Value =
-            serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
-                .expect("failed to parse inspect JSON");
-        let guest_ip = json["network"]["guest_ip"]
-            .as_str()
-            .expect("expected guest_ip")
-            .to_string();
+    // Upload: local → VM.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "cp",
+        local_src.to_str().unwrap(),
+        "cpvm:/tmp/uploaded.txt",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "ember cp upload failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
-        // Wait for SSH.
-        let ssh_key = ssh_key.unwrap();
-        eprintln!("Waiting for SSH to become available at {guest_ip}...");
-        assert!(
-            common::linux::wait_for_ssh(&guest_ip, &ssh_key),
-            "SSH not reachable at {guest_ip}:22 after timeout"
-        );
+    // Verify the file arrived on the guest via exec.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "exec",
+        "cpvm",
+        "--",
+        "cat",
+        "/tmp/uploaded.txt",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "failed to cat uploaded file: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        stdout.as_ref(),
+        test_content,
+        "uploaded file content mismatch"
+    );
+    eprintln!("Upload verified: content matches on guest");
 
-        Some(RunningVm {
-            state_dir,
-            vm_name: vm_name.to_string(),
-            _cleanup: cleanup,
-            _tmp: tmp,
-        })
-    }
+    // Download: VM → local.
+    let local_dst = tmp_dir.path().join("downloaded.txt");
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "cp",
+        "cpvm:/tmp/uploaded.txt",
+        local_dst.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "ember cp download failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
-    /// Test `ember exec`: run a command on a running VM and verify output.
-    #[test]
-    #[ignore]
-    fn exec_command_returns_stdout() {
-        let vm = match start_ubuntu_vm("sshexec", "execvm") {
-            Some(v) => v,
-            None => return,
-        };
-        let state = vm.state_dir.to_str().unwrap();
+    // Verify downloaded content matches.
+    let downloaded = std::fs::read_to_string(&local_dst).unwrap();
+    assert_eq!(downloaded, test_content, "downloaded file content mismatch");
+    eprintln!("Download verified: content matches locally");
 
-        // Run a simple command via `ember exec`.
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "exec",
-            "execvm",
-            "--",
-            "echo",
-            "hello-from-ember",
-        ]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "ember exec failed.\nstdout: {stdout}\nstderr: {stderr}"
-        );
-        assert!(
-            stdout.contains("hello-from-ember"),
-            "expected 'hello-from-ember' in exec output: {stdout}"
-        );
-        eprintln!("ember exec echo: {}", stdout.trim());
-
-        // Run a command that produces meaningful output.
-        let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "uname", "-r"]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "ember exec uname failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let kernel_version = stdout.trim();
-        assert!(
-            !kernel_version.is_empty(),
-            "expected non-empty kernel version"
-        );
-        eprintln!("Guest kernel: {kernel_version}");
-
-        // Run a command that fails — verify non-zero exit code is propagated.
-        let output = common::ember(&["--state-dir", state, "exec", "execvm", "--", "false"]);
-        assert!(
-            !output.status.success(),
-            "expected 'false' command to return non-zero exit code"
-        );
-    }
-
-    /// Test `ember cp`: upload a file to VM, then download it back.
-    #[test]
-    #[ignore]
-    fn cp_upload_and_download() {
-        let vm = match start_ubuntu_vm("sshcp", "cpvm") {
-            Some(v) => v,
-            None => return,
-        };
-        let state = vm.state_dir.to_str().unwrap();
-        let tmp_dir = tempfile::tempdir().unwrap();
-
-        // Create a local file with known content.
-        let test_content = "ember-cp-test-content-42\nline two\n";
-        let local_src = tmp_dir.path().join("upload.txt");
-        std::fs::write(&local_src, test_content).unwrap();
-
-        // Upload: local → VM.
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "cp",
-            local_src.to_str().unwrap(),
-            "cpvm:/tmp/uploaded.txt",
-        ]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "ember cp upload failed.\nstdout: {stdout}\nstderr: {stderr}"
-        );
-
-        // Verify the file arrived on the guest via exec.
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "exec",
-            "cpvm",
-            "--",
-            "cat",
-            "/tmp/uploaded.txt",
-        ]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "failed to cat uploaded file: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            stdout.as_ref(),
-            test_content,
-            "uploaded file content mismatch"
-        );
-        eprintln!("Upload verified: content matches on guest");
-
-        // Download: VM → local.
-        let local_dst = tmp_dir.path().join("downloaded.txt");
-        let output = common::ember(&[
-            "--state-dir",
-            state,
-            "cp",
-            "cpvm:/tmp/uploaded.txt",
-            local_dst.to_str().unwrap(),
-        ]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "ember cp download failed.\nstdout: {stdout}\nstderr: {stderr}"
-        );
-
-        // Verify downloaded content matches.
-        let downloaded = std::fs::read_to_string(&local_dst).unwrap();
-        assert_eq!(downloaded, test_content, "downloaded file content mismatch");
-        eprintln!("Download verified: content matches locally");
-    }
+    // Cleanup.
+    common::stop_and_delete_vm(state, "cpvm");
 }
