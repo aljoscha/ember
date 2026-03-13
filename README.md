@@ -277,3 +277,12 @@ Both produce `kernel/vmlinux`. Pass the path when creating a VM:
 ```bash
 sudo ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
 ```
+
+## Contributing
+
+> [!WARNING]
+> **Integration tests are not run in CI.** GitHub Actions runners lack the virtualization support ember needs: nested KVM is unreliable on Linux runners (Firecracker) and macOS runners don't support nested Apple Virtualization Framework. CI covers build, clippy, unit tests, and formatting only. Please run integration tests locally before submitting a PR:
+> ```bash
+> ./run-integration-tests.sh
+> ```
+> This requires root + ZFS + Firecracker on Linux, or ember-vz + an AVF kernel on macOS.
