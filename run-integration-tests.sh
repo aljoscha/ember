@@ -21,7 +21,9 @@ platform="$(uname -s)"
 
 # Parse arguments. "vm::foo" means run only test "foo" from tests/vm.rs.
 # Plain "vm" runs all tests in tests/vm.rs.
-declare -A test_filters  # map: test_file -> filter (empty = all)
+# Uses parallel arrays instead of associative arrays for bash 3.x (macOS) compat.
+filter_names=()
+filter_values=()
 
 if [[ $# -gt 0 ]]; then
     tests=()
@@ -30,7 +32,8 @@ if [[ $# -gt 0 ]]; then
             file="${arg%%::*}"
             filter="${arg#*::}"
             tests+=("$file")
-            test_filters["$file"]="$filter"
+            filter_names+=("$file")
+            filter_values+=("$filter")
         else
             tests+=("$arg")
         fi
@@ -77,7 +80,14 @@ skipped=0
 for i in "${!test_names[@]}"; do
     name="${test_names[$i]}"
     bin="${binaries[$i]}"
-    filter="${test_filters[$name]:-}"
+    # Look up filter for this test file (linear scan of parallel arrays).
+    filter=""
+    for fi_idx in "${!filter_names[@]}"; do
+        if [[ "${filter_names[$fi_idx]}" == "$name" ]]; then
+            filter="${filter_values[$fi_idx]}"
+            break
+        fi
+    done
 
     if [[ -n "$filter" ]]; then
         echo "=== $name::$filter ==="

@@ -7,7 +7,7 @@
 
 use crate::backend::NetworkBackend;
 use crate::cli::init::GlobalConfig;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::network;
 use crate::state::store::StateStore;
 use crate::state::vm::{NetworkInfo, VmMetadata};
