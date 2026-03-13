@@ -26,11 +26,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: cargo build
-        run: cargo build
+      - name: make build
+        run: make build
 
-      - name: cargo clippy
-        run: cargo clippy -- -D warnings
+      - name: make clippy
+        run: make clippy
 
       - name: cargo fmt -- --check
         run: cargo fmt -- --check

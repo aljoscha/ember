@@ -35,7 +35,7 @@ check:
 	cargo check
 
 clippy:
-	cargo clippy
+	cargo clippy -- -D warnings
 
 test:
 	cargo test
