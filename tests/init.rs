@@ -1,138 +1,134 @@
-//! Integration tests for `ember init` (Linux-only).
+//! Integration tests for `ember init`.
 //!
-//! These tests require root privileges and a working ZFS installation.
-#![cfg(target_os = "linux")]
-//! They are marked `#[ignore]` so `cargo test` skips them by default.
+//! Cross-platform tests use `TestEnv::init()` to abstract platform setup.
+//! Platform-specific tests (ZFS verification on Linux, no-root check on macOS)
+//! are gated with `#[cfg(target_os)]`.
 //!
 //! To run:
 //!   ./run-integration-tests.sh init
-//!
-//! The tests create and destroy temporary ZFS pools backed by loopback
-//! devices, so they are safe to run on a system with ZFS installed.
 
 #[allow(dead_code)]
 mod common;
 
+// ---------------------------------------------------------------------------
+// Cross-platform tests
+// ---------------------------------------------------------------------------
+
+/// `ember init` creates the expected directory structure.
 #[test]
 #[ignore]
-fn init_creates_new_pool_and_datasets() {
-    let pool = common::linux::test_pool("newpool");
-    let tmp = tempfile::tempdir().unwrap();
-    let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
+fn init_creates_directory_structure() {
+    let env = common::TestEnv::init("initdirs");
 
-    let _cleanup = common::linux::PoolCleanup {
-        pool: pool.clone(),
-        dev: loop_dev.clone(),
-    };
+    for dir in &["vms", "kernels", "images", "network"] {
+        let path = env.state_dir.join(dir);
+        assert!(
+            path.is_dir(),
+            "expected directory to exist: {}",
+            path.display()
+        );
+    }
 
-    let output = common::ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-        "--device",
-        &loop_dev,
-    ]);
+    #[cfg(target_os = "macos")]
+    assert!(
+        env.state_dir.join("images/data").is_dir(),
+        "macOS should have images/data/"
+    );
+}
+
+/// `ember init` writes a valid config.json.
+#[test]
+#[ignore]
+fn init_writes_config_json() {
+    let env = common::TestEnv::init("initcfg");
+
+    let config_path = env.state_dir.join("config.json");
+    assert!(config_path.exists(), "config.json not found");
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_str(&content).expect("config.json is not valid JSON");
+
+    #[cfg(target_os = "macos")]
+    {
+        let stored = config["state_dir"].as_str().unwrap();
+        assert_eq!(
+            stored,
+            env.state_dir.to_str().unwrap(),
+            "state_dir in config.json doesn't match"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(config["pool"], env.pool);
+        assert_eq!(config["dataset"], "ember");
+    }
+}
+
+/// Re-running `ember init` is idempotent.
+#[test]
+#[ignore]
+fn init_is_idempotent() {
+    let env = common::TestEnv::init("initidem");
+
+    // Run init again on the same state directory.
+    #[cfg(target_os = "macos")]
+    let output = common::ember(&["--state-dir", env.state(), "init"]);
+
+    #[cfg(target_os = "linux")]
+    let output = common::ember(&["--state-dir", env.state(), "init", "--pool", &env.pool]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "init failed.\nstdout: {stdout}\nstderr: {stderr}"
+        "second init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Verify ZFS pool and datasets were created.
-    common::linux::assert_pool_exists(&pool);
-    common::linux::assert_dataset_exists(&format!("{pool}/ember"));
-    common::linux::assert_dataset_exists(&format!("{pool}/ember/images"));
-    common::linux::assert_dataset_exists(&format!("{pool}/ember/vms"));
+    // Directories should still exist.
+    assert!(env.state_dir.join("vms").is_dir());
+    assert!(env.state_dir.join("images").is_dir());
 
-    // Verify state directory structure.
-    assert!(state_dir.join("kernels").is_dir());
-    assert!(state_dir.join("images").is_dir());
-    assert!(state_dir.join("vms").is_dir());
-    assert!(state_dir.join("network").is_dir());
-
-    // Verify config.json was written with correct content.
-    let config_str = std::fs::read_to_string(state_dir.join("config.json")).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
-    assert_eq!(config["pool"], pool);
-    assert_eq!(config["dataset"], "ember");
-
-    // Stdout should indicate success.
-    assert!(stdout.contains("ember initialized successfully"));
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            stdout.contains("already exists"),
+            "expected 'already exists' in: {stdout}"
+        );
+        assert!(stdout.contains("ember initialized successfully"));
+        common::linux::assert_pool_exists(&env.pool);
+        common::linux::assert_dataset_exists(&format!("{}/ember", env.pool));
+        common::linux::assert_dataset_exists(&format!("{}/ember/images", env.pool));
+        common::linux::assert_dataset_exists(&format!("{}/ember/vms", env.pool));
+    }
 }
 
+// ---------------------------------------------------------------------------
+// Linux-specific tests
+// ---------------------------------------------------------------------------
+
+/// Verify ZFS pool and datasets are created by `ember init`.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
-fn init_idempotent_with_existing_pool() {
-    let pool = common::linux::test_pool("existing");
-    let tmp = tempfile::tempdir().unwrap();
-    let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
+fn init_creates_pool_and_datasets() {
+    let env = common::TestEnv::init("initpool");
 
-    let _cleanup = common::linux::PoolCleanup {
-        pool: pool.clone(),
-        dev: loop_dev.clone(),
-    };
-
-    // First init — creates everything.
-    let output1 = common::ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-        "--device",
-        &loop_dev,
-    ]);
-    assert!(
-        output1.status.success(),
-        "first init failed: {}",
-        String::from_utf8_lossy(&output1.stderr)
-    );
-
-    // Second init — pool and datasets already exist, should succeed.
-    // Note: no --device needed since pool already exists.
-    let output2 = common::ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "init",
-        "--pool",
-        &pool,
-    ]);
-
-    let stdout2 = String::from_utf8_lossy(&output2.stdout);
-    let stderr2 = String::from_utf8_lossy(&output2.stderr);
-    assert!(
-        output2.status.success(),
-        "second init failed.\nstdout: {stdout2}\nstderr: {stderr2}"
-    );
-
-    // Should report existing pool and datasets.
-    assert!(
-        stdout2.contains("already exists"),
-        "expected 'already exists' in: {stdout2}"
-    );
-
-    // Everything should still be intact.
-    common::linux::assert_pool_exists(&pool);
-    common::linux::assert_dataset_exists(&format!("{pool}/ember"));
-    common::linux::assert_dataset_exists(&format!("{pool}/ember/images"));
-    common::linux::assert_dataset_exists(&format!("{pool}/ember/vms"));
-    assert!(stdout2.contains("ember initialized successfully"));
+    common::linux::assert_pool_exists(&env.pool);
+    common::linux::assert_dataset_exists(&format!("{}/ember", env.pool));
+    common::linux::assert_dataset_exists(&format!("{}/ember/images", env.pool));
+    common::linux::assert_dataset_exists(&format!("{}/ember/vms", env.pool));
 }
 
+/// `ember init` without `--device` fails when pool doesn't exist.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn init_fails_without_device_when_pool_missing() {
     let pool = common::linux::test_pool("nodevice");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
-
-    // No cleanup needed — pool should never be created.
 
     let output = common::ember(&[
         "--state-dir",
@@ -154,6 +150,8 @@ fn init_fails_without_device_when_pool_missing() {
     );
 }
 
+/// `ember init --dataset` uses a custom dataset name.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn init_custom_dataset_name() {
@@ -186,13 +184,30 @@ fn init_custom_dataset_name() {
         "init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Verify custom dataset name was used.
     common::linux::assert_dataset_exists(&format!("{pool}/mydata"));
     common::linux::assert_dataset_exists(&format!("{pool}/mydata/images"));
     common::linux::assert_dataset_exists(&format!("{pool}/mydata/vms"));
 
-    // Config should reflect custom dataset name.
     let config_str = std::fs::read_to_string(state_dir.join("config.json")).unwrap();
     let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
     assert_eq!(config["dataset"], "mydata");
+}
+
+// ---------------------------------------------------------------------------
+// macOS-specific tests
+// ---------------------------------------------------------------------------
+
+/// `ember init` does not require root on macOS.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn init_works_without_root() {
+    assert!(
+        !nix::unistd::geteuid().is_root(),
+        "this test should run as a non-root user"
+    );
+
+    let env = common::TestEnv::init("initnoroot");
+    assert!(env.state_dir.join("config.json").exists());
+    assert!(env.state_dir.join("vms").is_dir());
 }
