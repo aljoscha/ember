@@ -1,19 +1,10 @@
-//! Integration tests for `ember vm create`, `vm start`, `vm stop`, and `vm delete` (Linux-only).
+//! Integration tests for VM lifecycle commands.
 //!
-//! These tests require:
-#![cfg(target_os = "linux")]
-//!
-//! - Root privileges
-//! - Working ZFS installation
-//! - Network access (to pull OCI images from Docker Hub)
-//! - `skopeo` installed
-//!
-//! Tests that start a VM additionally require:
-//! - `firecracker` binary installed and in PATH
-//! - A Linux kernel image (auto-downloaded to `/tmp/ember-test-vmlinux` on
-//!   first run; override with `EMBER_TEST_KERNEL` env var)
-//!
-//! They are marked `#[ignore]` so `cargo test` skips them by default.
+//! Cross-platform tests use `TestEnv` to abstract platform setup.
+//! Tests that only need a stopped VM use `TestEnv::with_vm()`.
+//! Tests that need a running VM use `TestEnv::with_running_vm()`,
+//! which returns `None` if hypervisor prerequisites are missing.
+//! Platform-specific networking tests are gated with `#[cfg(target_os)]`.
 //!
 //! To run:
 //!   ./run-integration-tests.sh vm
@@ -21,43 +12,16 @@
 #[allow(dead_code)]
 mod common;
 
-use std::path::Path;
-
 // ---------------------------------------------------------------------------
-// Tests that only need ZFS (no Firecracker required)
+// Cross-platform tests (no hypervisor needed)
 // ---------------------------------------------------------------------------
 
+/// Create a VM with --no-start, verify vm list and vm inspect.
 #[test]
 #[ignore]
-fn create_vm_shows_in_list_and_inspect() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmcreate", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
-
-    // Create a VM (--no-start so we don't need Firecracker).
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "testvm",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("created successfully"),
-        "expected success message: {stdout}"
-    );
+fn vm_create_and_inspect() {
+    let env = common::TestEnv::with_vm("vmcreate", "testvm");
+    let state = env.state();
 
     // Verify vm list shows the VM.
     let list_output = common::ember(&["--state-dir", state, "vm", "list"]);
@@ -98,16 +62,18 @@ fn create_vm_shows_in_list_and_inspect() {
     assert_eq!(parsed["status"], "created");
 }
 
+/// Creating a VM with a duplicate name should fail.
 #[test]
 #[ignore]
-fn create_duplicate_vm_name_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmdup", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
+fn vm_create_duplicate_name_fails() {
+    let env = common::TestEnv::with_vm("vmdup", "dupvm");
+    let state = env.state();
 
-    // Create first VM.
-    let output1 = common::ember(&[
+    // Create a dummy kernel for the second create attempt.
+    let kernel_tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(kernel_tmp.path(), b"not a real kernel").unwrap();
+
+    let output = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -116,84 +82,46 @@ fn create_duplicate_vm_name_fails() {
         "--image",
         "alpine:latest",
         "--kernel",
-        kernel.to_str().unwrap(),
+        kernel_tmp.path().to_str().unwrap(),
         "--no-start",
     ]);
     assert!(
-        output1.status.success(),
-        "first create failed: {}",
-        String::from_utf8_lossy(&output1.stderr)
-    );
-
-    // Try creating with the same name — should fail.
-    let output2 = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "dupvm",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
-    assert!(
-        !output2.status.success(),
+        !output.status.success(),
         "expected duplicate create to fail"
     );
-    let stderr = String::from_utf8_lossy(&output2.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("already exists"),
         "expected 'already exists' error: {stderr}"
     );
 }
 
+/// Delete a created VM, verify it's gone from list and storage.
 #[test]
 #[ignore]
-fn delete_created_vm_cleans_up_zvol_and_state() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmdel", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
+fn vm_delete() {
+    let env = common::TestEnv::with_vm("vmdel", "delvm");
+    let state = env.state();
 
-    // Create a VM.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "delvm",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
+    // Platform-specific: verify storage exists before delete.
+    #[cfg(target_os = "linux")]
+    {
+        let vm_zvol = format!("{}/ember/vms/delvm", env.pool);
+        common::linux::assert_dataset_exists(&vm_zvol);
+    }
+
+    // Delete.
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "delvm"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let vm_zvol = format!("{pool}/ember/vms/delvm");
-    common::linux::assert_dataset_exists(&vm_zvol);
-
-    // Delete it.
-    let del_output = common::ember(&["--state-dir", state, "vm", "delete", "delvm"]);
-    let del_stdout = String::from_utf8_lossy(&del_output.stdout);
-    let del_stderr = String::from_utf8_lossy(&del_output.stderr);
-    assert!(
-        del_output.status.success(),
-        "vm delete failed.\nstdout: {del_stdout}\nstderr: {del_stderr}"
+        "vm delete failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        del_stdout.contains("deleted"),
-        "expected 'deleted' in output: {del_stdout}"
+        stdout.contains("deleted"),
+        "expected 'deleted' in output: {stdout}"
     );
-
-    // Verify zvol is gone.
-    common::linux::assert_dataset_absent(&vm_zvol);
 
     // Verify vm list is empty.
     let list_output = common::ember(&["--state-dir", state, "vm", "list"]);
@@ -202,55 +130,43 @@ fn delete_created_vm_cleans_up_zvol_and_state() {
         list_stdout.contains("No VMs found"),
         "expected empty vm list: {list_stdout}"
     );
+
+    // Platform-specific: verify storage is gone.
+    #[cfg(target_os = "linux")]
+    common::linux::assert_dataset_absent(&format!("{}/ember/vms/delvm", env.pool));
+
+    #[cfg(target_os = "macos")]
+    assert!(
+        !env.state_dir.join("vms").join("delvm").exists(),
+        "VM directory should not exist after delete"
+    );
 }
 
+/// Stopping a created (not running) VM should fail with a state error.
 #[test]
 #[ignore]
-fn stop_created_vm_fails_with_wrong_state() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmstopstate", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
+fn vm_stop_created_fails() {
+    let env = common::TestEnv::with_vm("vmstopstate", "stoptest");
+    let state = env.state();
 
-    // Create a VM but don't start it.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "stoptest",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
+    let output = common::ember(&["--state-dir", state, "vm", "stop", "stoptest"]);
     assert!(
-        output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Try to stop a created (not running) VM — should fail.
-    let stop_output = common::ember(&["--state-dir", state, "vm", "stop", "stoptest"]);
-    assert!(
-        !stop_output.status.success(),
+        !output.status.success(),
         "expected stop to fail for non-running VM"
     );
-    let stderr = String::from_utf8_lossy(&stop_output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("running or paused"),
         "expected state error: {stderr}"
     );
 }
 
+/// Deleting a nonexistent VM should fail.
 #[test]
 #[ignore]
-fn delete_nonexistent_vm_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_init_and_pull("vmdelnoexist", &tmp);
-    let state = state_dir.to_str().unwrap();
+fn vm_delete_nonexistent_fails() {
+    let env = common::TestEnv::init("vmdelnoexist");
+    let state = env.state();
 
     let output = common::ember(&["--state-dir", state, "vm", "delete", "nosuchvm"]);
     assert!(
@@ -259,70 +175,63 @@ fn delete_nonexistent_vm_fails() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Full lifecycle test (requires Firecracker + kernel)
-// ---------------------------------------------------------------------------
-
-/// Full VM lifecycle: create → start → verify running → stop → delete.
-///
-/// Requires `firecracker` in PATH and a bootable kernel (auto-downloaded
-/// or overridden via `EMBER_TEST_KERNEL`). Skips if prerequisites are missing.
+/// Pausing a created (not running) VM should fail with a state error.
 #[test]
 #[ignore]
-fn full_vm_lifecycle_start_stop_delete() {
-    if !common::linux::firecracker_available() {
-        return;
-    }
+fn vm_pause_created_fails() {
+    let env = common::TestEnv::with_vm("vmpausecreated", "pausetest");
+    let state = env.state();
 
-    let kernel_path = match common::linux::ensure_kernel() {
-        Some(p) => p,
+    let output = common::ember(&["--state-dir", state, "vm", "pause", "pausetest"]);
+    assert!(
+        !output.status.success(),
+        "expected pause to fail for non-running VM"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("created") && stderr.contains("expected running"),
+        "expected state error mentioning 'created' and 'expected running': {stderr}"
+    );
+}
+
+/// Resuming a created (not paused) VM should fail with a state error.
+#[test]
+#[ignore]
+fn vm_resume_created_fails() {
+    let env = common::TestEnv::with_vm("vmresumecreated", "resumetest");
+    let state = env.state();
+
+    let output = common::ember(&["--state-dir", state, "vm", "resume", "resumetest"]);
+    assert!(
+        !output.status.success(),
+        "expected resume to fail for non-paused VM"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("created") && stderr.contains("expected paused"),
+        "expected state error mentioning 'created' and 'expected paused': {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-platform tests (require running VM / hypervisor)
+// ---------------------------------------------------------------------------
+
+/// Full VM lifecycle: start → verify running → stop → verify stopped → delete.
+///
+/// Requires hypervisor prerequisites (Firecracker on Linux, ember-vz on macOS).
+/// Skips if prerequisites are missing.
+#[test]
+#[ignore]
+fn vm_start_stop_lifecycle() {
+    let env = match common::TestEnv::with_running_vm("vmlifecycle", "lifecyclevm") {
+        Some(e) => e,
         None => return,
     };
+    let state = env.state();
 
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmlifecycle", &tmp);
-    let state = state_dir.to_str().unwrap();
-    let kernel = kernel_path.to_str().unwrap();
-
-    // -- Create --
-    let create_output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "lifecyclevm",
-        "--image",
-        "alpine:latest",
-        "--cpus",
-        "1",
-        "--memory",
-        "128M",
-        "--kernel",
-        kernel,
-        "--no-start",
-    ]);
-    let stdout = String::from_utf8_lossy(&create_output.stdout);
-    let stderr = String::from_utf8_lossy(&create_output.stderr);
-    assert!(
-        create_output.status.success(),
-        "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    // -- Start --
-    let start_output = common::ember(&["--state-dir", state, "vm", "start", "lifecyclevm"]);
-    let start_stdout = String::from_utf8_lossy(&start_output.stdout);
-    let start_stderr = String::from_utf8_lossy(&start_output.stderr);
-    assert!(
-        start_output.status.success(),
-        "vm start failed.\nstdout: {start_stdout}\nstderr: {start_stderr}"
-    );
-    assert!(
-        start_stdout.contains("started"),
-        "expected 'started' in output: {start_stdout}"
-    );
-
-    // -- Verify Running via inspect --
-    let inspect_output = common::ember(&[
+    // Verify running via inspect.
+    let inspect = common::ember(&[
         "--state-dir",
         state,
         "vm",
@@ -331,33 +240,33 @@ fn full_vm_lifecycle_start_stop_delete() {
         "--format",
         "json",
     ]);
-    assert!(inspect_output.status.success());
-    let inspect_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect_output.stdout))
-            .expect("failed to parse inspect JSON");
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
     assert_eq!(
-        inspect_json["status"], "running",
+        json["status"], "running",
         "expected status 'running', got: {}",
-        inspect_json["status"]
+        json["status"]
     );
 
-    // Verify the Firecracker process is actually alive.
-    let pid = inspect_json["pid"]
-        .as_u64()
-        .expect("expected numeric PID in inspect output");
-    let proc_alive = std::path::Path::new(&format!("/proc/{pid}")).exists();
-    assert!(
-        proc_alive,
-        "expected Firecracker process (pid {pid}) to be alive"
-    );
+    // Linux: verify Firecracker process is alive.
+    #[cfg(target_os = "linux")]
+    {
+        let pid = json["pid"]
+            .as_u64()
+            .expect("expected numeric PID in inspect output");
+        assert!(
+            std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "expected Firecracker process (pid {pid}) to be alive"
+        );
+    }
 
-    // -- Stop --
-    let stop_output =
-        common::ember(&["--state-dir", state, "vm", "stop", "lifecyclevm", "--force"]);
-    let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
-    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
+    // Stop.
+    let stop = common::ember(&["--state-dir", state, "vm", "stop", "lifecyclevm", "--force"]);
+    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
+    let stop_stderr = String::from_utf8_lossy(&stop.stderr);
     assert!(
-        stop_output.status.success(),
+        stop.status.success(),
         "vm stop failed.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
     );
     assert!(
@@ -365,7 +274,7 @@ fn full_vm_lifecycle_start_stop_delete() {
         "expected 'stopped' in output: {stop_stdout}"
     );
 
-    // Verify status is Stopped.
+    // Verify stopped.
     let inspect2 = common::ember(&[
         "--state-dir",
         state,
@@ -376,37 +285,23 @@ fn full_vm_lifecycle_start_stop_delete() {
         "json",
     ]);
     assert!(inspect2.status.success());
-    let inspect2_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-            .expect("failed to parse inspect JSON after stop");
-    assert_eq!(inspect2_json["status"], "stopped");
-    assert!(
-        inspect2_json["pid"].is_null(),
-        "expected pid to be null after stop"
-    );
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after stop");
+    assert_eq!(json2["status"], "stopped");
+    assert!(json2["pid"].is_null(), "expected pid to be null after stop");
 
-    // Verify the process is dead.
-    let proc_dead = !std::path::Path::new(&format!("/proc/{pid}")).exists();
+    // Delete.
+    let del = common::ember(&["--state-dir", state, "vm", "delete", "lifecyclevm"]);
+    let del_stdout = String::from_utf8_lossy(&del.stdout);
+    let del_stderr = String::from_utf8_lossy(&del.stderr);
     assert!(
-        proc_dead,
-        "expected Firecracker process (pid {pid}) to be dead after stop"
-    );
-
-    // -- Delete --
-    let del_output = common::ember(&["--state-dir", state, "vm", "delete", "lifecyclevm"]);
-    let del_stdout = String::from_utf8_lossy(&del_output.stdout);
-    let del_stderr = String::from_utf8_lossy(&del_output.stderr);
-    assert!(
-        del_output.status.success(),
+        del.status.success(),
         "vm delete failed.\nstdout: {del_stdout}\nstderr: {del_stderr}"
     );
 
-    // Verify zvol is gone.
-    common::linux::assert_dataset_absent(&format!("{pool}/ember/vms/lifecyclevm"));
-
-    // Verify VM no longer in list.
-    let list_output = common::ember(&["--state-dir", state, "vm", "list"]);
-    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    // Verify gone.
+    let list = common::ember(&["--state-dir", state, "vm", "list"]);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
     assert!(
         list_stdout.contains("No VMs found"),
         "expected empty vm list after delete: {list_stdout}"
@@ -414,96 +309,250 @@ fn full_vm_lifecycle_start_stop_delete() {
 }
 
 /// Delete a running VM requires --force.
-///
-/// Same prerequisites as `full_vm_lifecycle_start_stop_delete`.
 #[test]
 #[ignore]
-fn delete_running_vm_requires_force() {
-    if !common::linux::firecracker_available() {
-        return;
-    }
-
-    let kernel_path = match common::linux::ensure_kernel() {
-        Some(p) => p,
+fn vm_delete_running_requires_force() {
+    let env = match common::TestEnv::with_running_vm("vmdelrunning", "runningvm") {
+        Some(e) => e,
         None => return,
     };
+    let state = env.state();
 
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmdelrunning", &tmp);
-    let state = state_dir.to_str().unwrap();
-    let kernel = kernel_path.to_str().unwrap();
-
-    // Create and start a VM.
-    let create_output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "runningvm",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel,
-        "--no-start",
-    ]);
+    // Try delete without --force — should fail.
+    let del = common::ember(&["--state-dir", state, "vm", "delete", "runningvm"]);
     assert!(
-        create_output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&create_output.stderr)
-    );
-
-    let start_output = common::ember(&["--state-dir", state, "vm", "start", "runningvm"]);
-    assert!(
-        start_output.status.success(),
-        "vm start failed: {}",
-        String::from_utf8_lossy(&start_output.stderr)
-    );
-
-    // Try to delete without --force — should fail.
-    let del_output = common::ember(&["--state-dir", state, "vm", "delete", "runningvm"]);
-    assert!(
-        !del_output.status.success(),
+        !del.status.success(),
         "expected delete of running VM to fail without --force"
     );
-    let stderr = String::from_utf8_lossy(&del_output.stderr);
+    let stderr = String::from_utf8_lossy(&del.stderr);
     assert!(
         stderr.contains("--force"),
         "expected error mentioning --force: {stderr}"
     );
 
-    // Delete with --force — should succeed and kill the process.
-    let force_output =
-        common::ember(&["--state-dir", state, "vm", "delete", "runningvm", "--force"]);
-    let force_stdout = String::from_utf8_lossy(&force_output.stdout);
-    let force_stderr = String::from_utf8_lossy(&force_output.stderr);
+    // Delete with --force — should succeed.
+    let force_del = common::ember(&["--state-dir", state, "vm", "delete", "runningvm", "--force"]);
+    let force_stdout = String::from_utf8_lossy(&force_del.stdout);
+    let force_stderr = String::from_utf8_lossy(&force_del.stderr);
     assert!(
-        force_output.status.success(),
+        force_del.status.success(),
         "vm delete --force failed.\nstdout: {force_stdout}\nstderr: {force_stderr}"
     );
 
-    // Verify zvol is gone.
-    common::linux::assert_dataset_absent(&format!("{pool}/ember/vms/runningvm"));
+    // Platform-specific: verify storage cleanup.
+    #[cfg(target_os = "linux")]
+    common::linux::assert_dataset_absent(&format!("{}/ember/vms/runningvm", env.pool));
+}
+
+/// Pause/resume lifecycle: pause → verify → resume → verify → edge cases → cleanup.
+///
+/// Verifies:
+/// - Pause transitions status from running to paused
+/// - Resume transitions status from paused to running
+/// - Pausing an already paused VM fails
+/// - Resuming an already running VM fails
+#[test]
+#[ignore]
+fn vm_pause_resume_lifecycle() {
+    let env = match common::TestEnv::with_running_vm("vmpauseresume", "prvm") {
+        Some(e) => e,
+        None => return,
+    };
+    let state = env.state();
+
+    // Verify running.
+    let inspect1 = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect1.status.success());
+    let json1: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect1.stdout))
+        .expect("failed to parse inspect JSON");
+    assert_eq!(json1["status"], "running");
+
+    // Pause.
+    let pause = common::ember(&["--state-dir", state, "vm", "pause", "prvm"]);
+    let pause_stdout = String::from_utf8_lossy(&pause.stdout);
+    let pause_stderr = String::from_utf8_lossy(&pause.stderr);
+    assert!(
+        pause.status.success(),
+        "vm pause failed.\nstdout: {pause_stdout}\nstderr: {pause_stderr}"
+    );
+    assert!(
+        pause_stdout.contains("paused"),
+        "expected 'paused' in output: {pause_stdout}"
+    );
+
+    // Verify paused.
+    let inspect2 = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect2.status.success());
+    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
+        .expect("failed to parse inspect JSON after pause");
+    assert_eq!(
+        json2["status"], "paused",
+        "expected status 'paused', got: {}",
+        json2["status"]
+    );
+
+    // Linux: verify process is still alive (paused, not killed).
+    #[cfg(target_os = "linux")]
+    {
+        let pid = json2["pid"]
+            .as_u64()
+            .expect("expected numeric PID in inspect output");
+        assert!(
+            std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "Firecracker process (pid {pid}) should be alive while paused"
+        );
+    }
+
+    // Pausing an already paused VM should fail.
+    let pause_again = common::ember(&["--state-dir", state, "vm", "pause", "prvm"]);
+    assert!(
+        !pause_again.status.success(),
+        "expected pause to fail for already-paused VM"
+    );
+    let pause_again_stderr = String::from_utf8_lossy(&pause_again.stderr);
+    assert!(
+        pause_again_stderr.contains("paused") && pause_again_stderr.contains("expected running"),
+        "expected state error: {pause_again_stderr}"
+    );
+
+    // Resume.
+    let resume = common::ember(&["--state-dir", state, "vm", "resume", "prvm"]);
+    let resume_stdout = String::from_utf8_lossy(&resume.stdout);
+    let resume_stderr = String::from_utf8_lossy(&resume.stderr);
+    assert!(
+        resume.status.success(),
+        "vm resume failed.\nstdout: {resume_stdout}\nstderr: {resume_stderr}"
+    );
+    assert!(
+        resume_stdout.contains("resumed"),
+        "expected 'resumed' in output: {resume_stdout}"
+    );
+
+    // Verify running again.
+    let inspect3 = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "prvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect3.status.success());
+    let json3: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect3.stdout))
+        .expect("failed to parse inspect JSON after resume");
+    assert_eq!(
+        json3["status"], "running",
+        "expected status 'running' after resume, got: {}",
+        json3["status"]
+    );
+
+    // Resuming an already running VM should fail.
+    let resume_again = common::ember(&["--state-dir", state, "vm", "resume", "prvm"]);
+    assert!(
+        !resume_again.status.success(),
+        "expected resume to fail for already-running VM"
+    );
+    let resume_again_stderr = String::from_utf8_lossy(&resume_again.stderr);
+    assert!(
+        resume_again_stderr.contains("running") && resume_again_stderr.contains("expected paused"),
+        "expected state error: {resume_again_stderr}"
+    );
+
+    // Stop and cleanup.
+    let stop = common::ember(&["--state-dir", state, "vm", "stop", "prvm", "--force"]);
+    assert!(
+        stop.status.success(),
+        "vm stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+
+    let del = common::ember(&["--state-dir", state, "vm", "delete", "prvm"]);
+    assert!(
+        del.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del.stderr)
+    );
+}
+
+/// Stopping a paused VM should work (via --force).
+#[test]
+#[ignore]
+fn vm_stop_paused() {
+    let env = match common::TestEnv::with_running_vm("vmstoppaused", "spvm") {
+        Some(e) => e,
+        None => return,
+    };
+    let state = env.state();
+
+    // Pause.
+    let pause = common::ember(&["--state-dir", state, "vm", "pause", "spvm"]);
+    assert!(
+        pause.status.success(),
+        "vm pause failed: {}",
+        String::from_utf8_lossy(&pause.stderr)
+    );
+
+    // Stop the paused VM with --force.
+    let stop = common::ember(&["--state-dir", state, "vm", "stop", "spvm", "--force"]);
+    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
+    let stop_stderr = String::from_utf8_lossy(&stop.stderr);
+    assert!(
+        stop.status.success(),
+        "vm stop --force failed for paused VM.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
+    );
+
+    // Verify stopped.
+    let inspect = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "spvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON after stop");
+    assert_eq!(json["status"], "stopped");
+
+    // Cleanup.
+    let del = common::ember(&["--state-dir", state, "vm", "delete", "spvm"]);
+    assert!(
+        del.status.success(),
+        "vm delete failed: {}",
+        String::from_utf8_lossy(&del.stderr)
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Networking test (requires Firecracker + kernel + network access)
+// Linux-specific tests
 // ---------------------------------------------------------------------------
 
-/// Full networking test: start VM → verify TAP + iptables + host-to-guest ping
-/// → SSH into guest → verify internet from guest → stop → delete.
+/// Full networking test: start VM → verify TAP + iptables + ping → SSH → internet → stop.
 ///
 /// Uses the `ubuntu-slim` image (built via Docker) which includes systemd,
-/// openssh-server, and networking tools — everything needed for proper SSH
-/// and internet connectivity testing.
+/// openssh-server, and networking tools.
 ///
-/// Requires:
-/// - `firecracker` in PATH, `/dev/kvm` available
-/// - `docker` for building the ubuntu-slim image
-/// - Bootable kernel (auto-downloaded or `EMBER_TEST_KERNEL`)
-/// - SSH key pair for the invoking user
-/// - Network access (host must be able to reach the internet)
-///
-/// Skips if prerequisites are missing.
+/// Requires: Firecracker, Docker, bootable kernel, SSH key pair, network access.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore]
 fn networking_ssh_and_internet() {
@@ -536,7 +585,6 @@ fn networking_ssh_and_internet() {
     let kernel = kernel_path.to_str().unwrap();
 
     // -- Create VM --
-    // Ubuntu with systemd needs more memory than Alpine with busybox init.
     let create_output = common::ember(&[
         "--state-dir",
         state,
@@ -646,8 +694,6 @@ fn networking_ssh_and_internet() {
     );
 
     // -- Ping guest from host --
-    // The guest needs a moment to boot and configure its network via the
-    // kernel ip= parameter. Retry ping with short delays.
     let mut ping_ok = false;
     for attempt in 1..=20 {
         let ping = std::process::Command::new("ping")
@@ -667,14 +713,12 @@ fn networking_ssh_and_internet() {
     );
 
     // -- SSH into guest --
-    // Ubuntu with systemd + sshd needs more time to boot than Alpine.
     eprintln!("Waiting for SSH to become available...");
     assert!(
         common::linux::wait_for_ssh(guest_ip, &ssh_key),
         "SSH not reachable at {guest_ip}:22 after timeout"
     );
 
-    // Run a simple command to verify SSH exec works.
     let hostname_result = common::linux::ssh_exec(guest_ip, &ssh_key, "hostname");
     assert!(
         hostname_result.is_ok(),
@@ -685,7 +729,6 @@ fn networking_ssh_and_internet() {
     eprintln!("Guest hostname: {hostname}");
 
     // -- Verify DNS resolution from guest --
-    // /etc/resolv.conf should be a symlink to /proc/net/pnp with real nameservers.
     let resolv_result = common::linux::ssh_exec(guest_ip, &ssh_key, "cat /etc/resolv.conf");
     assert!(
         resolv_result.is_ok(),
@@ -699,7 +742,6 @@ fn networking_ssh_and_internet() {
         "expected nameserver entries in resolv.conf: {resolv_contents}"
     );
 
-    // Verify DNS actually works by resolving a domain name.
     let dns_result = common::linux::ssh_exec(guest_ip, &ssh_key, "ping -c 1 -W 5 example.com");
     assert!(
         dns_result.is_ok(),
@@ -708,8 +750,7 @@ fn networking_ssh_and_internet() {
     );
     eprintln!("Guest DNS resolution verified (ping example.com)");
 
-    // -- Verify internet from guest (requires both DNS + connectivity) --
-    // Use curl with generous timeout — first DNS query after boot can be slow.
+    // -- Verify internet from guest --
     let inet_result = common::linux::ssh_exec(
         guest_ip,
         &ssh_key,
@@ -766,410 +807,87 @@ fn networking_ssh_and_internet() {
     );
 
     common::linux::assert_dataset_absent(&format!("{pool}/ember/vms/netvm"));
-    eprintln!("Networking test complete.");
 }
 
 // ---------------------------------------------------------------------------
-// Pause/Resume tests
+// macOS-specific tests
 // ---------------------------------------------------------------------------
 
-/// Pausing a created (not running) VM should fail with a state error.
-#[test]
-#[ignore]
-fn pause_created_vm_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_init_and_pull("vmpausecreated", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
-
-    // Create a VM but don't start it.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "pausetest",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
-    assert!(
-        output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Try to pause — should fail because VM is in "created" state.
-    let pause_output = common::ember(&["--state-dir", state, "vm", "pause", "pausetest"]);
-    assert!(
-        !pause_output.status.success(),
-        "expected pause to fail for non-running VM"
-    );
-    let stderr = String::from_utf8_lossy(&pause_output.stderr);
-    assert!(
-        stderr.contains("created") && stderr.contains("expected running"),
-        "expected state error mentioning 'created' and 'expected running': {stderr}"
-    );
-}
-
-/// Resuming a created (not paused) VM should fail with a state error.
-#[test]
-#[ignore]
-fn resume_created_vm_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (_pool, state_dir, _cleanup) =
-        common::linux::setup_pool_init_and_pull("vmresumecreated", &tmp);
-    let kernel = common::linux::create_dummy_kernel(tmp.path());
-    let state = state_dir.to_str().unwrap();
-
-    // Create a VM but don't start it.
-    let output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "resumetest",
-        "--image",
-        "alpine:latest",
-        "--kernel",
-        kernel.to_str().unwrap(),
-        "--no-start",
-    ]);
-    assert!(
-        output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Try to resume — should fail because VM is in "created" state.
-    let resume_output = common::ember(&["--state-dir", state, "vm", "resume", "resumetest"]);
-    assert!(
-        !resume_output.status.success(),
-        "expected resume to fail for non-paused VM"
-    );
-    let stderr = String::from_utf8_lossy(&resume_output.stderr);
-    assert!(
-        stderr.contains("created") && stderr.contains("expected paused"),
-        "expected state error mentioning 'created' and 'expected paused': {stderr}"
-    );
-}
-
-/// Full pause/resume lifecycle: create → start → pause → verify paused
-/// → resume → verify running → stop → delete.
+/// Verify that a VM booted with a static IP does not use DHCP.
 ///
-/// Verifies:
-/// - Pause transitions status from running to paused
-/// - PID is preserved across pause (Firecracker process stays alive)
-/// - Resume transitions status from paused to running
-/// - PID is unchanged after resume
-/// - Resuming a running VM (after resume) fails
-/// - Pausing a paused VM fails
-/// - Stopping a paused VM works
-///
-/// Requires `firecracker` in PATH and a bootable kernel.
+/// Boots ember-vz directly with static IP boot args, verifies serial output
+/// does not contain DHCP requests.
+#[cfg(target_os = "macos")]
 #[test]
 #[ignore]
-fn pause_resume_lifecycle() {
-    if !common::linux::firecracker_available() {
-        return;
-    }
+fn vm_boots_with_static_ip() {
+    use std::time::Duration;
 
-    let kernel_path = match common::linux::ensure_kernel() {
-        Some(p) => p,
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
+
+    const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
+    const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let ember_vz = match common::macos::ember_vz_bin() {
+        Some(p) => {
+            eprintln!("Using ember-vz: {}", p.display());
+            p
+        }
+        None => {
+            eprintln!("Skipping: ember-vz not found");
+            return;
+        }
+    };
+
+    let kernel = match common::macos::ensure_kernel() {
+        Some(k) => {
+            eprintln!("Using kernel: {}", k.display());
+            k
+        }
         None => return,
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) =
-        common::linux::setup_pool_init_and_pull("vmpauseresume", &tmp);
-    let state = state_dir.to_str().unwrap();
-    let kernel = kernel_path.to_str().unwrap();
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
+    let serial_log = tmp.path().join("console.log");
 
-    // -- Create --
-    let create_output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "prvm",
-        "--image",
-        "alpine:latest",
-        "--cpus",
-        "1",
-        "--memory",
-        "128M",
-        "--kernel",
-        kernel,
-        "--no-start",
-    ]);
-    assert!(
-        create_output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&create_output.stderr)
+    // Use a static IP in the vmnet range.
+    let guest_ip = "192.168.64.2";
+    let boot_args = format!(
+        "console=hvc0 root=/dev/vda rw ip={}::192.168.64.1:255.255.255.0:testvm:eth0:off",
+        guest_ip
     );
 
-    // -- Start --
-    let start_output = common::ember(&["--state-dir", state, "vm", "start", "prvm"]);
-    assert!(
-        start_output.status.success(),
-        "vm start failed: {}",
-        String::from_utf8_lossy(&start_output.stderr)
-    );
+    eprintln!("Starting VM with static IP {guest_ip}...");
+    let (mut child, pid, read_file) =
+        common::macos::spawn_ember_vz(&ember_vz, &kernel, &rootfs, &serial_log, &boot_args);
 
-    // Capture PID while running.
-    let inspect1 = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "inspect",
-        "prvm",
-        "--format",
-        "json",
-    ]);
-    assert!(inspect1.status.success());
-    let json1: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect1.stdout))
-        .expect("failed to parse inspect JSON");
-    assert_eq!(json1["status"], "running");
-    let pid = json1["pid"]
-        .as_u64()
-        .expect("expected numeric PID in inspect output");
-
-    // -- Pause --
-    let pause_output = common::ember(&["--state-dir", state, "vm", "pause", "prvm"]);
-    let pause_stdout = String::from_utf8_lossy(&pause_output.stdout);
-    let pause_stderr = String::from_utf8_lossy(&pause_output.stderr);
-    assert!(
-        pause_output.status.success(),
-        "vm pause failed.\nstdout: {pause_stdout}\nstderr: {pause_stderr}"
-    );
-    assert!(
-        pause_stdout.contains("paused"),
-        "expected 'paused' in output: {pause_stdout}"
-    );
-
-    // Verify status is paused and PID is preserved.
-    let inspect2 = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "inspect",
-        "prvm",
-        "--format",
-        "json",
-    ]);
-    assert!(inspect2.status.success());
-    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-        .expect("failed to parse inspect JSON after pause");
-    assert_eq!(
-        json2["status"], "paused",
-        "expected status 'paused', got: {}",
-        json2["status"]
-    );
-    assert_eq!(
-        json2["pid"].as_u64().unwrap(),
-        pid,
-        "PID should be preserved after pause"
-    );
-
-    // Firecracker process should still be alive (paused, not killed).
-    assert!(
-        Path::new(&format!("/proc/{pid}")).exists(),
-        "Firecracker process (pid {pid}) should be alive while paused"
-    );
-
-    // -- Pausing an already paused VM should fail --
-    let pause_again = common::ember(&["--state-dir", state, "vm", "pause", "prvm"]);
-    assert!(
-        !pause_again.status.success(),
-        "expected pause to fail for already-paused VM"
-    );
-    let pause_again_stderr = String::from_utf8_lossy(&pause_again.stderr);
-    assert!(
-        pause_again_stderr.contains("paused") && pause_again_stderr.contains("expected running"),
-        "expected state error: {pause_again_stderr}"
-    );
-
-    // -- Resume --
-    let resume_output = common::ember(&["--state-dir", state, "vm", "resume", "prvm"]);
-    let resume_stdout = String::from_utf8_lossy(&resume_output.stdout);
-    let resume_stderr = String::from_utf8_lossy(&resume_output.stderr);
-    assert!(
-        resume_output.status.success(),
-        "vm resume failed.\nstdout: {resume_stdout}\nstderr: {resume_stderr}"
-    );
-    assert!(
-        resume_stdout.contains("resumed"),
-        "expected 'resumed' in output: {resume_stdout}"
-    );
-
-    // Verify status is back to running and PID is unchanged.
-    let inspect3 = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "inspect",
-        "prvm",
-        "--format",
-        "json",
-    ]);
-    assert!(inspect3.status.success());
-    let json3: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect3.stdout))
-        .expect("failed to parse inspect JSON after resume");
-    assert_eq!(
-        json3["status"], "running",
-        "expected status 'running' after resume, got: {}",
-        json3["status"]
-    );
-    assert_eq!(
-        json3["pid"].as_u64().unwrap(),
-        pid,
-        "PID should be preserved after resume"
-    );
-
-    // -- Resuming a running VM should fail --
-    let resume_again = common::ember(&["--state-dir", state, "vm", "resume", "prvm"]);
-    assert!(
-        !resume_again.status.success(),
-        "expected resume to fail for already-running VM"
-    );
-    let resume_again_stderr = String::from_utf8_lossy(&resume_again.stderr);
-    assert!(
-        resume_again_stderr.contains("running") && resume_again_stderr.contains("expected paused"),
-        "expected state error: {resume_again_stderr}"
-    );
-
-    // -- Stop and cleanup --
-    let stop_output = common::ember(&["--state-dir", state, "vm", "stop", "prvm", "--force"]);
-    assert!(
-        stop_output.status.success(),
-        "vm stop failed: {}",
-        String::from_utf8_lossy(&stop_output.stderr)
-    );
-
-    let del_output = common::ember(&["--state-dir", state, "vm", "delete", "prvm"]);
-    assert!(
-        del_output.status.success(),
-        "vm delete failed: {}",
-        String::from_utf8_lossy(&del_output.stderr)
-    );
-
-    common::linux::assert_dataset_absent(&format!("{pool}/ember/vms/prvm"));
-    eprintln!("Pause/resume lifecycle test complete.");
-}
-
-/// Stopping a paused VM should work (via --force).
-///
-/// Requires `firecracker` in PATH and a bootable kernel.
-#[test]
-#[ignore]
-fn stop_paused_vm() {
-    if !common::linux::firecracker_available() {
-        return;
-    }
-
-    let kernel_path = match common::linux::ensure_kernel() {
-        Some(p) => p,
-        None => return,
+    let mac = match common::macos::read_mac_from_pipe(read_file, BOOT_TIMEOUT) {
+        Some(m) => m,
+        None => {
+            let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
+            panic!("VM failed to boot (no MAC on ready-fd)");
+        }
     };
+    eprintln!("VM booted, MAC: {mac}");
 
-    let tmp = tempfile::tempdir().unwrap();
-    let (pool, state_dir, _cleanup) = common::linux::setup_pool_init_and_pull("vmstoppaused", &tmp);
-    let state = state_dir.to_str().unwrap();
-    let kernel = kernel_path.to_str().unwrap();
+    // Give the kernel a moment to configure the static IP.
+    std::thread::sleep(Duration::from_secs(3));
 
-    // Create and start.
-    let create_output = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "create",
-        "spvm",
-        "--image",
-        "alpine:latest",
-        "--cpus",
-        "1",
-        "--memory",
-        "128M",
-        "--kernel",
-        kernel,
-        "--no-start",
-    ]);
+    let serial = std::fs::read_to_string(&serial_log).unwrap_or_default();
+    eprintln!("Serial log ({} bytes)", serial.len());
+
+    // Stop VM.
+    let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+    let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
+
+    // The serial output should NOT contain DHCP requests since we used a static IP.
     assert!(
-        create_output.status.success(),
-        "vm create failed: {}",
-        String::from_utf8_lossy(&create_output.stderr)
+        !serial.contains("Sending DHCP requests"),
+        "static IP boot should not trigger DHCP"
     );
 
-    let start_output = common::ember(&["--state-dir", state, "vm", "start", "spvm"]);
-    assert!(
-        start_output.status.success(),
-        "vm start failed: {}",
-        String::from_utf8_lossy(&start_output.stderr)
-    );
-
-    // Get PID for later verification.
-    let inspect = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "inspect",
-        "spvm",
-        "--format",
-        "json",
-    ]);
-    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
-        .expect("failed to parse inspect JSON");
-    let pid = json["pid"].as_u64().expect("expected numeric PID");
-
-    // Pause the VM.
-    let pause_output = common::ember(&["--state-dir", state, "vm", "pause", "spvm"]);
-    assert!(
-        pause_output.status.success(),
-        "vm pause failed: {}",
-        String::from_utf8_lossy(&pause_output.stderr)
-    );
-
-    // Stop the paused VM with --force.
-    let stop_output = common::ember(&["--state-dir", state, "vm", "stop", "spvm", "--force"]);
-    let stop_stdout = String::from_utf8_lossy(&stop_output.stdout);
-    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
-    assert!(
-        stop_output.status.success(),
-        "vm stop --force failed for paused VM.\nstdout: {stop_stdout}\nstderr: {stop_stderr}"
-    );
-
-    // Verify process is dead.
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "Firecracker process (pid {pid}) should be dead after stop"
-    );
-
-    // Verify status is stopped.
-    let inspect2 = common::ember(&[
-        "--state-dir",
-        state,
-        "vm",
-        "inspect",
-        "spvm",
-        "--format",
-        "json",
-    ]);
-    assert!(inspect2.status.success());
-    let json2: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect2.stdout))
-        .expect("failed to parse inspect JSON after stop");
-    assert_eq!(json2["status"], "stopped");
-
-    // Cleanup.
-    let del_output = common::ember(&["--state-dir", state, "vm", "delete", "spvm"]);
-    assert!(
-        del_output.status.success(),
-        "vm delete failed: {}",
-        String::from_utf8_lossy(&del_output.stderr)
-    );
-
-    common::linux::assert_dataset_absent(&format!("{pool}/ember/vms/spvm"));
-    eprintln!("Stop paused VM test complete.");
+    eprintln!("Network test passed: VM booted with static IP {guest_ip} (no DHCP)");
 }

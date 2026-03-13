@@ -24,7 +24,7 @@
 ## Phase C: Unify Running-VM Tests
 
 - [x] Add `TestEnv::with_running_vm()` constructor (platform-specific prerequisites, returns Option)
-- [ ] Unify `vm.rs` + `macos_vm.rs` + `macos_network.rs` → single `vm.rs`. Delete `macos_vm.rs`, `macos_network.rs`
+- [x] Unify `vm.rs` + `macos_vm.rs` + `macos_network.rs` → single `vm.rs`. Delete `macos_vm.rs`, `macos_network.rs`
 - [ ] Unify `ssh.rs` — remove `#![cfg(target_os = "linux")]`, use `TestEnv`
 - [ ] Verify: `cargo build --tests` on macOS; `./run-integration-tests.sh vm ssh`
 
