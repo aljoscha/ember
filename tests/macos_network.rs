@@ -41,7 +41,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 #[test]
 #[ignore]
 fn vm_boots_with_static_ip() {
-    let ember_vz = match common::ember_vz_bin() {
+    let ember_vz = match common::macos::ember_vz_bin() {
         Some(p) => {
             eprintln!("Using ember-vz: {}", p.display());
             p
@@ -52,7 +52,7 @@ fn vm_boots_with_static_ip() {
         }
     };
 
-    let kernel = match common::ensure_kernel() {
+    let kernel = match common::macos::ensure_kernel() {
         Some(k) => {
             eprintln!("Using kernel: {}", k.display());
             k
@@ -61,7 +61,7 @@ fn vm_boots_with_static_ip() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = common::create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
     // Use a static IP in the vmnet range (avoiding .1 which is the gateway).
@@ -75,13 +75,13 @@ fn vm_boots_with_static_ip() {
 
     eprintln!("Starting VM with static IP {guest_ip}...");
     let (mut child, pid, read_file) =
-        common::spawn_ember_vz(&ember_vz, &kernel, &rootfs, &serial_log, &boot_args);
+        common::macos::spawn_ember_vz(&ember_vz, &kernel, &rootfs, &serial_log, &boot_args);
 
-    let mac = match common::read_mac_from_pipe(read_file, BOOT_TIMEOUT) {
+    let mac = match common::macos::read_mac_from_pipe(read_file, BOOT_TIMEOUT) {
         Some(m) => m,
         None => {
             let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
-            let _ = common::wait_for_exit(&mut child, STOP_TIMEOUT);
+            let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
             panic!("VM failed to boot (no MAC on ready-fd)");
         }
     };
@@ -99,7 +99,7 @@ fn vm_boots_with_static_ip() {
 
     eprintln!("Stopping VM...");
     let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
-    let _ = common::wait_for_exit(&mut child, STOP_TIMEOUT);
+    let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
 
     // --- Assertions ---
 

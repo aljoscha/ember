@@ -57,7 +57,7 @@ fn is_running(pid: u32) -> bool {
 #[test]
 #[ignore]
 fn vm_lifecycle_start_stop() {
-    let ember_vz = match common::ember_vz_bin() {
+    let ember_vz = match common::macos::ember_vz_bin() {
         Some(p) => {
             eprintln!("Using ember-vz: {}", p.display());
             p
@@ -68,7 +68,7 @@ fn vm_lifecycle_start_stop() {
         }
     };
 
-    let kernel = match common::ensure_kernel() {
+    let kernel = match common::macos::ensure_kernel() {
         Some(k) => {
             eprintln!("Using kernel: {}", k.display());
             k
@@ -77,13 +77,13 @@ fn vm_lifecycle_start_stop() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = common::create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
     // --- Start with ready-fd ---
 
     eprintln!("Starting VM with ready-fd pipe...");
-    let (mut child, pid, read_file) = common::spawn_ember_vz(
+    let (mut child, pid, read_file) = common::macos::spawn_ember_vz(
         &ember_vz,
         &kernel,
         &rootfs,
@@ -92,12 +92,12 @@ fn vm_lifecycle_start_stop() {
     );
 
     // Read MAC from ready-fd (same as MacosVm::start does).
-    let mac = match common::read_mac_from_pipe(read_file, BOOT_TIMEOUT) {
+    let mac = match common::macos::read_mac_from_pipe(read_file, BOOT_TIMEOUT) {
         Some(m) => m,
         None => {
             eprintln!("Failed to read MAC from ready-fd — VM may have crashed");
             let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
-            let _ = common::wait_for_exit(&mut child, STOP_TIMEOUT);
+            let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
             panic!("VM failed to boot (no MAC on ready-fd)");
         }
     };
@@ -121,7 +121,7 @@ fn vm_lifecycle_start_stop() {
 
     eprintln!("Stopping VM (SIGTERM)...");
     signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM).expect("SIGTERM failed");
-    let status = common::wait_for_exit(&mut child, STOP_TIMEOUT);
+    let status = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
     eprintln!("VM exited: {status}");
 
     assert!(status.success(), "expected clean exit, got {status}");
@@ -148,23 +148,23 @@ fn vm_lifecycle_start_stop() {
 #[test]
 #[ignore]
 fn vm_force_stop() {
-    let ember_vz = match common::ember_vz_bin() {
+    let ember_vz = match common::macos::ember_vz_bin() {
         Some(p) => p,
         None => {
             eprintln!("Skipping: ember-vz not found");
             return;
         }
     };
-    let kernel = match common::ensure_kernel() {
+    let kernel = match common::macos::ensure_kernel() {
         Some(k) => k,
         None => return,
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = common::create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
-    let (mut child, pid, read_file) = common::spawn_ember_vz(
+    let (mut child, pid, read_file) = common::macos::spawn_ember_vz(
         &ember_vz,
         &kernel,
         &rootfs,
@@ -173,13 +173,14 @@ fn vm_force_stop() {
     );
 
     // Wait for boot.
-    let _mac = common::read_mac_from_pipe(read_file, BOOT_TIMEOUT).expect("VM failed to boot");
+    let _mac =
+        common::macos::read_mac_from_pipe(read_file, BOOT_TIMEOUT).expect("VM failed to boot");
     assert!(is_running(pid));
 
     // Force stop (SIGKILL — same as MacosVm::force_stop).
     eprintln!("Sending SIGKILL...");
     signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL).expect("SIGKILL failed");
-    let _ = common::wait_for_exit(&mut child, Duration::from_secs(5));
+    let _ = common::macos::wait_for_exit(&mut child, Duration::from_secs(5));
 
     assert!(!is_running(pid), "process should be dead after SIGKILL");
     eprintln!("Force stop test passed");
@@ -189,23 +190,23 @@ fn vm_force_stop() {
 #[test]
 #[ignore]
 fn vm_pause_resume() {
-    let ember_vz = match common::ember_vz_bin() {
+    let ember_vz = match common::macos::ember_vz_bin() {
         Some(p) => p,
         None => {
             eprintln!("Skipping: ember-vz not found");
             return;
         }
     };
-    let kernel = match common::ensure_kernel() {
+    let kernel = match common::macos::ensure_kernel() {
         Some(k) => k,
         None => return,
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = common::create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
-    let (mut child, pid, read_file) = common::spawn_ember_vz(
+    let (mut child, pid, read_file) = common::macos::spawn_ember_vz(
         &ember_vz,
         &kernel,
         &rootfs,
@@ -213,7 +214,8 @@ fn vm_pause_resume() {
         "console=hvc0 root=/dev/vda rw",
     );
 
-    let _mac = common::read_mac_from_pipe(read_file, BOOT_TIMEOUT).expect("VM failed to boot");
+    let _mac =
+        common::macos::read_mac_from_pipe(read_file, BOOT_TIMEOUT).expect("VM failed to boot");
 
     std::thread::sleep(Duration::from_secs(2));
 
@@ -231,7 +233,7 @@ fn vm_pause_resume() {
 
     // Clean shutdown.
     signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM).expect("SIGTERM failed");
-    let _ = common::wait_for_exit(&mut child, STOP_TIMEOUT);
+    let _ = common::macos::wait_for_exit(&mut child, STOP_TIMEOUT);
     assert!(!is_running(pid));
 
     eprintln!("Pause/resume test passed");

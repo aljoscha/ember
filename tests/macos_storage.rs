@@ -42,7 +42,7 @@ fn create_test_image(dir: &Path, name: &str, size_mb: u64) -> PathBuf {
         .expect("failed to run truncate");
     assert!(status.success(), "truncate failed");
 
-    let mkfs = common::find_e2fsprogs_tool("mkfs.ext4");
+    let mkfs = common::macos::find_e2fsprogs_tool("mkfs.ext4");
     let output = Command::new(&mkfs)
         .args(["-F", "-q"])
         .arg(&img)
@@ -138,7 +138,7 @@ fn create_test_vm_manual(state_dir: &Path, vm_name: &str, image_name: &str) {
 
 /// Set up ember init, create a test image, register it, and create a VM.
 fn setup_with_vm(tmp: &Path, test_name: &str, vm_name: &str) -> PathBuf {
-    let state_dir = common::setup_init(tmp);
+    let state_dir = common::macos::setup_init(tmp);
     let img = create_test_image(tmp, test_name, 64);
     register_test_image(&state_dir, "testimg", "latest", &img);
     create_test_vm_manual(&state_dir, vm_name, "testimg-latest");
@@ -408,7 +408,7 @@ fn snapshot_list_empty() {
 #[ignore]
 fn apfs_clone_does_not_reduce_free_space() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
     let img = create_test_image(tmp.path(), "cowtest", 64);
     register_test_image(&state_dir, "cowimg", "latest", &img);
 
@@ -440,7 +440,7 @@ fn apfs_clone_does_not_reduce_free_space() {
 #[ignore]
 fn storage_efficiency_shows_savings() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
     let state = state_dir.to_str().unwrap();
     let img = create_test_image(tmp.path(), "efftest", 64);
     register_test_image(&state_dir, "effimg", "latest", &img);
@@ -584,7 +584,7 @@ fn resize_grows_disk() {
 
     // --- Verify ext4 filesystem was expanded ---
     // Use dumpe2fs to check the block count reflects ~2 GiB.
-    let dumpe2fs = common::find_e2fsprogs_tool("dumpe2fs");
+    let dumpe2fs = common::macos::find_e2fsprogs_tool("dumpe2fs");
     let output = Command::new(&dumpe2fs)
         .arg("-h")
         .arg(&rootfs)

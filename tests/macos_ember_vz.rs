@@ -93,7 +93,7 @@ fn wait_with_timeout(
 fn ember_vz_boot_serial_and_network() {
     // --- Prerequisites ---
 
-    let ember_vz = match common::ember_vz_bin() {
+    let ember_vz = match common::macos::ember_vz_bin() {
         Some(p) => {
             eprintln!("Using ember-vz: {}", p.display());
             p
@@ -104,7 +104,7 @@ fn ember_vz_boot_serial_and_network() {
         }
     };
 
-    let kernel = match common::ensure_kernel() {
+    let kernel = match common::macos::ensure_kernel() {
         Some(k) => {
             eprintln!("Using kernel: {}", k.display());
             k
@@ -118,7 +118,7 @@ fn ember_vz_boot_serial_and_network() {
     // --- Setup ---
 
     let tmp = tempfile::tempdir().unwrap();
-    let rootfs = common::create_test_rootfs(tmp.path(), 64);
+    let rootfs = common::macos::create_test_rootfs(tmp.path(), 64);
     let serial_log = tmp.path().join("console.log");
 
     // --- Spawn ember-vz ---

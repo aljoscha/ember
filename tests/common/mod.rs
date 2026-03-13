@@ -18,16 +18,6 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
-// Transitional re-exports: existing test files reference these as `common::X`.
-// They will be updated to `common::macos::X` in the next task, then these
-// re-exports can be removed.
-#[cfg(target_os = "macos")]
-#[allow(unused_imports)]
-pub use macos::{
-    create_test_rootfs, ember_vz_bin, ensure_kernel, find_e2fsprogs_tool, read_mac_from_pipe,
-    setup_init, spawn_ember_vz, wait_for_exit,
-};
-
 use std::path::PathBuf;
 use std::process::Command;
 

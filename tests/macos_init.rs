@@ -26,7 +26,7 @@ mod common;
 #[ignore]
 fn init_creates_directory_structure() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Required directories.
     let expected_dirs = ["images/data", "vms", "kernels", "network"];
@@ -46,7 +46,7 @@ fn init_creates_directory_structure() {
 #[ignore]
 fn init_writes_config_json() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     let config_path = state_dir.join("config.json");
     assert!(config_path.exists(), "config.json not found");
@@ -69,7 +69,7 @@ fn init_writes_config_json() {
 #[ignore]
 fn init_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Run init again on the same state directory.
     let output = common::ember(&["--state-dir", state_dir.to_str().unwrap(), "init"]);
@@ -97,7 +97,7 @@ fn init_works_without_root() {
     );
 
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Verify basic structure was created.
     assert!(state_dir.join("config.json").exists());

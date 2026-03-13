@@ -28,7 +28,7 @@ mod common;
 #[ignore]
 fn pull_alpine_creates_image_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Pull a small image (alpine is ~3 MB compressed).
     let output = common::ember(&[
@@ -71,7 +71,7 @@ fn pull_alpine_creates_image_file() {
 #[ignore]
 fn list_shows_pulled_image() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Pull first.
     let pull = common::ember(&[
@@ -126,7 +126,7 @@ fn list_shows_pulled_image() {
 #[ignore]
 fn delete_removes_image_and_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // Pull.
     let pull = common::ember(&[
@@ -177,7 +177,7 @@ fn delete_removes_image_and_file() {
 #[ignore]
 fn pull_same_image_twice_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
-    let state_dir = common::setup_init(tmp.path());
+    let state_dir = common::macos::setup_init(tmp.path());
 
     // First pull.
     let pull1 = common::ember(&[
