@@ -195,10 +195,7 @@ fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf>
         } else {
             Command::new("gtar")
         };
-        cmd.arg("xf")
-            .arg(&tarball)
-            .arg("-C")
-            .arg(&rootfs_dir);
+        cmd.arg("xf").arg(&tarball).arg("-C").arg(&rootfs_dir);
         let label = if use_fakeroot {
             "fakeroot gtar xf"
         } else {

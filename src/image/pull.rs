@@ -406,10 +406,7 @@ fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> 
         } else {
             Command::new("gtar")
         };
-        cmd.arg("xf")
-            .arg(&layer_path)
-            .arg("-C")
-            .arg(rootfs_dir);
+        cmd.arg("xf").arg(&layer_path).arg("-C").arg(rootfs_dir);
         let label = if use_fakeroot {
             "fakeroot gtar xf"
         } else {
