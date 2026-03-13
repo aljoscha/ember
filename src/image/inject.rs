@@ -153,6 +153,40 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
     })
 }
 
+/// Inject `/etc/hosts` into the rootfs for localhost resolution.
+///
+/// Writes a minimal `/etc/hosts` with the standard loopback entries.
+/// Without this, `localhost` is unresolvable in many container-derived
+/// images (which ship without `/etc/hosts`), causing tools like `psql`
+/// to fail when connecting to `localhost` instead of `127.0.0.1`.
+///
+/// Any existing `/etc/hosts` is replaced — container images often have
+/// stale or Docker-specific entries that don't apply inside a VM.
+pub fn inject_hosts(rootfs_dir: &Path) -> Result<()> {
+    let etc_dir = rootfs_dir.join("etc");
+    fs::create_dir_all(&etc_dir).map_err(|e| Error::Io {
+        path: etc_dir.clone(),
+        source: e,
+    })?;
+
+    let hosts_path = etc_dir.join("hosts");
+
+    if hosts_path.symlink_metadata().is_ok() {
+        let _ = fs::remove_file(&hosts_path);
+    }
+
+    fs::write(
+        &hosts_path,
+        "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n",
+    )
+    .map_err(|e| Error::Io {
+        path: hosts_path,
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 /// Inject `/etc/resolv.conf` into the rootfs for DNS resolution.
 ///
 /// **Linux**: Creates a symlink `/etc/resolv.conf` → `/proc/net/pnp`. The
@@ -418,6 +452,40 @@ mod tests {
         let (user, home) = detect_ssh_user(rootfs.path());
         assert_eq!(user, "root");
         assert_eq!(home, "root");
+    }
+
+    #[test]
+    fn inject_hosts_creates_file() {
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_hosts(rootfs.path()).unwrap();
+
+        let hosts = rootfs.path().join("etc/hosts");
+        let contents = fs::read_to_string(&hosts).unwrap();
+        assert!(contents.contains("127.0.0.1\tlocalhost"));
+        assert!(contents.contains("::1"));
+    }
+
+    #[test]
+    fn inject_hosts_creates_etc_dir() {
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_hosts(rootfs.path()).unwrap();
+
+        let hosts = rootfs.path().join("etc/hosts");
+        assert!(hosts.exists());
+    }
+
+    #[test]
+    fn inject_hosts_replaces_existing() {
+        let rootfs = tempfile::tempdir().unwrap();
+        let etc = rootfs.path().join("etc");
+        fs::create_dir_all(&etc).unwrap();
+        fs::write(etc.join("hosts"), "old content").unwrap();
+
+        inject_hosts(rootfs.path()).unwrap();
+
+        let contents = fs::read_to_string(etc.join("hosts")).unwrap();
+        assert!(contents.contains("127.0.0.1"));
+        assert!(!contents.contains("old content"));
     }
 
     #[cfg(not(target_os = "macos"))]
