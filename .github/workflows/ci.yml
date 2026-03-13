@@ -32,5 +32,8 @@ jobs:
       - name: make clippy
         run: make clippy
 
+      - name: cargo test
+        run: cargo test
+
       - name: cargo fmt -- --check
         run: cargo fmt -- --check
