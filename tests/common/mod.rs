@@ -158,4 +158,96 @@ impl TestEnv {
 
         env
     }
+
+    /// Full running VM. Returns `None` if prerequisites are missing.
+    ///
+    /// Linux: needs Firecracker in PATH + `/dev/kvm` + bootable kernel.
+    /// macOS: needs `ember-vz` binary + AVF-compatible kernel.
+    ///
+    /// Creates a VM with a real kernel, starts it, and waits briefly for
+    /// boot. Tests using this should explicitly stop the VM when done.
+    pub fn with_running_vm(test_name: &str, vm_name: &str) -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            if !linux::firecracker_available() {
+                eprintln!("Skipping: firecracker not available");
+                return None;
+            }
+            let kernel = linux::ensure_kernel()?;
+            let env = Self::with_image(test_name);
+
+            let output = ember(&[
+                "--state-dir",
+                env.state(),
+                "vm",
+                "create",
+                vm_name,
+                "--image",
+                "alpine:latest",
+                "--kernel",
+                kernel.to_str().unwrap(),
+                "--cpus",
+                "1",
+                "--memory",
+                "128M",
+                "--no-start",
+            ]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            let output = ember(&["--state-dir", env.state(), "vm", "start", vm_name]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            Some(env)
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = macos::ember_vz_bin()?;
+            let kernel = macos::ensure_kernel()?;
+            let env = Self::with_image(test_name);
+
+            let output = ember(&[
+                "--state-dir",
+                env.state(),
+                "vm",
+                "create",
+                vm_name,
+                "--image",
+                "alpine:latest",
+                "--kernel",
+                kernel.to_str().unwrap(),
+                "--cpus",
+                "1",
+                "--memory",
+                "256M",
+                "--no-start",
+            ]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm create failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            let output = ember(&["--state-dir", env.state(), "vm", "start", vm_name]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "vm start failed.\nstdout: {stdout}\nstderr: {stderr}"
+            );
+
+            Some(env)
+        }
+    }
 }
