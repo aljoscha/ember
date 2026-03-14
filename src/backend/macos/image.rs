@@ -36,29 +36,48 @@ pub fn create(rootfs_dir: &Path, image_path: &Path, size_mib: u64) -> Result<()>
 /// Estimate the ext4 image size needed to hold `rootfs_dir` contents.
 ///
 /// Returns size in MiB with overhead for ext4 metadata and free space.
-/// Minimum returned size is 64 MiB.
+/// Minimum returned size is 256 MiB.
+///
+/// On macOS, `du` reports APFS-compressed disk usage which can be far
+/// smaller than what ext4 needs (APFS transparently compresses text-heavy
+/// content like HTML docs and man pages).  We therefore compute the
+/// *apparent* total size — the sum of every file's logical byte count —
+/// which is what ext4 will actually store.
 pub fn estimate_size_mib(rootfs_dir: &Path) -> Result<u64> {
-    let output = Command::new("du")
-        .args(["-sm"])
+    // Sum apparent (logical) file sizes via `find … -exec stat -f %z`.
+    // This bypasses APFS compression and gives the true byte count.
+    let output = Command::new("find")
         .arg(rootfs_dir)
+        .args(["!", "-type", "d", "-exec", "stat", "-f", "%z", "{}", "+"])
         .output()
         .map_err(|e| Error::CommandExec {
-            command: "du -sm".to_string(),
+            command: "find/stat (apparent size)".to_string(),
             source: e,
         })?;
-    let output = Error::check_command("du -sm", output)?;
+    let output = Error::check_command("find/stat (apparent size)", output)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let size_str = stdout
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| Error::Image("failed to parse du output".to_string()))?;
-    let size_mib: u64 = size_str
-        .parse()
-        .map_err(|_| Error::Image(format!("failed to parse rootfs size from du: {size_str}")))?;
+    let total_bytes: u64 = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .sum();
+    let apparent_mib = total_bytes / (1024 * 1024);
 
-    // 50% overhead for ext4 metadata + breathing room, minimum 64 MiB.
-    Ok((size_mib * 3 / 2).max(64))
+    // Count files+symlinks to estimate block-alignment waste (each file
+    // uses at least one 4 KiB block on ext4, regardless of actual size).
+    let file_count = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .count() as u64;
+    let block_waste_mib = file_count * 4 / 1024; // 4 KiB per file → MiB
+
+    // ext4 overhead includes inode tables (significant with -i 8192),
+    // journal (128 MiB), superblock copies, and block group descriptors.
+    // Since the image file is sparse, generous sizing costs nothing on
+    // the host — only actually-written blocks consume APFS space.
+    // Use 2x the data estimate to leave ample room.
+    let data_mib = apparent_mib + block_waste_mib;
+    let total_mib = data_mib * 2;
+
+    Ok(total_mib.max(256))
 }
 
 // ---------------------------------------------------------------------------
@@ -100,13 +119,16 @@ fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
         .expect("rootfs_dir has parent")
         .join("fakeroot.state");
 
+    // Use -i 8192 (bytes-per-inode) to allocate more inodes than the default
+    // (16384).  Rootfs trees from dev images contain hundreds of thousands of
+    // small files (HTML docs, man pages) that exhaust the default inode table.
     let output = if state_file.exists() {
         Command::new("fakeroot")
             .arg("-i")
             .arg(&state_file)
             .arg("--")
             .arg(&mkfs)
-            .args(["-F", "-q"])
+            .args(["-F", "-q", "-i", "8192", "-m", "0"])
             .arg("-d")
             .arg(rootfs_dir)
             .arg(image_path)
@@ -117,7 +139,7 @@ fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
             })?
     } else {
         Command::new(&mkfs)
-            .args(["-F", "-q"])
+            .args(["-F", "-q", "-i", "8192", "-m", "0"])
             .arg("-d")
             .arg(rootfs_dir)
             .arg(image_path)
