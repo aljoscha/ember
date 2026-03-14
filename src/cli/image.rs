@@ -389,6 +389,11 @@ fn create_image_from_rootfs(
     );
     image::ext4::create(rootfs_dir, &ext4_path, size_mib)?;
 
+    // Use the actual file size after shrink_to_fit, not the pre-shrink estimate.
+    let size_mib = std::fs::metadata(&ext4_path)
+        .map(|m| m.len() / MIB)
+        .unwrap_or(size_mib);
+
     println!("  Importing image into storage...");
     let disk_path = storage.create_image_volume(name, &ext4_path, size_mib)?;
 

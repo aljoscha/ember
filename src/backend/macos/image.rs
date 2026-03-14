@@ -30,6 +30,11 @@ pub fn create(rootfs_dir: &Path, image_path: &Path, size_mib: u64) -> Result<()>
     // preserving permissions, ownership, and symlinks.
     mkfs_ext4_from_dir(image_path, rootfs_dir)?;
 
+    // Shrink the filesystem to its minimum size, then truncate the file
+    // to match.  This reclaims the generous headroom from estimate_size_mib
+    // so the stored image is as small as possible.
+    shrink_to_fit(image_path)?;
+
     Ok(())
 }
 
@@ -64,9 +69,7 @@ pub fn estimate_size_mib(rootfs_dir: &Path) -> Result<u64> {
 
     // Count files+symlinks to estimate block-alignment waste (each file
     // uses at least one 4 KiB block on ext4, regardless of actual size).
-    let file_count = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .count() as u64;
+    let file_count = String::from_utf8_lossy(&output.stdout).lines().count() as u64;
     let block_waste_mib = file_count * 4 / 1024; // 4 KiB per file → MiB
 
     // ext4 overhead includes inode tables (significant with -i 8192),
@@ -152,4 +155,99 @@ fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
 
     Error::check_command("mkfs.ext4", output)?;
     Ok(())
+}
+
+/// Shrink an ext4 image to its minimum size.
+///
+/// Runs `e2fsck -fy` (required before resize) then `resize2fs -M` to shrink
+/// the filesystem, and finally `truncate` the file to the new filesystem size.
+fn shrink_to_fit(image_path: &Path) -> Result<()> {
+    let e2fsck = super::storage::find_e2fsprogs_tool("e2fsck");
+    let resize2fs = super::storage::find_e2fsprogs_tool("resize2fs");
+
+    // e2fsck -fy: force check, assume yes to all repairs.
+    let output = Command::new(&e2fsck)
+        .args(["-fy"])
+        .arg(image_path)
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "e2fsck".to_string(),
+            source: e,
+        })?;
+    // e2fsck returns 1 when it fixes errors, which is fine.
+    if !output.status.success() && output.status.code() != Some(1) {
+        Error::check_command("e2fsck", output)?;
+    }
+
+    // resize2fs -M: shrink filesystem to minimum size.
+    let output = Command::new(&resize2fs)
+        .args(["-M"])
+        .arg(image_path)
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "resize2fs".to_string(),
+            source: e,
+        })?;
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Error::check_command("resize2fs", output)?;
+
+    // Parse the new block count from resize2fs output to truncate the file.
+    // Output looks like: "The filesystem on /path is now 1234567 (4k) blocks long."
+    if let Some(new_size) = parse_resize2fs_size(&stderr) {
+        let output = Command::new("truncate")
+            .args(["-s", &new_size.to_string()])
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "truncate".to_string(),
+                source: e,
+            })?;
+        Error::check_command("truncate (shrink)", output)?;
+    }
+
+    Ok(())
+}
+
+/// Parse the final filesystem size in bytes from resize2fs stderr.
+///
+/// Looks for: "The filesystem on <path> is now <blocks> (<size>) blocks long."
+fn parse_resize2fs_size(stderr: &str) -> Option<u64> {
+    // Find line with "is now N (Xk) blocks long"
+    for line in stderr.lines() {
+        if let Some(rest) = line.strip_suffix(" blocks long.") {
+            // "... is now 1234567 (4k)" → extract block count and block size
+            let rest = rest.rsplit(" is now ").next()?;
+            let mut parts = rest.split_whitespace();
+            let blocks: u64 = parts.next()?.parse().ok()?;
+            let block_size_str = parts.next()?.trim_matches(|c| c == '(' || c == ')');
+            let block_size: u64 = if block_size_str.ends_with('k') {
+                block_size_str.trim_end_matches('k').parse::<u64>().ok()? * 1024
+            } else {
+                block_size_str.parse().ok()?
+            };
+            return Some(blocks * block_size);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_resize2fs_4k_blocks() {
+        let stderr = "resize2fs 1.47.4 (6-Mar-2025)\n\
+            Resizing the filesystem on /tmp/test.ext4 to 1572864 (4k) blocks.\n\
+            The filesystem on /tmp/test.ext4 is now 1572864 (4k) blocks long.\n";
+        assert_eq!(
+            parse_resize2fs_size(stderr),
+            Some(1572864 * 4096) // 6 GiB
+        );
+    }
+
+    #[test]
+    fn parse_resize2fs_no_match() {
+        assert_eq!(parse_resize2fs_size("some unrelated output"), None);
+    }
 }
