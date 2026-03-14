@@ -117,7 +117,7 @@ RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION
 RUN systemctl enable docker \
     && systemctl enable ssh.socket \
     && systemctl enable serial-getty@ttyS0.service \
-    && systemctl enable serial-getty@hvc0.service ends
+    && systemctl enable serial-getty@hvc0.service
 
 # ---------- per-user tools (installed as ubuntu) ----------
 USER ubuntu
