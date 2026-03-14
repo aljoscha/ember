@@ -131,6 +131,10 @@ ENV PATH="/home/ubuntu/.cargo/bin:${PATH}"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/ubuntu/.local/bin:${PATH}"
 
+# Bun (JS/TS runtime + npm-compatible package manager)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/home/ubuntu/.bun/bin:${PATH}"
+
 # Claude Code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
@@ -139,7 +143,7 @@ USER root
 # ---------- PATH for SSH sessions ----------
 # /etc/environment is read by PAM on SSH login, covering non-interactive
 # SSH commands as well as interactive sessions.
-RUN echo 'PATH="/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
+RUN echo 'PATH="/home/ubuntu/.bun/bin:/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
 
 # ---------- SSH ----------
 RUN mkdir -p /run/sshd \
