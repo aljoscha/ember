@@ -135,6 +135,9 @@ ENV PATH="/home/ubuntu/.local/bin:${PATH}"
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/home/ubuntu/.bun/bin:${PATH}"
 
+# Symlink bun as node so packages with #!/usr/bin/env node shebangs work
+RUN ln -s ~/.bun/bin/bun ~/.bun/bin/node
+
 # Claude Code
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
