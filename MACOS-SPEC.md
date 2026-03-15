@@ -13,14 +13,14 @@ This document specifies how ember provides the same CLI experience on macOS by s
 
 | Linux | macOS | Notes |
 |-------|-------|-------|
-| Firecracker (KVM) | Apple Virtualization Framework (AVF) | Native hypervisor, macOS 12+ |
+| Firecracker (KVM) | Apple Virtualization Framework (AVF) | Native hypervisor, macOS 13+ |
 | ZFS zvols + snapshots | APFS clones (`cp -c`) + raw disk images | Zero-cost CoW clones |
 | TAP devices (ioctl) | vmnet framework (shared mode) | Built-in NAT, static IP allocation |
 | iptables (NAT/masquerade) | vmnet (handles NAT internally) | No manual firewall rules |
 | `ip` command | Not needed | vmnet manages devices |
 | `sysctl ip_forward` | Not needed | vmnet handles routing |
-| `mount -o loop` | `hdiutil attach` | Mount raw disk images |
-| `umount` | `hdiutil detach` | Unmount disk images |
+| `mount -o loop` | `debugfs -w` (e2fsprogs) | Inspect/modify ext4 images without mounting |
+| `umount` | (not needed) | `debugfs` operates directly on image files |
 | `/var/lib/ember/` | `~/Library/Application Support/ember/` | macOS convention |
 
 ## Virtualization: Apple Virtualization Framework
@@ -28,7 +28,7 @@ This document specifies how ember provides the same CLI experience on macOS by s
 ### Why AVF
 
 - Native performance via Apple's Hypervisor.framework (no emulation overhead)
-- Ships with macOS 12+ — no install required
+- Ships with macOS 13+ — no install required (Linux boot support requires 13+)
 - First-class Apple Silicon support with Rosetta 2 for x86 Linux guests
 - Direct vmnet integration for networking
 - Supports booting Linux kernels directly (like Firecracker)
@@ -44,10 +44,12 @@ ember (Rust) ──shells out──▶ ember-vz (Swift)
                               ├── VZLinuxBootLoader
                               ├── VZVirtioBlockDeviceConfiguration
                               ├── VZVirtioNetworkDeviceConfiguration
-                              └── VZNATNetworkDeviceAttachment (vmnet)
+                              ├── VZNATNetworkDeviceAttachment (vmnet)
+                              ├── VZVirtioEntropyDeviceConfiguration (/dev/urandom)
+                              └── VZVirtioTraditionalMemoryBalloonDeviceConfiguration
 ```
 
-`ember-vz` is a Swift Package Manager project compiled alongside ember. It exposes a JSON-based CLI interface:
+`ember-vz` is a Swift Package Manager project compiled alongside ember. It exposes a CLI interface:
 
 ```bash
 # Start a VM (blocks until VM exits or receives stop signal)
@@ -63,10 +65,9 @@ ember-vz start \
 
 # Stop a VM (sends signal to running ember-vz process)
 kill -TERM <ember-vz-pid>
-
-# Query VM status
-ember-vz status --pid <pid>
 ```
+
+`ember-vz` validates CPU and memory values against AVF's allowed min/max bounds at startup.
 
 The `--ready-fd` flag causes `ember-vz` to write the guest's vmnet-assigned MAC address to the given file descriptor once the VM is booted, allowing ember to discover the guest IP.
 
@@ -80,10 +81,11 @@ The `--ready-fd` flag causes `ember-vz` to write the guest's vmnet-assigned MAC 
 5. Wait for SSH (same exponential backoff as Linux)
 
 **Stop sequence:**
-1. `kill -TERM <ember-vz-pid>` — triggers graceful ACPI shutdown
-2. Wait up to 10s for process exit
-3. `kill -KILL` if still alive
-4. Update state: Stopped
+1. `kill -TERM <ember-vz-pid>` — triggers ACPI `requestStop()`
+2. `ember-vz` internally escalates to `vm.stop()` after 5s if ACPI shutdown doesn't complete
+3. Rust side waits up to 10s total for process exit
+4. `kill -KILL` if still alive
+5. Update state: Stopped
 
 **Pause/Resume:**
 - AVF supports `pause()` and `resume()` on `VZVirtualMachine`
@@ -127,9 +129,8 @@ AVF provides a virtio console device. `ember-vz` captures serial output to a log
 │       └── <name>-<tag>.img           # Base ext4 disk image (raw)
 ├── vms/
 │   └── <vm-name>/
-│       ├── vm.json                    # VM metadata
+│       ├── vm.json                    # VM metadata (includes PID when running)
 │       ├── rootfs.img                 # APFS clone of base image
-│       ├── ember-vz.pid              # Helper process PID
 │       ├── console.log               # Serial console output
 │       └── snapshots/
 │           ├── snap1.img             # APFS clone at snapshot time
@@ -148,12 +149,17 @@ Unpacked rootfs directory
     │  (inject SSH authorized_keys, resolv.conf, inittab)
     ▼
 Prepared rootfs
-    │  (mkfs.ext4 via Homebrew e2fsprogs + hdiutil attach + cp -a)
+    │  (mkfs.ext4 -d <dir> via Homebrew e2fsprogs — single-step create+populate)
     ▼
 Raw ext4 image file: ~/Library/Application Support/ember/images/data/<name>-<tag>.img
+    │  (resize2fs -M + truncate — shrink to minimum size)
+    ▼
+Compact sparse image
 ```
 
 No zvol, no `dd`, no `@base` snapshot. The raw `.img` file *is* the base image.
+
+`mkfs.ext4 -d` creates and populates the filesystem in one step, avoiding the need to mount the ext4 image (macOS has no native ext4 mount support). If a `fakeroot.state` file exists from tar extraction, `mkfs.ext4` runs under `fakeroot -i` to preserve correct uid/gid ownership.
 
 ### VM Create (Instant APFS Clone)
 
@@ -163,7 +169,10 @@ cp -c images/data/<name>-<tag>.img vms/<vm-name>/rootfs.img
 
 This is instant regardless of image size (APFS copy-on-write). The raw image file is passed directly to AVF as a virtio block device.
 
-After cloning, the image is mounted via `hdiutil attach` to inject per-VM SSH keys, then detached.
+After cloning, per-VM SSH keys are injected using `debugfs -w` from Homebrew e2fsprogs. Since macOS cannot mount ext4 natively, `debugfs` writes directly to the image file without mounting:
+
+1. `debugfs -R 'stat /home/<user>'` — detect SSH user and uid/gid
+2. `debugfs -w -f <commands>` — create `.ssh/` directory, write `authorized_keys`, fix permissions/ownership via `set_inode_field`
 
 ### Snapshots
 
@@ -197,8 +206,9 @@ Since rootfs is a raw disk image file:
 # Grow the file
 truncate -s <new-size> vms/<vm-name>/rootfs.img
 
-# Grow the filesystem
-# Mount via hdiutil, run resize2fs (from Homebrew e2fsprogs), detach
+# Check and grow the filesystem (no mount needed)
+e2fsck -f vms/<vm-name>/rootfs.img
+resize2fs vms/<vm-name>/rootfs.img
 ```
 
 ### Comparison with ZFS
@@ -239,9 +249,9 @@ CoW efficiency:   16.4x space savings
 
 **How it works:**
 
-1. **Logical size**: Sum of all `.img` file sizes via `stat` (what `du` would report)
-2. **Actual disk usage**: Measure free space on the APFS volume via `df` or `diskutil apfs list`, subtract from total capacity. Compare with a baseline taken during `ember init` or by subtracting non-ember usage
-3. **Alternative**: Use `diskutil apfs listVolumeGroups` to get the container-level "Used" metric before and after operations
+1. **Logical size**: Sum of all `.img` file sizes via `stat` (apparent file size)
+2. **Actual disk usage**: Sum of `st_blocks * 512` for each `.img` file — this reports actually-allocated 512-byte blocks, which reflects CoW sharing (APFS clones share blocks, so `st_blocks` is lower than the logical size)
+3. **CoW ratio**: Logical size divided by actual disk usage
 
 ### `cp -c` Failure Detection
 
@@ -345,6 +355,7 @@ pub trait StorageBackend {
     fn init(config: &InitConfig) -> Result<()>;
     fn create_image_volume(name: &str, image_path: &Path) -> Result<PathBuf>;
     fn clone_for_vm(image_name: &str, vm_name: &str) -> Result<PathBuf>;
+    fn clone_from_snapshot(src_vm: &str, snap: &str, dst_vm: &str) -> Result<PathBuf>;  // For vm fork
     fn snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
     fn restore_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
     fn delete_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
@@ -352,8 +363,7 @@ pub trait StorageBackend {
     fn resize(vm_name: &str, new_size: ByteSize) -> Result<()>;
     fn destroy_vm_storage(vm_name: &str) -> Result<()>;
     fn destroy_image_storage(name: &str) -> Result<()>;
-    fn mount(path: &Path) -> Result<PathBuf>;   // Returns mount point
-    fn unmount(mount_point: &Path) -> Result<()>;
+    fn inject_ssh_key(vm_name: &str, pubkey: &str) -> Result<()>;  // debugfs on macOS, mount on Linux
 }
 
 /// Network backend (TAP+iptables on Linux, vmnet on macOS)
@@ -378,9 +388,9 @@ src/
 │   └── macos/
 │       ├── mod.rs
 │       ├── vm.rs           # ember-vz process management
-│       ├── storage.rs      # APFS clone + raw image operations
-│       ├── network.rs      # vmnet IP discovery
-│       └── image.rs        # ext4 creation with hdiutil
+│       ├── storage.rs      # APFS clone + raw image + debugfs SSH injection
+│       ├── network.rs      # vmnet IP allocation
+│       └── image.rs        # ext4 creation with mkfs.ext4 -d + shrink-to-fit
 ├── cli/                    # Unchanged — calls backend traits
 ├── ssh/                    # Unchanged — russh is cross-platform
 ├── state/                  # Unchanged — JSON + flock works on macOS
@@ -410,16 +420,20 @@ pub use macos::*;
 
 ### Required
 - **Xcode Command Line Tools**: For compiling the Swift helper (`ember-vz`)
-- **macOS 12+**: For Virtualization.framework
+- **macOS 13+**: For Virtualization.framework Linux boot support
 
 ### Homebrew
-- **`e2fsprogs`**: Provides `mkfs.ext4` and `resize2fs` for ext4 image creation
+- **`e2fsprogs`**: Provides `mkfs.ext4`, `resize2fs`, `e2fsck`, and `debugfs` for ext4 image creation, resizing, and SSH key injection
 - **`skopeo`**: OCI image pulling (same as Linux)
 
+Tool paths are resolved for both Apple Silicon (`/opt/homebrew/opt/e2fsprogs/sbin/`) and Intel (`/usr/local/opt/e2fsprogs/sbin/`), with fallback to `$PATH`.
+
 ### Build
+- `make build` orchestrates both Rust and Swift builds
 - `cargo build` compiles the Rust CLI
-- `swift build` compiles `ember-vz` (or integrated into cargo build via build script)
-- Both binaries are distributed together
+- `swift build` compiles `ember-vz`
+- `codesign` applies virtualization entitlement to `ember-vz`
+- Both binaries are placed side-by-side in `target/{debug,release}/`
 
 ## Differences from Linux
 
@@ -435,3 +449,6 @@ pub use macos::*;
 | Hypervisor process | `firecracker` (external binary) | `ember-vz` (bundled Swift binary) |
 | State directory | `/var/lib/ember/` | `~/Library/Application Support/ember/` |
 | Reconciliation | Check PID alive, cleanup TAP+iptables | Check PID alive (no network cleanup needed) |
+| SSH key injection | Mount ext4 via loop device | `debugfs -w` (no mount needed) |
+| ext4 image creation | `mkfs.ext4` + loop mount + `cp -a` | `mkfs.ext4 -d` (single step, no mount) |
+| Image shrinking | Not needed (zvol sized) | `resize2fs -M` + `truncate` (minimize sparse image) |
