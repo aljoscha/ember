@@ -2,6 +2,8 @@
 
 A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only — no daemon, no REST API.
 
+> **macOS**: Ember also runs on macOS using Apple Virtualization Framework + APFS clones instead of Firecracker + ZFS. See [MACOS-SPEC.md](MACOS-SPEC.md) for the macOS-specific design. This document covers the Linux backend.
+
 ## Design Principles
 
 - **CLI-first**: All operations via command line. No background daemon.
