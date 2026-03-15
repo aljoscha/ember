@@ -55,6 +55,9 @@ pub enum VmCommand {
     /// Resize a stopped VM's disk
     Resize(ResizeArgs),
 
+    /// Update a stopped VM's configuration
+    UpdateConfig(UpdateConfigArgs),
+
     /// Delete a VM and its resources
     Delete(DeleteArgs),
 
@@ -145,6 +148,36 @@ pub struct ResizeArgs {
 }
 
 #[derive(Args)]
+pub struct UpdateConfigArgs {
+    /// VM name
+    pub name: String,
+
+    /// Number of vCPUs
+    #[arg(long)]
+    pub cpus: Option<u32>,
+
+    /// Memory size, e.g. 512M, 16G
+    #[arg(long)]
+    pub memory: Option<ByteSize>,
+
+    /// Kernel preset or file path [presets: stock]
+    #[arg(long)]
+    pub kernel: Option<crate::kernel::KernelSpec>,
+
+    /// Kernel boot arguments (replaces current; use "" to clear)
+    #[arg(long)]
+    pub boot_args: Option<String>,
+
+    /// SSH user
+    #[arg(long)]
+    pub ssh_user: Option<String>,
+
+    /// SSH private key path
+    #[arg(long)]
+    pub ssh_key: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct DeleteArgs {
     /// VM name
     pub name: String,
@@ -218,6 +251,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Pause(args) => pause(args, state_dir),
         VmCommand::Resume(args) => resume(args, state_dir),
         VmCommand::Resize(args) => resize(args, state_dir),
+        VmCommand::UpdateConfig(args) => update_config(args, state_dir),
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
@@ -923,6 +957,81 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
         format_bytes_binary(current_gib as u64 * GIB),
         format_bytes_binary(new_gib as u64 * GIB)
     );
+    Ok(())
+}
+
+/// Update a stopped VM's configuration.
+///
+/// Modifies metadata fields that are only read at boot time (cpus, memory,
+/// kernel, boot args) or at SSH connect time (ssh user/key). Requires the
+/// VM to be stopped.
+fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let mut metadata = vm::require_stopped(&store, &args.name, "updating configuration")?;
+
+    // Require at least one field to update.
+    if args.cpus.is_none()
+        && args.memory.is_none()
+        && args.kernel.is_none()
+        && args.boot_args.is_none()
+        && args.ssh_user.is_none()
+        && args.ssh_key.is_none()
+    {
+        anyhow::bail!("no configuration changes specified");
+    }
+
+    let mut changes = Vec::new();
+
+    if let Some(cpus) = args.cpus {
+        if cpus == 0 {
+            anyhow::bail!("cpus must be at least 1");
+        }
+        metadata.cpus = cpus;
+        changes.push(format!("cpus: {cpus}"));
+    }
+
+    if let Some(ref memory) = args.memory {
+        let mib = memory
+            .to_mib()
+            .map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?;
+        metadata.memory_mib = mib;
+        changes.push(format!("memory: {}", format_bytes_binary(mib as u64 * MIB)));
+    }
+
+    if let Some(ref kernel) = args.kernel {
+        let mut config: GlobalConfig = store.read(&store.config_path())?;
+        let kernel_path = ensure_kernel(&Some(kernel.clone()), &mut config, &store)?;
+        metadata.kernel_path = kernel_path.clone();
+        changes.push(format!("kernel: {}", kernel_path.display()));
+    }
+
+    if let Some(ref boot_args) = args.boot_args {
+        if boot_args.is_empty() {
+            metadata.boot_args = None;
+            changes.push("boot-args: cleared".to_string());
+        } else {
+            metadata.boot_args = Some(boot_args.clone());
+            changes.push(format!("boot-args: {boot_args}"));
+        }
+    }
+
+    if let Some(ref user) = args.ssh_user {
+        metadata.ssh.user = user.clone();
+        changes.push(format!("ssh-user: {user}"));
+    }
+
+    if let Some(ref key) = args.ssh_key {
+        let expanded = config::vm::expand_tilde(key);
+        metadata.ssh.key = expanded.clone();
+        changes.push(format!("ssh-key: {}", expanded.display()));
+    }
+
+    vm::save(&store, &metadata)?;
+
+    println!("Updated VM '{}':", args.name);
+    for change in &changes {
+        println!("  {change}");
+    }
     Ok(())
 }
 
