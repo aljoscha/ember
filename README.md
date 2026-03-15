@@ -1,8 +1,44 @@
 # Ember
 
-Lightweight CLI for managing [Firecracker](https://firecracker-microvm.github.io/) microVMs with ZFS-backed storage. No daemon, no REST API — just a single binary.
+Lightweight CLI for managing microVMs with copy-on-write storage. No daemon, no REST API — just a single binary.
 
-## Requirements
+- **macOS**: [Apple Virtualization Framework](https://developer.apple.com/documentation/virtualization) + APFS clones. No root required.
+- **Linux**: [Firecracker](https://firecracker-microvm.github.io/) (KVM) + ZFS zvols. Requires root.
+
+## Installation
+
+### macOS (Homebrew)
+
+```bash
+brew tap aljoscha/ember https://github.com/aljoscha/ember
+brew install ember
+```
+
+This installs both `ember` and `ember-vz` (the Swift helper for Apple Virtualization Framework), plus runtime dependencies (`e2fsprogs`, `skopeo`). Requires macOS 13+ (Ventura) and Xcode Command Line Tools.
+
+To install the latest development version instead of a tagged release:
+
+```bash
+brew install --HEAD aljoscha/ember/ember
+```
+
+### macOS (from source)
+
+```bash
+make release
+```
+
+Binaries are at `./target/release/ember` and `./target/release/ember-vz`.
+
+### Linux (from source)
+
+```bash
+cargo build --release
+```
+
+The binary is at `./target/release/ember`.
+
+#### Linux dependencies
 
 | Dependency | Purpose |
 |---|---|
@@ -12,27 +48,34 @@ Lightweight CLI for managing [Firecracker](https://firecracker-microvm.github.io
 | curl | Kernel download |
 | iptables, iproute2, sysctl | Networking (TAP devices, NAT) |
 | [skopeo](https://github.com/containers/skopeo) | OCI image pull |
-| Docker or Podman | Image build (optional) |
+| Docker or Podman | Image build + kernel build |
 
-Ember requires **root privileges** — ZFS, TAP devices, iptables, and Firecracker all need root. Like Docker, run with `sudo`.
-
-## Building
-
-```bash
-cargo build --release
-```
-
-The binary is at `./target/release/ember`.
-
-> [!NOTE]
-> If you need to run Docker inside a VM, build a custom kernel first: `sudo ember kernel build`. See [Building a custom kernel](#building-a-custom-kernel) below.
+Linux requires **root privileges** — ZFS, TAP devices, iptables, and Firecracker all need root. Like Docker, run with `sudo`.
 
 ## Quick start
 
-Initialize ember with a ZFS pool:
+### macOS
+
+```bash
+ember init
+ember kernel build -y
+ember image build ubuntu-dev
+ember vm create myvm --image ubuntu-dev
+ember ssh myvm
+```
+
+No `sudo` needed. State is stored in `~/Library/Application Support/ember/`. Storage uses instant APFS copy-on-write clones — creating VMs and snapshots takes milliseconds regardless of disk size.
+
+The kernel build requires Docker or Podman and enables Docker networking inside your VMs. It only needs to run once — the kernel is cached for all future VMs. If you don't need Docker inside VMs, skip the `kernel build` step and the stock kernel will be auto-downloaded on first use.
+
+### Linux
 
 ```bash
 sudo ember init --pool mypool --device /dev/sdb
+sudo ember kernel build -y
+sudo ember image build ubuntu-dev
+sudo ember vm create myvm --image ubuntu-dev
+ember ssh myvm
 ```
 
 > [!TIP]
@@ -47,63 +90,45 @@ sudo ember init --pool mypool --device /dev/sdb
 > sudo zpool import -d /home/ember-data ember
 > ```
 
-Build an image:
+### Images
+
+The default image (`ubuntu-dev`) is Ubuntu 26.04 with systemd, sshd, and a developer toolchain (Rust, Go, Claude Code, gh, jj, etc.). You can also build from a custom Dockerfile or pull from an OCI registry:
 
 ```bash
-sudo ember image build ubuntu-dev
+# Build from a custom Dockerfile
+ember image build myimage -f ./Dockerfile
+
+# Pull a minimal image from an OCI registry
+ember image pull docker.io/library/alpine:latest
 ```
 
-Or pull from an OCI registry:
-
-```bash
-sudo ember image pull docker.io/library/alpine:latest
-```
-
-Create and boot a VM:
-
-```bash
-sudo ember vm create myvm --image ubuntu-dev
-```
-
-SSH in:
-
-```bash
-ember ssh myvm
-```
-
-Run a command:
-
-```bash
-ember exec myvm -- uname -a
-```
-
-Stop the VM:
-
-```bash
-sudo ember vm stop myvm
-```
+> [!NOTE]
+> On Linux, prefix image and VM commands with `sudo`. On macOS, no `sudo` is needed.
 
 ## VM lifecycle
 
 ```bash
 # Create (starts by default, use --no-start to skip)
-sudo ember vm create myvm --image ubuntu-dev --cpus 2 --memory 4G --disk-size 16G
+ember vm create myvm --image ubuntu-dev --cpus 2 --memory 4G --disk-size 16G
 
 # Start / stop
-sudo ember vm start myvm
-sudo ember vm stop myvm
-sudo ember vm stop myvm --force   # SIGKILL
+ember vm start myvm
+ember vm stop myvm
+ember vm stop myvm --force   # SIGKILL
 
-# Pause / resume (Firecracker snapshot-based)
-sudo ember vm pause myvm
-sudo ember vm resume myvm
+# Pause / resume
+ember vm pause myvm
+ember vm resume myvm
 
 # Resize disk (grow only, VM must be stopped)
-sudo ember vm resize myvm --disk-size 32G
+ember vm resize myvm --disk-size 32G
+
+# Update config (VM must be stopped)
+ember vm update-config myvm --cpus 4 --memory 8G
 
 # Delete
-sudo ember vm delete myvm
-sudo ember vm delete myvm --force   # force-kill if running
+ember vm delete myvm
+ember vm delete myvm --force   # force-kill if running
 
 # List and inspect
 ember vm list
@@ -116,7 +141,7 @@ Sizes use mandatory unit suffixes: `512M`, `4G`, `16G`, `2T` (binary, powers of 
 You can also pass a YAML config file instead of CLI flags:
 
 ```bash
-sudo ember vm create myvm --vm-config vm.yaml
+ember vm create myvm --vm-config vm.yaml
 ```
 
 ```yaml
@@ -138,33 +163,31 @@ Merge order: defaults < global config < YAML < CLI flags.
 
 ## Forking VMs
 
-Fork is the primary way to duplicate VMs. It creates an instant copy-on-write clone via ZFS — no matter how large the disk, forking takes milliseconds. The forked VM is fully independent: you can modify, delete, or resize it without affecting the source.
-
-Set up a base VM, then fork as many copies as you need:
+Fork creates an instant copy-on-write clone — no matter how large the disk, forking takes milliseconds. The forked VM is fully independent.
 
 ```bash
 # Build your golden image
-sudo ember vm create base --image ubuntu-dev
+ember vm create base --image ubuntu-dev
 ember ssh base
 # ... install your apps, configure everything ...
-sudo ember vm stop base
+ember vm stop base
 
 # Fork independent copies
-sudo ember vm fork base worker-1
-sudo ember vm fork base worker-2
-sudo ember vm fork base worker-3
+ember vm fork base worker-1
+ember vm fork base worker-2
+ember vm fork base worker-3
 ```
 
-Each fork starts automatically and gets its own network identity. You can override resource allocation per fork:
+Each fork starts automatically and gets its own network identity. Override resources per fork:
 
 ```bash
-sudo ember vm fork base beefy --cpus 4 --memory 32G --disk-size 64G
+ember vm fork base beefy --cpus 4 --memory 32G --disk-size 64G
 ```
 
 Forks can grow the disk but not shrink it below the source size. Use `--no-start` to fork without booting:
 
 ```bash
-sudo ember vm fork base template --no-start
+ember vm fork base template --no-start
 ```
 
 ## Snapshots
@@ -172,37 +195,16 @@ sudo ember vm fork base template --no-start
 Snapshots capture point-in-time state of a VM's disk. Useful for checkpointing before risky changes.
 
 ```bash
-sudo ember snapshot create myvm before-upgrade
-sudo ember snapshot list myvm
+ember snapshot create myvm before-upgrade
+ember snapshot list myvm
 
 # Something went wrong? Roll back (VM must be stopped):
-sudo ember vm stop myvm
-sudo ember snapshot restore myvm before-upgrade
-sudo ember vm start myvm
+ember vm stop myvm
+ember snapshot restore myvm before-upgrade
+ember vm start myvm
 
 # Clean up:
-sudo ember snapshot delete myvm before-upgrade
-```
-
-## Images
-
-The default Dockerfile builds an Ubuntu 26.04 image with systemd, sshd, and a developer toolchain (Rust, Go, Claude Code, gh, jj, etc.). Use `-f` to build from a custom Dockerfile instead.
-
-```bash
-# Build from the default Dockerfile (Ubuntu 26.04 + systemd + sshd + dev toolchain)
-sudo ember image build ubuntu-dev
-
-# Build from a custom Dockerfile
-sudo ember image build myimage -f ./Dockerfile
-
-# Pull from an OCI registry
-sudo ember image pull docker.io/library/alpine:latest
-
-# List / inspect / delete
-ember image list
-ember image inspect ubuntu-dev
-sudo ember image delete ubuntu-dev
-sudo ember image delete ubuntu-dev --force   # cascade-deletes dependent VMs
+ember snapshot delete myvm before-upgrade
 ```
 
 ## Guest access
@@ -222,30 +224,38 @@ ember cp ./local-file.txt myvm:/tmp/
 ember cp myvm:/var/log/syslog ./syslog.txt
 ```
 
+## Storage efficiency
+
+Both platforms use copy-on-write storage, so VMs and snapshots share disk blocks with their parent image. Check actual disk usage:
+
+```bash
+ember debug storage-efficiency
+```
+
 ## Building a custom kernel
 
-The stock kernel (`vmlinux-6.1.102`, auto-downloaded on first use) works for most use cases. However, it **lacks full Docker networking support** — the iptables `raw` table and nftables modules are missing, so Docker bridge networking doesn't work inside guest VMs.
+The stock kernel (auto-downloaded on first use) works for most use cases. However, it **lacks full Docker networking support** — the iptables `raw` table and nftables modules are missing, so Docker bridge networking doesn't work inside guest VMs.
 
-If you need Docker with bridge networking inside your VMs, build a custom kernel. It takes the Firecracker CI kernel config and merges extra options for iptables raw, nftables, and dummy network interfaces.
+If you need Docker with bridge networking inside your VMs, build a custom kernel:
 
 ### Using `ember kernel build` (recommended)
 
 Requires Docker or Podman. The build runs inside a container — no host compiler toolchain needed.
 
 ```bash
-sudo ember kernel build
+ember kernel build
 ```
 
-This will explain what it's about to do (download ~1 GB of kernel source, compile inside a container) and ask for confirmation. Use `-y` to skip the prompt:
+Use `-y` to skip the confirmation prompt:
 
 ```bash
-sudo ember kernel build -y
+ember kernel build -y
 ```
 
-The built kernel is installed to the state directory and becomes the default for new VMs. You can also use `--kernel stock` to fall back to the pre-built kernel without Docker support:
+The built kernel becomes the default for new VMs. Fall back to the stock kernel with:
 
 ```bash
-sudo ember vm create myvm --image ubuntu-dev --kernel stock
+ember vm create myvm --image ubuntu-dev --kernel stock
 ```
 
 List available kernels:
@@ -256,7 +266,7 @@ ember kernel list
 
 ### Manual build with Make
 
-Alternatively, you can build directly from the `kernel/` directory in the source tree.
+Alternatively, build directly from the `kernel/` directory:
 
 **Native** (requires gcc, make, flex, bison, libelf-dev, libssl-dev, bc, git, curl, python3):
 
@@ -275,8 +285,22 @@ make docker-build
 Both produce `kernel/vmlinux`. Pass the path when creating a VM:
 
 ```bash
-sudo ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
+ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
 ```
+
+## Platform details
+
+The CLI is identical on both platforms. Under the hood:
+
+| | Linux | macOS |
+|---|---|---|
+| Hypervisor | Firecracker (KVM) | Apple Virtualization Framework |
+| Storage | ZFS zvols + snapshots | APFS clones (`cp -c`) |
+| Networking | TAP devices + iptables NAT | vmnet shared mode |
+| Root required | Yes | No |
+| State directory | `/var/lib/ember/` | `~/Library/Application Support/ember/` |
+
+See [SPEC.md](SPEC.md) for the Linux architecture and [MACOS-SPEC.md](MACOS-SPEC.md) for the macOS architecture.
 
 ## Contributing
 

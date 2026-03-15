@@ -90,6 +90,6 @@
 - [x] Add macOS build to CI (`macos-latest` runs `make build` which compiles both Rust + Swift)
 - [x] Integrate `swift build` for `ember-vz` into build pipeline (Makefile handles build + code-signing + binary placement)
 - [x] Create Homebrew formula (bundles both `ember` and `ember-vz`)
-- [ ] Update README with macOS installation instructions (prerequisites, build steps, no-root usage)
+- [x] Update README with macOS installation instructions (prerequisites, build steps, no-root usage)
 - [ ] Update SPEC.md to reference MACOS-SPEC.md
 - [x] End-to-end test on macOS: init → image pull → vm create → ssh → snapshot → restore → delete (cross-platform integration tests in `tests/` cover this via `TestEnv` abstraction)
