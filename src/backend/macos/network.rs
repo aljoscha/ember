@@ -7,7 +7,7 @@
 use std::process::Command;
 
 use crate::backend::NetworkBackend;
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::error::{Error, Result};
 use crate::network;
 use crate::state::store::StateStore;

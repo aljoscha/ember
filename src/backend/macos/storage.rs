@@ -36,7 +36,7 @@ impl MacosStorage {
     /// Create a new macOS storage backend from the global config.
     ///
     /// Extracts the state directory path that all storage operations need.
-    pub fn new(config: &crate::cli::init::GlobalConfig) -> Self {
+    pub fn new(config: &crate::config::GlobalConfig) -> Self {
         Self {
             state_dir: config.state_dir.clone(),
         }

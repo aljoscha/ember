@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 
 use super::fmt::{format_bytes_binary, MIB};
-use super::init::GlobalConfig;
 use super::vm::OutputFormat;
 use crate::backend::{Storage, StorageBackend};
+use crate::config::GlobalConfig;
 use crate::image;
 use crate::image::pull::ImageReference;
 use crate::image::registry::{new_build_entry, new_entry, ImageRegistry};

@@ -1,7 +1,7 @@
 pub mod build;
 pub mod ext4;
-pub mod inject;
-pub mod pull;
-pub mod registry;
+pub use ember_core::image::inject;
+pub use ember_core::image::pull;
+pub use ember_core::image::registry;
 #[cfg(target_os = "linux")]
 pub mod zvol;

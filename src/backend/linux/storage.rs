@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::backend::{InitConfig, SnapshotInfo, StorageBackend};
-use crate::cli::init::GlobalConfig;
 use crate::config::size::ByteSize;
+use crate::config::GlobalConfig;
 use crate::error::{Error, Result};
 use crate::image;
 use crate::zfs;

@@ -18,7 +18,7 @@ use std::time::Duration;
 use nix::libc;
 
 use crate::backend::{StartedVm, VmBackend};
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::error::{Error, Result};
 use crate::state::vm::{NetworkInfo, VmMetadata};
 

@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/ember-core"]
+
 [package]
 name = "ember"
 version = "0.1.0"
@@ -6,6 +9,9 @@ description = "Lightweight VM manager with copy-on-write storage"
 license = "MIT"
 
 [dependencies]
+# Core library (shared types, traits, utilities)
+ember-core = { path = "crates/ember-core" }
+
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 
