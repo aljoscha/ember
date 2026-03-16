@@ -5,12 +5,12 @@
 //! dedicated TAP device with a point-to-point /30 IP link and iptables
 //! masquerade rules for outbound internet access.
 
-use crate::backend::NetworkBackend;
-use crate::config::GlobalConfig;
-use crate::error::Result;
 use crate::network;
-use crate::state::store::StateStore;
-use crate::state::vm::{NetworkInfo, VmMetadata};
+use ember_core::backend::NetworkBackend;
+use ember_core::config::GlobalConfig;
+use ember_core::error::Result;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{NetworkInfo, VmMetadata};
 
 /// Linux network backend using TAP devices and iptables.
 pub struct LinuxNetwork {

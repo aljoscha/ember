@@ -9,7 +9,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Summary information about a ZFS snapshot.
 #[derive(Debug, Clone, Serialize)]

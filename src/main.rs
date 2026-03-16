@@ -3,15 +3,11 @@ mod cleanup;
 mod cli;
 pub mod config;
 pub mod error;
-#[cfg(target_os = "linux")]
-pub mod firecracker;
 pub mod image;
 pub mod kernel;
 pub mod network;
 pub mod ssh;
 pub mod state;
-#[cfg(target_os = "linux")]
-pub mod zfs;
 
 use clap::Parser;
 #[cfg(target_os = "linux")]
@@ -87,7 +83,7 @@ fn main() -> anyhow::Result<()> {
     // macOS: cleans up dead VMs, releases orphaned IP allocations.
     #[cfg(target_os = "linux")]
     if needs_reconcile(&cli.command) {
-        state::reconcile::run(&cli.state_dir);
+        ember_linux::reconcile::run(&cli.state_dir);
     }
     #[cfg(target_os = "macos")]
     if needs_reconcile(&cli.command) {
@@ -107,7 +103,7 @@ fn main() -> anyhow::Result<()> {
         Command::Debug(cmd) => cli::debug::run(cmd, &cli.state_dir),
         Command::Reconcile => {
             #[cfg(target_os = "linux")]
-            state::reconcile::run(&cli.state_dir);
+            ember_linux::reconcile::run(&cli.state_dir);
             #[cfg(target_os = "macos")]
             state::reconcile_macos::run(&cli.state_dir);
             Ok(())

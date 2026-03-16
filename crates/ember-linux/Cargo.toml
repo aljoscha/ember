@@ -1,27 +1,17 @@
-[workspace]
-members = ["crates/ember-core", "crates/ember-linux"]
-default-members = ["."]
-
 [package]
-name = "ember"
+name = "ember-linux"
 version = "0.1.0"
 edition = "2021"
-description = "Lightweight VM manager with copy-on-write storage"
-license = "MIT"
+description = "Linux backend for ember: Firecracker + ZFS + TAP/iptables"
 
 [dependencies]
-# Core library (shared types, traits, utilities)
-ember-core = { path = "crates/ember-core" }
-
-# CLI
-clap = { version = "4.5", features = ["derive"] }
+ember-core = { path = "../ember-core" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 
-# Async runtime
+# Async runtime (for SSH in graceful shutdown)
 tokio = { version = "1", features = ["full"] }
 
 # HTTP over Unix socket (Firecracker API)
@@ -33,24 +23,11 @@ hyperlocal = "0.9"
 # System (TAP ioctl, signals, process management)
 nix = { version = "0.29", features = ["fs", "ioctl", "net", "signal", "process", "user"] }
 
-# SSH
-russh = "0.46"
-russh-keys = "0.46"
-async-trait = "0.1"
-
 # Error handling
-thiserror = "2"
 anyhow = "1"
 
 # Identifiers
 uuid = { version = "1", features = ["v4", "serde"] }
 
-# Progress display
-indicatif = "0.17"
-
 # Temporary directories
 tempfile = "3"
-
-# Platform-specific backends
-[target.'cfg(target_os = "linux")'.dependencies]
-ember-linux = { path = "crates/ember-linux" }

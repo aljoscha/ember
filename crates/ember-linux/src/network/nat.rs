@@ -11,7 +11,7 @@
 
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Add iptables NAT and forwarding rules for a VM.
 ///

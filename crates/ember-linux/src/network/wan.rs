@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Detect the default WAN interface by querying the routing table.
 ///

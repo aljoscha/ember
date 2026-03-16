@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Check whether a ZFS zvol exists.
 pub fn exists(zvol: &str) -> Result<bool> {

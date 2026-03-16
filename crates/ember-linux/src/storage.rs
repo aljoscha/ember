@@ -10,12 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use crate::backend::{InitConfig, SnapshotInfo, StorageBackend};
-use crate::config::size::ByteSize;
-use crate::config::GlobalConfig;
-use crate::error::{Error, Result};
-use crate::image;
 use crate::zfs;
+use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend};
+use ember_core::config::size::ByteSize;
+use ember_core::config::GlobalConfig;
+use ember_core::error::{Error, Result};
 
 /// Linux storage backend using ZFS zvols.
 #[derive(Clone)]
@@ -99,7 +98,7 @@ impl StorageBackend for LinuxStorage {
 
         // Write the ext4 image to the zvol and create @base snapshot.
         // On failure, clean up the zvol.
-        if let Err(e) = image::zvol::write_to_zvol(image_path, &zvol) {
+        if let Err(e) = crate::zvol::write_to_zvol(image_path, &zvol) {
             let _ = zfs::volume::destroy(&zvol, true);
             return Err(e);
         }
@@ -169,7 +168,7 @@ impl StorageBackend for LinuxStorage {
 
         // Wait for the device node to settle after resize, then expand ext4.
         let dev_path = zfs::volume::device_path(&zvol);
-        image::zvol::wait_for_device(&dev_path)?;
+        crate::zvol::wait_for_device(&dev_path)?;
         e2fsck(&dev_path)?;
         resize2fs(&dev_path)?;
 
@@ -266,7 +265,7 @@ impl StorageBackend for LinuxStorage {
         // Wait for the device to appear (ZFS zvols created by clone may
         // not be immediately available).
         if !path.exists() {
-            image::zvol::wait_for_device(path)?;
+            crate::zvol::wait_for_device(path)?;
         }
 
         let mount_dir = tempfile::tempdir()
@@ -295,7 +294,7 @@ impl StorageBackend for LinuxStorage {
 
     /// Unmount a filesystem and remove the mount point directory.
     fn unmount(&self, mount_point: &Path) -> Result<()> {
-        super::image::umount(mount_point)?;
+        crate::image::umount(mount_point)?;
         let _ = std::fs::remove_dir(mount_point);
         Ok(())
     }
