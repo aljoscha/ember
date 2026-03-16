@@ -634,6 +634,63 @@ impl StorageBackend for MacosStorage {
 
         Ok(ssh_user.to_string())
     }
+
+    /// Inject the VM's hostname into `/etc/hosts` using `debugfs`.
+    ///
+    /// Writes a hosts file with loopback entries including the VM name,
+    /// then uses `debugfs -w` to replace `/etc/hosts` in the ext4 image.
+    fn inject_hostname(&self, image_path: &Path, hostname: &str) -> Result<()> {
+        let debugfs = find_e2fsprogs_tool("debugfs");
+
+        // Write the hosts content to a temp file for debugfs to read.
+        let hosts_content = format!(
+            "127.0.0.1\tlocalhost {hostname}\n\
+             ::1\t\tlocalhost ip6-localhost ip6-loopback {hostname}\n"
+        );
+        let hosts_file = tempfile::NamedTempFile::new().map_err(|e| Error::Io {
+            path: std::env::temp_dir(),
+            source: e,
+        })?;
+        std::fs::write(hosts_file.path(), &hosts_content).map_err(|e| Error::Io {
+            path: hosts_file.path().to_path_buf(),
+            source: e,
+        })?;
+
+        // Remove the existing /etc/hosts first, then write the new one.
+        let commands = format!(
+            "rm /etc/hosts\nwrite {} /etc/hosts\n",
+            hosts_file.path().display(),
+        );
+        let cmd_file = tempfile::NamedTempFile::new().map_err(|e| Error::Io {
+            path: std::env::temp_dir(),
+            source: e,
+        })?;
+        std::fs::write(cmd_file.path(), &commands).map_err(|e| Error::Io {
+            path: cmd_file.path().to_path_buf(),
+            source: e,
+        })?;
+
+        let output = Command::new(&debugfs)
+            .arg("-w")
+            .arg("-f")
+            .arg(cmd_file.path())
+            .arg(image_path)
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "debugfs write /etc/hosts".to_string(),
+                source: e,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Image(format!(
+                "debugfs /etc/hosts injection exited with {}: {stderr}",
+                output.status
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

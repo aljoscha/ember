@@ -274,6 +274,26 @@ pub trait StorageBackend {
 
         Ok(user)
     }
+
+    /// Inject the VM's hostname into `/etc/hosts` in the rootfs image.
+    ///
+    /// Adds the VM name to the loopback entries so that `sudo` and other
+    /// tools can resolve the machine's own hostname without warnings.
+    ///
+    /// Default implementation: mounts the image, writes `/etc/hosts`,
+    /// then unmounts. macOS overrides this with `debugfs`.
+    fn inject_hostname(&self, image_path: &Path, hostname: &str) -> Result<()> {
+        let mount_dir = self.mount(image_path)?;
+
+        let inject_result = crate::image::inject::inject_hosts_with_hostname(&mount_dir, hostname);
+
+        let umount_result = self.unmount(&mount_dir);
+
+        inject_result?;
+        umount_result?;
+
+        Ok(())
+    }
 }
 
 /// Network backend: manages VM networking.
