@@ -65,6 +65,7 @@ RUN apt-get update \
         cmake \
         libclang-dev \
         llvm \
+        lld \
         python3 \
         jq \
         neovim \
