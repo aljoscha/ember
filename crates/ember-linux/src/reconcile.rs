@@ -17,8 +17,8 @@ use std::path::Path;
 
 use crate::firecracker;
 use crate::network;
-use crate::state::store::StateStore;
-use crate::state::vm::{self, VmStatus};
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{self, VmStatus};
 
 /// Run lightweight state reconciliation.
 ///

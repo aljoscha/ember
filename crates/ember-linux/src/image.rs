@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Create an ext4 filesystem image from a rootfs directory.
 ///

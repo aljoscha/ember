@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Health status of a ZFS pool.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -19,8 +19,8 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use crate::error::{Error, Result};
 use crate::zfs;
+use ember_core::error::{Error, Result};
 
 /// Write an ext4 image file to a ZFS zvol and create a `@base` snapshot.
 ///

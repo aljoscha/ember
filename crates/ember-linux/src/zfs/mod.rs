@@ -5,7 +5,7 @@ pub mod volume;
 
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// The reserved snapshot name used for image cloning.
 ///

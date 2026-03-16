@@ -14,14 +14,14 @@
 
 use std::time::Duration;
 
-use crate::backend::{StartedVm, VmBackend};
-use crate::config::GlobalConfig;
-use crate::error::{Error, Result};
 use crate::firecracker;
 use crate::network;
-use crate::ssh;
-use crate::state::vm::{NetworkInfo, VmMetadata};
 use crate::zfs;
+use ember_core::backend::{StartedVm, VmBackend};
+use ember_core::config::GlobalConfig;
+use ember_core::error::{Error, Result};
+use ember_core::ssh;
+use ember_core::state::vm::{NetworkInfo, VmMetadata};
 
 /// Linux VM backend using Firecracker (KVM).
 pub struct LinuxVm;

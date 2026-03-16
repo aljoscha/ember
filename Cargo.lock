@@ -578,6 +578,7 @@ dependencies = [
  "async-trait",
  "clap",
  "ember-core",
+ "ember-linux",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -609,6 +610,24 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "ember-linux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ember-core",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "hyperlocal",
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]

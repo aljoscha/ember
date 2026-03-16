@@ -11,7 +11,7 @@ use std::process::Command;
 
 use nix::libc;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 // ── Linux TUN/TAP constants ────────────────────────────────────────
 //

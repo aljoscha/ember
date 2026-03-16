@@ -5,7 +5,7 @@
 
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Check whether a ZFS dataset exists.
 pub fn exists(dataset: &str) -> Result<bool> {
