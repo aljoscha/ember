@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::image::registry::ImageRegistry;
 use crate::state::store::StateStore;
 use crate::state::vm;

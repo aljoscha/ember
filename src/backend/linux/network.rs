@@ -6,7 +6,7 @@
 //! masquerade rules for outbound internet access.
 
 use crate::backend::NetworkBackend;
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::error::Result;
 use crate::network;
 use crate::state::store::StateStore;

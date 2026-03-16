@@ -4,10 +4,10 @@ use clap::{Args, Subcommand};
 use uuid::Uuid;
 
 use super::fmt::{format_bytes_binary, GIB, MIB};
-use super::init::GlobalConfig;
 use crate::backend::{Network, NetworkBackend, Storage, StorageBackend, Vm, VmBackend};
 use crate::config;
 use crate::config::size::ByteSize;
+use crate::config::GlobalConfig;
 use crate::error::Error;
 use crate::image;
 use crate::image::registry::ImageRegistry;

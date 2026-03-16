@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Args, Subcommand};
 
 use crate::backend::{Storage, StorageBackend};
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::state::store::StateStore;
 use crate::state::vm;
 

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use crate::backend::{StartedVm, VmBackend};
-use crate::cli::init::GlobalConfig;
+use crate::config::GlobalConfig;
 use crate::error::{Error, Result};
 use crate::firecracker;
 use crate::network;
