@@ -510,6 +510,10 @@ fn create_post_clone(
     println!("Injecting SSH key from {}...", pubkey_path.display());
     let detected_ssh_user = storage.inject_ssh_key(&dev_path, &pubkey_path)?;
 
+    // Inject /etc/hosts with the VM hostname so sudo and other tools
+    // can resolve the machine's own name without warnings.
+    storage.inject_hostname(&dev_path, &resolved.name)?;
+
     // Determine kernel path (auto-downloads default if needed).
     let kernel_path = ensure_kernel(&resolved.kernel, global_config, store)?;
 
@@ -631,6 +635,11 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
         storage.resize(&args.name, ByteSize::from_gib(disk_size_gib as u64))?;
     }
+
+    // Inject /etc/hosts with the new VM's hostname (the cloned disk
+    // still has the source VM's hostname from its creation).
+    let dev_path = storage.disk_device_path(&args.name);
+    storage.inject_hostname(&dev_path, &args.name)?;
 
     // Resolve kernel: CLI override or inherit from source.
     let kernel_path = if args.kernel.is_some() {

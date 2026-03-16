@@ -163,6 +163,22 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
 /// Any existing `/etc/hosts` is replaced — container images often have
 /// stale or Docker-specific entries that don't apply inside a VM.
 pub fn inject_hosts(rootfs_dir: &Path) -> Result<()> {
+    write_hosts(rootfs_dir, None)
+}
+
+/// Inject `/etc/hosts` with the VM's hostname for correct name resolution.
+///
+/// Like [`inject_hosts`], but also adds the VM hostname to the loopback
+/// entries. Without this, `sudo` (and anything else that resolves the
+/// machine's own hostname) prints "unable to resolve host" warnings.
+///
+/// Called at VM creation time when the VM name is known.
+pub fn inject_hosts_with_hostname(rootfs_dir: &Path, hostname: &str) -> Result<()> {
+    write_hosts(rootfs_dir, Some(hostname))
+}
+
+/// Write `/etc/hosts` with loopback entries and an optional hostname.
+fn write_hosts(rootfs_dir: &Path, hostname: Option<&str>) -> Result<()> {
     let etc_dir = rootfs_dir.join("etc");
     fs::create_dir_all(&etc_dir).map_err(|e| Error::Io {
         path: etc_dir.clone(),
@@ -175,11 +191,14 @@ pub fn inject_hosts(rootfs_dir: &Path) -> Result<()> {
         let _ = fs::remove_file(&hosts_path);
     }
 
-    fs::write(
-        &hosts_path,
-        "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n",
-    )
-    .map_err(|e| Error::Io {
+    let contents = match hostname {
+        Some(name) => format!(
+            "127.0.0.1\tlocalhost {name}\n::1\t\tlocalhost ip6-localhost ip6-loopback {name}\n"
+        ),
+        None => "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n".to_string(),
+    };
+
+    fs::write(&hosts_path, contents).map_err(|e| Error::Io {
         path: hosts_path,
         source: e,
     })?;
@@ -486,6 +505,30 @@ mod tests {
         let contents = fs::read_to_string(etc.join("hosts")).unwrap();
         assert!(contents.contains("127.0.0.1"));
         assert!(!contents.contains("old content"));
+    }
+
+    #[test]
+    fn inject_hosts_with_hostname_includes_vm_name() {
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_hosts_with_hostname(rootfs.path(), "my-test-vm").unwrap();
+
+        let hosts = rootfs.path().join("etc/hosts");
+        let contents = fs::read_to_string(&hosts).unwrap();
+        assert!(contents.contains("127.0.0.1\tlocalhost my-test-vm"));
+        assert!(contents.contains("::1\t\tlocalhost ip6-localhost ip6-loopback my-test-vm"));
+    }
+
+    #[test]
+    fn inject_hosts_without_hostname_excludes_vm_name() {
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_hosts(rootfs.path()).unwrap();
+
+        let hosts = rootfs.path().join("etc/hosts");
+        let contents = fs::read_to_string(&hosts).unwrap();
+        assert_eq!(
+            contents,
+            "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n"
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
