@@ -545,7 +545,7 @@ fn create_post_clone(
             user: ssh_user,
             key: ssh_key,
         },
-        forked_from: None,
+        parent_vm: None,
     };
 
     vm::save(store, &metadata)?;
@@ -606,22 +606,20 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let storage = Storage::new(&global_config);
 
-    // Snapshot source and clone into new VM via the storage backend.
-    let fork_snap_name = format!("fork-{}", args.name);
+    // Clone source VM's storage into the new VM via the storage backend.
     println!("Forking '{}' → '{}'...", args.source, args.name);
-    let (vm_disk_path, fork_snap_full) =
-        storage.clone_from_snapshot(&args.source, &fork_snap_name, &args.name)?;
+    let vm_disk_path = storage.clone_vm_storage(&args.source, &args.name)?;
     let vm_disk = vm_disk_path.to_string_lossy().to_string();
 
     let mut rollback = Rollback::new();
     {
         let storage = storage.clone();
-        let fork_origin = fork_snap_full.clone();
+        let parent = args.source.clone();
         let sd = state_dir.to_path_buf();
         let name = args.name.clone();
         rollback.push("fork clone + snapshot", move || {
             let _ = storage.destroy_vm_storage(&name);
-            let _ = storage.destroy_fork_origin(&fork_origin);
+            let _ = storage.cleanup_fork(&parent, &name);
             let _ = vm::delete(&StateStore::new(sd), &name);
         });
     }
@@ -666,7 +664,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         api_socket: store.vm_dir(&args.name).join("firecracker.sock"),
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
-        forked_from: Some(fork_snap_full),
+        parent_vm: Some(args.source.clone()),
     };
 
     vm::save(&store, &metadata)?;
@@ -1066,6 +1064,29 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
+    // Check for storage-level dependents (e.g. ZFS fork snapshots with clones).
+    // On macOS/APFS this always returns empty — forks are independent.
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = Storage::new(&config);
+    let dependents = storage.storage_dependents(&args.name)?;
+    if !dependents.is_empty() {
+        if !args.force {
+            anyhow::bail!(
+                "vm '{}' has dependent forks: {}\n\
+                 Delete them first, or use --force to cascade-delete all dependents.",
+                args.name,
+                dependents.join(", ")
+            );
+        }
+        // --force: cascade-delete all dependent VMs first.
+        for dep_name in &dependents {
+            if let Ok(dep_meta) = vm::load(&store, dep_name) {
+                println!("Cascade-deleting dependent VM '{dep_name}'...");
+                force_delete_vm(&store, &dep_meta)?;
+            }
+        }
+    }
+
     force_delete_vm(&store, &metadata)?;
     Ok(())
 }
@@ -1105,9 +1126,10 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
     println!("Destroying storage for VM '{}'...", metadata.name);
     let _ = storage.destroy_vm_storage(&metadata.name);
 
-    // Clean up fork origin snapshot if this VM was forked.
-    if let Some(ref fork_snap) = metadata.forked_from {
-        let _ = storage.destroy_fork_origin(fork_snap);
+    // Clean up fork-related resources on the parent VM (e.g. ZFS snapshot).
+    // No-op on macOS/APFS where forks are independent.
+    if let Some(ref parent) = metadata.parent_vm {
+        let _ = storage.cleanup_fork(parent, &metadata.name);
     }
 
     // Remove the VM state directory.
