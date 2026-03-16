@@ -35,7 +35,8 @@ class Ember < Formula
     if OS.mac?
       cd "ember-vz" do
         system "swift", "build", "-c", "release",
-               "--scratch-path", buildpath/"ember-vz/.build"
+               "--scratch-path", buildpath/"ember-vz/.build",
+               "--disable-sandbox"
       end
 
       vz_bin = buildpath/"ember-vz/.build/release/ember-vz"
