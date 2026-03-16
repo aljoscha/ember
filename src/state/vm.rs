@@ -122,11 +122,16 @@ pub struct VmMetadata {
     pub created_at: String,
     /// SSH connection configuration.
     pub ssh: SshConfig,
-    /// Origin snapshot path if this VM was forked from another VM.
-    /// e.g. "tank/ember/vms/source@fork-newname"
-    /// Used to clean up the fork snapshot when deleting.
-    #[serde(default)]
-    pub forked_from: Option<String>,
+    /// Name of the source VM if this VM was forked.
+    ///
+    /// Used on Linux/ZFS to clean up the fork snapshot on the source VM
+    /// when this VM is deleted, and to enforce the "cannot delete a source
+    /// VM while forks depend on it" constraint.
+    ///
+    /// On macOS/APFS, forks are fully independent (`cp -c`), so this field
+    /// is purely informational — no cleanup or deletion constraints apply.
+    #[serde(default, alias = "forked_from")]
+    pub parent_vm: Option<String>,
 }
 
 impl VmMetadata {
@@ -156,7 +161,7 @@ impl VmMetadata {
                 user: String::new(),
                 key: PathBuf::new(),
             },
-            forked_from: None,
+            parent_vm: None,
         }
     }
 }
@@ -348,7 +353,7 @@ mod tests {
             api_socket: PathBuf::from(format!("/var/lib/ember/vms/{name}/firecracker.sock")),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             ssh: SshConfig::default(),
-            forked_from: None,
+            parent_vm: None,
         }
     }
 

@@ -201,42 +201,60 @@ impl StorageBackend for LinuxStorage {
 
     /// Fork a VM's disk by snapshotting the source and cloning into a new VM.
     ///
-    /// Returns `(disk_path, fork_snapshot_full_name)`.
-    fn clone_from_snapshot(
-        &self,
-        source_vm: &str,
-        snap_name: &str,
-        target_vm: &str,
-    ) -> Result<(PathBuf, String)> {
+    /// Internally creates a ZFS snapshot named `fork-{target_vm}` on the source,
+    /// then clones it into the target VM's zvol. The snapshot naming convention
+    /// is entirely internal — the caller only sees the resulting disk path.
+    fn clone_vm_storage(&self, source_vm: &str, target_vm: &str) -> Result<PathBuf> {
         let source_zvol = self.vm_zvol(source_vm);
         let target_zvol = self.vm_zvol(target_vm);
+        let snap_name = format!("fork-{target_vm}");
 
         // Create the snapshot on the source VM.
-        zfs::snapshot::create(&source_zvol, snap_name)?;
+        zfs::snapshot::create(&source_zvol, &snap_name)?;
 
         let fork_snap_full = format!("{source_zvol}@{snap_name}");
 
         // Clone the snapshot into the target VM's zvol.
         if let Err(e) = zfs::volume::clone(&fork_snap_full, &target_zvol) {
             // Clean up the snapshot on failure.
-            let _ = zfs::snapshot::destroy(&source_zvol, snap_name);
+            let _ = zfs::snapshot::destroy(&source_zvol, &snap_name);
             return Err(e);
         }
 
-        Ok((PathBuf::from(target_zvol), fork_snap_full))
+        Ok(PathBuf::from(target_zvol))
     }
 
-    /// Clean up a fork origin snapshot (e.g., "tank/ember/vms/source@fork-target").
-    fn destroy_fork_origin(&self, fork_origin: &str) -> Result<()> {
-        if let Some((dataset, snap_name)) = fork_origin.split_once('@') {
-            match zfs::snapshot::destroy(dataset, snap_name) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("Warning: failed to clean up fork snapshot '{fork_origin}': {e}");
-                }
+    /// Clean up the fork snapshot on the parent VM.
+    ///
+    /// Reconstructs the snapshot name from the naming convention:
+    /// `{pool}/vms/{parent_vm}@fork-{forked_vm}`.
+    fn cleanup_fork(&self, parent_vm: &str, forked_vm: &str) -> Result<()> {
+        let parent_zvol = self.vm_zvol(parent_vm);
+        let snap_name = format!("fork-{forked_vm}");
+        match zfs::snapshot::destroy(&parent_zvol, &snap_name) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to clean up fork snapshot '{parent_zvol}@{snap_name}': {e}"
+                );
             }
         }
         Ok(())
+    }
+
+    /// Check for fork snapshots on this VM's ZFS dataset.
+    ///
+    /// Lists all snapshots matching `fork-*` on the VM's zvol and returns
+    /// the implied dependent VM names. These represent ZFS clones that
+    /// would break if this VM's dataset were destroyed.
+    fn storage_dependents(&self, vm_name: &str) -> Result<Vec<String>> {
+        let zvol = self.vm_zvol(vm_name);
+        let snapshots = zfs::snapshot::list(&zvol)?;
+
+        Ok(snapshots
+            .into_iter()
+            .filter_map(|s| s.short_name.strip_prefix("fork-").map(String::from))
+            .collect())
     }
 
     /// Mount a block device (zvol) at a temporary directory.

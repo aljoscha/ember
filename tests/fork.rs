@@ -55,10 +55,7 @@ fn fork_basic() {
 
     assert_eq!(meta["image"], "docker.io/library/alpine:latest");
     assert_eq!(meta["status"], "created");
-    assert!(
-        !meta["forked_from"].is_null(),
-        "expected forked_from to be set"
-    );
+    assert!(!meta["parent_vm"].is_null(), "expected parent_vm to be set");
 
     // Platform-specific storage verification.
     #[cfg(target_os = "linux")]
@@ -283,6 +280,165 @@ fn fork_delete_source_with_dependent_snapshot() {
     );
 
     common::linux::assert_zvol_absent(&origin_zvol);
+}
+
+/// Deleting a parent VM while forks exist is refused without --force.
+///
+/// Creates a parent VM and two forks, then verifies:
+/// 1. `vm delete parent` (without --force) fails with a "dependent forks" error
+/// 2. After deleting both forks, `vm delete parent` succeeds
+/// 3. All ZFS storage (zvols + snapshots) is cleaned up
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn fork_delete_parent_refused_while_forks_exist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm("forkrefuse", "parent", &tmp);
+    let state = state_dir.to_str().unwrap();
+
+    let parent_zvol = format!("{pool}/ember/vms/parent");
+
+    // Fork two children.
+    for child in &["child1", "child2"] {
+        let output = common::ember(&[
+            "--state-dir",
+            state,
+            "vm",
+            "fork",
+            "parent",
+            child,
+            "--no-start",
+        ]);
+        assert!(
+            output.status.success(),
+            "vm fork {child} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Verify fork snapshots exist on the parent.
+    common::linux::assert_snapshot_exists(&format!("{parent_zvol}@fork-child1"));
+    common::linux::assert_snapshot_exists(&format!("{parent_zvol}@fork-child2"));
+
+    // Try to delete parent without --force — should fail.
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "parent"]);
+    assert!(
+        !output.status.success(),
+        "expected delete of parent with active forks to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dependent forks"),
+        "expected 'dependent forks' in error: {stderr}"
+    );
+    // The error should list the dependent VM names.
+    assert!(
+        stderr.contains("child1") && stderr.contains("child2"),
+        "expected both child names in error: {stderr}"
+    );
+
+    // Parent should still exist.
+    common::linux::assert_zvol_exists(&parent_zvol);
+
+    // Delete both forks.
+    for child in &["child1", "child2"] {
+        let output = common::ember(&["--state-dir", state, "vm", "delete", child]);
+        assert!(
+            output.status.success(),
+            "vm delete {child} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Fork snapshots should be cleaned up.
+    common::linux::assert_snapshot_absent(&format!("{parent_zvol}@fork-child1"));
+    common::linux::assert_snapshot_absent(&format!("{parent_zvol}@fork-child2"));
+
+    // Now deleting parent should succeed.
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "parent"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm delete parent failed after forks removed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    common::linux::assert_zvol_absent(&parent_zvol);
+}
+
+/// Force-deleting a parent VM cascade-deletes all forks and their storage.
+///
+/// Creates a parent VM and two forks, then verifies:
+/// 1. `vm delete parent --force` succeeds
+/// 2. All three VMs are gone from `vm list`
+/// 3. All ZFS zvols and fork snapshots are destroyed
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn fork_force_delete_parent_cascades() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pool, state_dir, _cleanup) =
+        common::linux::setup_pool_and_vm("forkcascade", "parent", &tmp);
+    let state = state_dir.to_str().unwrap();
+
+    let parent_zvol = format!("{pool}/ember/vms/parent");
+    let child1_zvol = format!("{pool}/ember/vms/child1");
+    let child2_zvol = format!("{pool}/ember/vms/child2");
+
+    // Fork two children.
+    for child in &["child1", "child2"] {
+        let output = common::ember(&[
+            "--state-dir",
+            state,
+            "vm",
+            "fork",
+            "parent",
+            child,
+            "--no-start",
+        ]);
+        assert!(
+            output.status.success(),
+            "vm fork {child} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // All three zvols and both fork snapshots should exist.
+    common::linux::assert_zvol_exists(&parent_zvol);
+    common::linux::assert_zvol_exists(&child1_zvol);
+    common::linux::assert_zvol_exists(&child2_zvol);
+    common::linux::assert_snapshot_exists(&format!("{parent_zvol}@fork-child1"));
+    common::linux::assert_snapshot_exists(&format!("{parent_zvol}@fork-child2"));
+
+    // Force-delete the parent — should cascade-delete both forks.
+    let output = common::ember(&["--state-dir", state, "vm", "delete", "parent", "--force"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm delete --force parent failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // All three zvols should be gone.
+    common::linux::assert_zvol_absent(&parent_zvol);
+    common::linux::assert_zvol_absent(&child1_zvol);
+    common::linux::assert_zvol_absent(&child2_zvol);
+
+    // Fork snapshots should be gone too (cleaned up when children were deleted).
+    common::linux::assert_snapshot_absent(&format!("{parent_zvol}@fork-child1"));
+    common::linux::assert_snapshot_absent(&format!("{parent_zvol}@fork-child2"));
+
+    // No VMs should remain in the list.
+    let output = common::ember(&["--state-dir", state, "vm", "list", "--format", "json"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let vms: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {stdout}"));
+    assert!(
+        vms.is_empty(),
+        "expected no VMs after cascade delete, got: {stdout}"
+    );
 }
 
 /// Fork preserves data from the source VM's disk.

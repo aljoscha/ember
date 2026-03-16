@@ -209,28 +209,34 @@ pub trait StorageBackend {
     /// macOS: `state_dir/vms/vm_name/rootfs.img` (raw disk image file).
     fn disk_device_path(&self, vm_name: &str) -> PathBuf;
 
-    /// Clone a VM snapshot to create a new VM's disk (used by `vm fork`).
+    /// Clone a VM's disk storage to create a new VM (used by `vm fork`).
     ///
-    /// Creates a snapshot of the source VM (if `snap_name` doesn't exist yet),
-    /// then clones that snapshot into a new VM.
+    /// Returns the disk path for the new VM.
     ///
-    /// Returns `(disk_path, fork_snapshot_identifier)` where the identifier
-    /// is stored in metadata for cleanup when the forked VM is deleted.
-    ///
-    /// Linux: `zfs clone pool/.../vms/source@snap pool/.../vms/target`.
-    /// macOS: `cp -c vms/source/rootfs.img vms/target/rootfs.img`.
-    fn clone_from_snapshot(
-        &self,
-        source_vm: &str,
-        snap_name: &str,
-        target_vm: &str,
-    ) -> Result<(PathBuf, String)>;
+    /// On Linux, this creates a ZFS snapshot on the source VM and clones it.
+    /// The snapshot naming convention is internal to the backend.
+    /// On macOS, this does a direct `cp -c` (APFS CoW clone) — no intermediate
+    /// snapshot, no dependency between source and target.
+    fn clone_vm_storage(&self, source_vm: &str, target_vm: &str) -> Result<PathBuf>;
 
-    /// Clean up the fork origin snapshot created by [`clone_from_snapshot`].
+    /// Clean up fork-related resources on the source VM.
     ///
-    /// Called when deleting a forked VM to remove the snapshot that was
-    /// created on the source VM during forking.
-    fn destroy_fork_origin(&self, fork_origin: &str) -> Result<()>;
+    /// Called when deleting a forked VM to remove any backend-specific
+    /// resources (e.g., ZFS snapshot on the source VM). The backend
+    /// reconstructs the resource name from the parent/forked VM names.
+    ///
+    /// No-op on backends where forks are independent (e.g., macOS/APFS).
+    fn cleanup_fork(&self, parent_vm: &str, forked_vm: &str) -> Result<()>;
+
+    /// Check if deleting this VM would break other VMs' storage.
+    ///
+    /// Returns the names of VMs whose storage depends on this VM
+    /// (e.g., ZFS clones that reference snapshots on this VM's dataset).
+    /// An empty vec means the VM can be safely deleted.
+    ///
+    /// On Linux/ZFS, fork snapshots create a real dependency chain.
+    /// On macOS/APFS, forks are independent — always returns empty.
+    fn storage_dependents(&self, vm_name: &str) -> Result<Vec<String>>;
 
     /// Mount a disk image and return the mount point path.
     ///

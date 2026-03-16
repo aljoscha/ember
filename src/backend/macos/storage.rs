@@ -439,19 +439,19 @@ impl StorageBackend for MacosStorage {
         self.vm_rootfs(vm_name)
     }
 
-    /// Clone a source VM's state for forking.
+    /// Clone a source VM's disk for forking via APFS copy-on-write.
     ///
-    /// Creates a snapshot of the source VM (APFS clone of its rootfs),
-    /// then clones that snapshot into the target VM's rootfs.
-    /// Returns `(target_rootfs_path, fork_origin_identifier)`.
-    fn clone_from_snapshot(
-        &self,
-        source_vm: &str,
-        snap_name: &str,
-        target_vm: &str,
-    ) -> Result<(PathBuf, String)> {
-        // Create the snapshot on the source VM.
-        self.snapshot(source_vm, snap_name)?;
+    /// Directly clones the source VM's rootfs into the target VM's rootfs
+    /// using `cp -c`. No intermediate snapshot is created — APFS clones
+    /// are fully independent, so no cleanup or dependency tracking is needed.
+    fn clone_vm_storage(&self, source_vm: &str, target_vm: &str) -> Result<PathBuf> {
+        let source_rootfs = self.vm_rootfs(source_vm);
+        if !source_rootfs.exists() {
+            return Err(Error::Image(format!(
+                "source VM rootfs not found: {}",
+                source_rootfs.display()
+            )));
+        }
 
         // Create target VM directory and snapshots subdirectory.
         let target_dir = self.vm_dir(target_vm);
@@ -465,39 +465,20 @@ impl StorageBackend for MacosStorage {
             source: e,
         })?;
 
-        // Clone the snapshot into the target VM's rootfs.
-        let snap_path = self
-            .vm_snapshots_dir(source_vm)
-            .join(format!("{snap_name}.img"));
         let target_rootfs = self.vm_rootfs(target_vm);
+        apfs_clone(&source_rootfs, &target_rootfs)?;
 
-        if let Err(e) = apfs_clone(&snap_path, &target_rootfs) {
-            // Clean up the snapshot on failure.
-            let _ = self.delete_snapshot(source_vm, snap_name);
-            return Err(e);
-        }
-
-        // Fork origin identifier: "source_vm/snap_name" so we can find
-        // and delete the snapshot when the forked VM is deleted.
-        let fork_origin = format!("{source_vm}/{snap_name}");
-        Ok((target_rootfs, fork_origin))
+        Ok(target_rootfs)
     }
 
-    /// Clean up the fork origin snapshot created by [`clone_from_snapshot`].
-    ///
-    /// The fork_origin string is "source_vm/snap_name". We parse it and
-    /// delete the snapshot file. Errors are logged but not propagated
-    /// (same behavior as the Linux backend).
-    fn destroy_fork_origin(&self, fork_origin: &str) -> Result<()> {
-        if let Some((source_vm, snap_name)) = fork_origin.split_once('/') {
-            match self.delete_snapshot(source_vm, snap_name) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("Warning: failed to clean up fork snapshot '{fork_origin}': {e}");
-                }
-            }
-        }
+    /// No-op on macOS — APFS clones are independent, nothing to clean up.
+    fn cleanup_fork(&self, _parent_vm: &str, _forked_vm: &str) -> Result<()> {
         Ok(())
+    }
+
+    /// Always returns empty on macOS — APFS clones are independent.
+    fn storage_dependents(&self, _vm_name: &str) -> Result<Vec<String>> {
+        Ok(vec![])
     }
 
     /// Not supported for ext4 on macOS.
