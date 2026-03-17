@@ -6,7 +6,7 @@ use std::path::Path;
 use clap::{Args, Subcommand};
 
 use super::fmt::format_bytes_binary;
-use crate::kernel;
+use ember_core::kernel;
 
 #[derive(Subcommand)]
 pub enum KernelCommand {
@@ -64,7 +64,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!();
     }
 
-    let store = crate::state::store::StateStore::new(state_dir.to_path_buf());
+    let store = ember_core::state::store::StateStore::new(state_dir.to_path_buf());
     let dest = kernel::build::build(&store, jobs, &tool)?;
 
     println!(
@@ -78,7 +78,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
 }
 
 fn list(state_dir: &Path) -> anyhow::Result<()> {
-    let store = crate::state::store::StateStore::new(state_dir.to_path_buf());
+    let store = ember_core::state::store::StateStore::new(state_dir.to_path_buf());
     let kernel_dir = store.kernel_dir();
 
     if !kernel_dir.exists() {

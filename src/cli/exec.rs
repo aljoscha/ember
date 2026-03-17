@@ -3,8 +3,8 @@ use std::path::Path;
 use clap::Args;
 
 use crate::cli::vm::load_running_with_ip;
-use crate::ssh;
-use crate::state::store::StateStore;
+use ember_core::ssh;
+use ember_core::state::store::StateStore;
 
 #[derive(Args)]
 pub struct ExecArgs {
@@ -57,7 +57,7 @@ fn shell_escape_join(args: &[String]) -> String {
                 || arg
                     .contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c))
             {
-                crate::ssh::copy::shell_quote(arg)
+                ember_core::ssh::copy::shell_quote(arg)
             } else {
                 arg.clone()
             }

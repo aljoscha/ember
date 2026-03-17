@@ -3,9 +3,9 @@ use std::path::Path;
 use clap::{Args, Subcommand};
 
 use crate::backend::{Storage, StorageBackend};
-use crate::config::GlobalConfig;
-use crate::state::store::StateStore;
-use crate::state::vm;
+use ember_core::config::GlobalConfig;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm;
 
 use super::vm::OutputFormat;
 
