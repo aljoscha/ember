@@ -12,7 +12,7 @@ pub use ember_core::backend::*;
 pub use ember_linux as linux;
 
 #[cfg(target_os = "macos")]
-pub mod macos;
+pub use ember_macos as macos;
 
 // Type aliases for the active platform backend.
 // Selected at compile time based on target OS.
@@ -24,11 +24,11 @@ pub type Storage = ember_linux::LinuxStorage;
 pub type Network = ember_linux::LinuxNetwork;
 
 #[cfg(target_os = "macos")]
-pub type Vm = macos::MacosVm;
+pub type Vm = ember_macos::MacosVm;
 #[cfg(target_os = "macos")]
-pub type Storage = macos::MacosStorage;
+pub type Storage = ember_macos::MacosStorage;
 #[cfg(target_os = "macos")]
-pub type Network = macos::MacosNetwork;
+pub type Network = ember_macos::MacosNetwork;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("ember only supports Linux and macOS");

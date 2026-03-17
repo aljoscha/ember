@@ -11,11 +11,11 @@
 
 use std::path::Path;
 
-use crate::backend::macos::vm::MacosVm;
-use crate::backend::VmBackend;
-use crate::network;
-use crate::state::store::StateStore;
-use crate::state::vm::{self, VmStatus};
+use crate::vm::MacosVm;
+use ember_core::backend::VmBackend;
+use ember_core::network;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{self, VmStatus};
 
 /// Run lightweight state reconciliation.
 ///

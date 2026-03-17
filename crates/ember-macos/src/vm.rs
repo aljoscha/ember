@@ -17,10 +17,10 @@ use std::time::Duration;
 
 use nix::libc;
 
-use crate::backend::{StartedVm, VmBackend};
-use crate::config::GlobalConfig;
-use crate::error::{Error, Result};
-use crate::state::vm::{NetworkInfo, VmMetadata};
+use ember_core::backend::{StartedVm, VmBackend};
+use ember_core::config::GlobalConfig;
+use ember_core::error::{Error, Result};
+use ember_core::state::vm::{NetworkInfo, VmMetadata};
 
 /// macOS VM backend using Apple Virtualization Framework (via ember-vz).
 pub struct MacosVm;

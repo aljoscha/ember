@@ -1,7 +1,6 @@
-//! macOS backend implementations: AVF (ember-vz) + APFS clones + vmnet.
-
 pub mod image;
 pub mod network;
+pub mod reconcile;
 pub mod storage;
 pub mod vm;
 

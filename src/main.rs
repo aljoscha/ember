@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
     }
     #[cfg(target_os = "macos")]
     if needs_reconcile(&cli.command) {
-        state::reconcile_macos::run(&cli.state_dir);
+        ember_macos::reconcile::run(&cli.state_dir);
     }
 
     match &cli.command {
@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(target_os = "linux")]
             ember_linux::reconcile::run(&cli.state_dir);
             #[cfg(target_os = "macos")]
-            state::reconcile_macos::run(&cli.state_dir);
+            ember_macos::reconcile::run(&cli.state_dir);
             Ok(())
         }
         Command::Version => {

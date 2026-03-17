@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ember-core", "crates/ember-linux"]
+members = ["crates/ember-core", "crates/ember-linux", "crates/ember-macos"]
 default-members = ["."]
 
 [package]
@@ -54,3 +54,6 @@ tempfile = "3"
 # Platform-specific backends
 [target.'cfg(target_os = "linux")'.dependencies]
 ember-linux = { path = "crates/ember-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ember-macos = { path = "crates/ember-macos" }
