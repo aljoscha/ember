@@ -5,14 +5,14 @@ use uuid::Uuid;
 
 use super::fmt::{format_bytes_binary, GIB, MIB};
 use crate::backend::{Network, NetworkBackend, Storage, StorageBackend, Vm, VmBackend};
-use crate::config;
-use crate::config::size::ByteSize;
-use crate::config::GlobalConfig;
-use crate::error::Error;
 use crate::image;
-use crate::image::registry::ImageRegistry;
-use crate::state::store::StateStore;
-use crate::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
+use ember_core::config;
+use ember_core::config::size::ByteSize;
+use ember_core::config::GlobalConfig;
+use ember_core::error::Error;
+use ember_core::image::registry::ImageRegistry;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
 
 /// Load a running VM with network info, checking that the guest IP is resolved.
 ///
@@ -94,7 +94,7 @@ pub struct CreateArgs {
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
-    pub kernel: Option<crate::kernel::KernelSpec>,
+    pub kernel: Option<ember_core::kernel::KernelSpec>,
 
     /// Network subnet
     #[arg(long)]
@@ -162,7 +162,7 @@ pub struct UpdateConfigArgs {
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
-    pub kernel: Option<crate::kernel::KernelSpec>,
+    pub kernel: Option<ember_core::kernel::KernelSpec>,
 
     /// Kernel boot arguments (replaces current; use "" to clear)
     #[arg(long)]
@@ -216,7 +216,7 @@ pub struct ForkArgs {
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
-    pub kernel: Option<crate::kernel::KernelSpec>,
+    pub kernel: Option<ember_core::kernel::KernelSpec>,
 
     /// Network subnet
     #[arg(long)]
@@ -274,7 +274,7 @@ struct ResolvedVmCreate {
     cpus: u32,
     memory: u32,
     disk_size: u32,
-    kernel: Option<crate::kernel::KernelSpec>,
+    kernel: Option<ember_core::kernel::KernelSpec>,
     /// Custom boot arguments from YAML config.
     boot_args: Option<String>,
     /// Network subnet from YAML config (used during `start`, not `create`).
@@ -360,7 +360,7 @@ fn resolve_create_config(
 
 /// Resolve the kernel path: CLI/YAML spec → global config → auto-download default preset.
 fn ensure_kernel(
-    cli_kernel: &Option<crate::kernel::KernelSpec>,
+    cli_kernel: &Option<ember_core::kernel::KernelSpec>,
     config: &mut GlobalConfig,
     store: &StateStore,
 ) -> anyhow::Result<PathBuf> {
@@ -372,7 +372,7 @@ fn ensure_kernel(
     }
 
     // No kernel configured — download the default preset.
-    let default_spec = crate::kernel::KernelSpec::Preset(crate::kernel::DEFAULT_PRESET);
+    let default_spec = ember_core::kernel::KernelSpec::Preset(ember_core::kernel::DEFAULT_PRESET);
     let dest = default_spec.resolve(store)?;
 
     // Persist so future creates skip the download.
@@ -391,7 +391,7 @@ fn ensure_kernel(
 /// Uses a [`Rollback`] guard to ensure the zvol clone and state directory
 /// are cleaned up if any step after cloning fails.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
-    use crate::cleanup::Rollback;
+    use ember_core::cleanup::Rollback;
 
     let store = StateStore::new(state_dir.to_path_buf());
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
@@ -562,7 +562,7 @@ fn create_post_clone(
 ///
 /// No SSH key injection — the forked disk already has keys from the source VM.
 fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
-    use crate::cleanup::Rollback;
+    use ember_core::cleanup::Rollback;
 
     let store = StateStore::new(state_dir.to_path_buf());
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
@@ -695,7 +695,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Uses a [`Rollback`] guard to ensure all resources (IP allocation, TAP device,
 /// iptables rules, Firecracker process) are cleaned up if any step fails.
 fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
-    use crate::cleanup::Rollback;
+    use ember_core::cleanup::Rollback;
 
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;

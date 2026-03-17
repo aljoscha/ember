@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use crate::config::GlobalConfig;
-use crate::image::registry::ImageRegistry;
-use crate::state::store::StateStore;
-use crate::state::vm;
+use ember_core::config::GlobalConfig;
+use ember_core::image::registry::ImageRegistry;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm;
 
 pub fn run(state_dir: &Path) -> anyhow::Result<()> {
     let Some(store) = StateStore::try_open(state_dir) else {

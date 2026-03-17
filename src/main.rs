@@ -1,13 +1,6 @@
 pub mod backend;
-mod cleanup;
 mod cli;
-pub mod config;
-pub mod error;
 pub mod image;
-pub mod kernel;
-pub mod network;
-pub mod ssh;
-pub mod state;
 
 use clap::Parser;
 #[cfg(target_os = "linux")]

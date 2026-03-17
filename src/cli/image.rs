@@ -5,12 +5,12 @@ use clap::{Args, Subcommand};
 use super::fmt::{format_bytes_binary, MIB};
 use super::vm::OutputFormat;
 use crate::backend::{Storage, StorageBackend};
-use crate::config::GlobalConfig;
 use crate::image;
-use crate::image::pull::ImageReference;
-use crate::image::registry::{new_build_entry, new_entry, ImageRegistry};
-use crate::state::store::StateStore;
-use crate::state::vm::{self, VmMetadata};
+use ember_core::config::GlobalConfig;
+use ember_core::image::pull::ImageReference;
+use ember_core::image::registry::{new_build_entry, new_entry, ImageRegistry};
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{self, VmMetadata};
 
 #[derive(Subcommand)]
 pub enum ImageCommand {
@@ -109,7 +109,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("Pulling {reference}...");
 
     // Create a temporary working directory for the pull.
-    let work_dir = tempfile::tempdir().map_err(|e| crate::error::Error::Io {
+    let work_dir = tempfile::tempdir().map_err(|e| ember_core::error::Error::Io {
         path: std::env::temp_dir(),
         source: e,
     })?;
@@ -159,7 +159,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     println!("Building image '{}'...", args.name);
 
-    let work_dir = tempfile::tempdir().map_err(|e| crate::error::Error::Io {
+    let work_dir = tempfile::tempdir().map_err(|e| ember_core::error::Error::Io {
         path: std::env::temp_dir(),
         source: e,
     })?;
@@ -175,7 +175,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
         None => {
             let default_path = work_dir.path().join("Dockerfile");
             std::fs::write(&default_path, image::build::DEFAULT_DOCKERFILE).map_err(|e| {
-                crate::error::Error::Io {
+                ember_core::error::Error::Io {
                     path: default_path.clone(),
                     source: e,
                 }
@@ -380,7 +380,7 @@ fn create_image_from_rootfs(
     work_dir: &Path,
     name: &str,
     storage: &Storage,
-) -> anyhow::Result<(u64, PathBuf, crate::cleanup::Rollback)> {
+) -> anyhow::Result<(u64, PathBuf, ember_core::cleanup::Rollback)> {
     let size_mib = image::ext4::estimate_size_mib(rootfs_dir)?;
     let ext4_path = work_dir.join("rootfs.ext4");
     println!(
@@ -397,7 +397,7 @@ fn create_image_from_rootfs(
     println!("  Importing image into storage...");
     let disk_path = storage.create_image_volume(name, &ext4_path, size_mib)?;
 
-    let mut rollback = crate::cleanup::Rollback::new();
+    let mut rollback = ember_core::cleanup::Rollback::new();
     {
         let storage = storage.clone();
         let n = name.to_string();

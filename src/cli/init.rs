@@ -3,8 +3,8 @@ use std::path::Path;
 use clap::Args;
 
 use crate::backend::{InitConfig, Storage, StorageBackend};
-use crate::config::GlobalConfig;
-use crate::state::store::StateStore;
+use ember_core::config::GlobalConfig;
+use ember_core::state::store::StateStore;
 
 #[derive(Args)]
 pub struct InitArgs {
@@ -25,7 +25,7 @@ pub struct InitArgs {
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
-    pub kernel: Option<crate::kernel::KernelSpec>,
+    pub kernel: Option<ember_core::kernel::KernelSpec>,
 
     /// WAN interface for NAT (auto-detected if not specified)
     #[arg(long)]
@@ -62,7 +62,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!("Using WAN interface '{iface}' (from --wan-iface).");
         Some(iface.clone())
     } else {
-        match crate::network::wan::detect() {
+        match ember_linux::network::wan::detect() {
             Ok(iface) => {
                 println!("Detected WAN interface: {iface}");
                 Some(iface)

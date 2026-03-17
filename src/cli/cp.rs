@@ -3,8 +3,8 @@ use std::path::Path;
 use clap::Args;
 
 use crate::cli::vm::load_running_with_ip;
-use crate::ssh;
-use crate::state::store::StateStore;
+use ember_core::ssh;
+use ember_core::state::store::StateStore;
 
 #[derive(Args)]
 pub struct CpArgs {
