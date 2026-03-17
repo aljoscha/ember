@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use crate::backend::{InitConfig, SnapshotInfo, StorageBackend};
-use crate::config::size::ByteSize;
-use crate::error::{Error, Result};
+use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend};
+use ember_core::config::size::ByteSize;
+use ember_core::error::{Error, Result};
 
 /// macOS storage backend using APFS copy-on-write clones.
 ///
@@ -36,7 +36,7 @@ impl MacosStorage {
     /// Create a new macOS storage backend from the global config.
     ///
     /// Extracts the state directory path that all storage operations need.
-    pub fn new(config: &crate::config::GlobalConfig) -> Self {
+    pub fn new(config: &ember_core::config::GlobalConfig) -> Self {
         Self {
             state_dir: config.state_dir.clone(),
         }

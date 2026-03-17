@@ -6,12 +6,12 @@
 
 use std::process::Command;
 
-use crate::backend::NetworkBackend;
-use crate::config::GlobalConfig;
-use crate::error::{Error, Result};
-use crate::network;
-use crate::state::store::StateStore;
-use crate::state::vm::{NetworkInfo, VmMetadata};
+use ember_core::backend::NetworkBackend;
+use ember_core::config::GlobalConfig;
+use ember_core::error::{Error, Result};
+use ember_core::network;
+use ember_core::state::store::StateStore;
+use ember_core::state::vm::{NetworkInfo, VmMetadata};
 
 /// vmnet shared mode gateway.
 pub const VMNET_GATEWAY: &str = "192.168.64.1";

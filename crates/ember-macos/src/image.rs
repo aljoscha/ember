@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::error::{Error, Result};
+use ember_core::error::{Error, Result};
 
 /// Create an ext4 filesystem image from a rootfs directory.
 ///
@@ -112,10 +112,10 @@ fn create_sparse_file(path: &Path, size_mib: u64) -> Result<()> {
 /// tar extraction), `mkfs.ext4` is run under `fakeroot -i` so it reads
 /// the correct ownership metadata instead of the macOS user's uid/gid.
 ///
-/// Uses [`super::storage::find_e2fsprogs_tool`] to locate `mkfs.ext4`
+/// Uses [`crate::storage::find_e2fsprogs_tool`] to locate `mkfs.ext4`
 /// in Homebrew's keg-only installation path.
 fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
-    let mkfs = super::storage::find_e2fsprogs_tool("mkfs.ext4");
+    let mkfs = crate::storage::find_e2fsprogs_tool("mkfs.ext4");
 
     let state_file = rootfs_dir
         .parent()
@@ -162,8 +162,8 @@ fn mkfs_ext4_from_dir(image_path: &Path, rootfs_dir: &Path) -> Result<()> {
 /// Runs `e2fsck -fy` (required before resize) then `resize2fs -M` to shrink
 /// the filesystem, and finally `truncate` the file to the new filesystem size.
 fn shrink_to_fit(image_path: &Path) -> Result<()> {
-    let e2fsck = super::storage::find_e2fsprogs_tool("e2fsck");
-    let resize2fs = super::storage::find_e2fsprogs_tool("resize2fs");
+    let e2fsck = crate::storage::find_e2fsprogs_tool("e2fsck");
+    let resize2fs = crate::storage::find_e2fsprogs_tool("resize2fs");
 
     // e2fsck -fy: force check, assume yes to all repairs.
     let output = Command::new(&e2fsck)
