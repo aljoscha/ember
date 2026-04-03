@@ -19,6 +19,7 @@ macOS support. Work through MACOS-TODO.md one task at a time. Implement, verify,
 - Platform-specific code lives behind backend traits (`VmBackend`, `StorageBackend`, `NetworkBackend`) with `#[cfg(target_os)]` compile-time selection.
 - Shell out to platform tools (same philosophy as Linux): `ember-vz` (Swift helper for AVF), `hdiutil`, `diskutil`, `cp -c`, Homebrew `e2fsprogs`.
 - When exploring for design or debugging, start producing actionable output (plans, hypotheses, code) early. Don't spend the whole session just reading code.
+- Deliver complete implementations — do not silently cut scope, leave mocks in place of real logic, or substitute hardcoded data where dynamic generation or fetching is feasible. If a reference implementation solves a problem properly (e.g. generating data from a live source), the spec and implementation should do the same rather than settling for a static shortcut. When a full solution is impractical, say so explicitly and get agreement before reducing scope.
 - Work through the TODO one task at a time. Implement, verify, check off the task, commit, stop.
 
 ## Build Commands
