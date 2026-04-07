@@ -72,6 +72,13 @@ RUN id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu; \
 # Applied at boot by systemd-sysctl.
 RUN echo 'net.ipv4.ping_group_range = 0 2147483647' > /etc/sysctl.d/50-ping.conf
 
+# ---------- emberd (in-VM daemon) ----------
+# Copy pre-built binary from the build context. Built on the host with:
+#   cd ember && cargo build -p emberd --release --target <arch>-unknown-linux-gnu
+# Falls back gracefully: if emberd is not present, Thermite uses SSH.
+COPY emberd /usr/local/bin/emberd
+COPY emberd.service /etc/systemd/system/emberd.service
+
 # ---------- SSH ----------
 RUN mkdir -p /run/sshd \
     && sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
@@ -82,7 +89,8 @@ RUN systemctl enable ssh.socket
 # Firecracker uses ttyS0; macOS AVF uses hvc0 (virtio-console).
 # Enable both — the unused one simply won't start.
 RUN systemctl enable serial-getty@ttyS0.service \
-    && systemctl enable serial-getty@hvc0.service
+    && systemctl enable serial-getty@hvc0.service \
+    && systemctl enable emberd.service
 
 # ---------- strip systemd units that are useless / harmful in a VM ----------
 RUN rm -f /etc/systemd/system/getty.target.wants/getty@tty1.service  || true

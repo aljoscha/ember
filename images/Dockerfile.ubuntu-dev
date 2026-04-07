@@ -112,13 +112,21 @@ RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION
     && dpkg -i /tmp/bk.deb \
     && rm /tmp/bk.deb
 
+# ---------- emberd (in-VM daemon) ----------
+# Copy pre-built binary from the build context. Built on the host with:
+#   cd ember && cargo build -p emberd --release --target <arch>-unknown-linux-gnu
+# Falls back gracefully: if emberd is not present, Thermite uses SSH.
+COPY emberd /usr/local/bin/emberd
+COPY emberd.service /etc/systemd/system/emberd.service
+
 # ---------- enable services ----------
 # Firecracker uses ttyS0; macOS AVF uses hvc0 (virtio-console).
 # Enable both — the unused one simply won't start.
 RUN systemctl enable docker \
     && systemctl enable ssh.socket \
     && systemctl enable serial-getty@ttyS0.service \
-    && systemctl enable serial-getty@hvc0.service
+    && systemctl enable serial-getty@hvc0.service \
+    && systemctl enable emberd.service
 
 # ---------- per-user tools (installed as ubuntu) ----------
 USER ubuntu
