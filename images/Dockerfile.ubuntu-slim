@@ -73,9 +73,8 @@ RUN id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu; \
 RUN echo 'net.ipv4.ping_group_range = 0 2147483647' > /etc/sysctl.d/50-ping.conf
 
 # ---------- emberd (in-VM daemon) ----------
-# Copy pre-built binary from the build context. Built on the host with:
-#   cd ember && cargo build -p emberd --release --target <arch>-unknown-linux-gnu
-# Falls back gracefully: if emberd is not present, Thermite uses SSH.
+# Pre-built Linux binary, staged by `make emberd-image` (builds via Docker).
+# If missing, run: cd ember && make emberd-image
 COPY emberd /usr/local/bin/emberd
 COPY emberd.service /etc/systemd/system/emberd.service
 

@@ -81,7 +81,7 @@ fn accept_loop_uds(listener: UnixListener) -> Result<(), Box<dyn std::error::Err
 #[cfg(target_os = "linux")]
 fn listen_vsock(port: u32) -> Result<(), Box<dyn std::error::Error>> {
     use nix::sys::socket::{
-        accept, bind, listen, socket, AddressFamily, SockFlag, SockType, VsockAddr,
+        accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, VsockAddr,
     };
 
     let fd = socket(
@@ -93,7 +93,7 @@ fn listen_vsock(port: u32) -> Result<(), Box<dyn std::error::Error>> {
     // VMADDR_CID_ANY = 0xFFFFFFFF — accept connections from any CID.
     let addr = VsockAddr::new(0xFFFFFFFF, port);
     bind(fd.as_raw_fd(), &addr)?;
-    listen(&fd, 128)?;
+    listen(&fd, Backlog::new(128)?)?;
     eprintln!("listening on vsock port {port}");
 
     loop {

@@ -30,17 +30,17 @@ emberd:
 emberd-release:
 	cargo build -p emberd --release
 
-# Build emberd for Linux and copy into images/ for Dockerfile COPY.
-# On Linux this is a native build; on macOS it cross-compiles via the
-# x86_64-unknown-linux-gnu target (requires: rustup target add ...).
+# Build emberd for Linux and stage at images/emberd for Dockerfile COPY.
+# Uses Docker (via Colima on macOS) so no cross-compilation toolchain needed.
 emberd-image:
 ifeq ($(UNAME),Linux)
 	cargo build -p emberd --release
 	cp target/release/emberd images/emberd
 else
-	@echo "Cross-compiling emberd for Linux..."
-	cargo build -p emberd --release --target x86_64-unknown-linux-gnu
-	cp target/x86_64-unknown-linux-gnu/release/emberd images/emberd
+	docker run --rm -v "$(CURDIR)":/src -w /src \
+		-e CARGO_TARGET_DIR=/tmp/emberd-target \
+		rust:latest \
+		sh -c 'cargo build -p emberd --release && cp /tmp/emberd-target/release/emberd /src/images/emberd'
 endif
 	@echo "emberd binary staged at images/emberd"
 
