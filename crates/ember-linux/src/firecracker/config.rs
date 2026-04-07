@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::firecracker::api::{
-    BootSource, Drive, FirecrackerClient, InstanceAction, MachineConfig, NetworkInterface,
+    BootSource, Drive, FirecrackerClient, InstanceAction, MachineConfig, NetworkInterface, Vsock,
 };
 
 /// Default boot arguments for the guest kernel.
@@ -52,6 +52,11 @@ pub struct VmConfig {
     pub rootfs_path: PathBuf,
     /// Optional network interface configuration.
     pub network: Option<VmNetworkConfig>,
+    /// Optional vsock device. When set, configures a virtio-vsock device
+    /// with the given UDS path and guest CID.
+    pub vsock_uds_path: Option<String>,
+    /// Guest CID for vsock (default: 3).
+    pub vsock_guest_cid: u32,
 }
 
 impl VmConfig {
@@ -72,6 +77,8 @@ impl VmConfig {
             boot_args: DEFAULT_BOOT_ARGS.to_string(),
             rootfs_path: rootfs_path.into(),
             network: None,
+            vsock_uds_path: None,
+            vsock_guest_cid: 3,
         }
     }
 
@@ -84,6 +91,13 @@ impl VmConfig {
     /// Configure networking for the VM.
     pub fn with_network(mut self, network: VmNetworkConfig) -> Self {
         self.network = Some(network);
+        self
+    }
+
+    /// Enable vsock device with the given UDS path and guest CID.
+    pub fn with_vsock(mut self, uds_path: impl Into<String>, guest_cid: u32) -> Self {
+        self.vsock_uds_path = Some(uds_path.into());
+        self.vsock_guest_cid = guest_cid;
         self
     }
 
@@ -172,6 +186,17 @@ impl VmConfig {
                 .await?;
         }
 
+        // 5. Vsock device (if configured)
+        if let Some(ref uds_path) = self.vsock_uds_path {
+            client
+                .put_vsock(&Vsock {
+                    vsock_id: "vsock0".to_string(),
+                    guest_cid: self.vsock_guest_cid,
+                    uds_path: uds_path.clone(),
+                })
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -256,5 +281,23 @@ mod tests {
             config.full_boot_args(),
             "console=ttyS0 panic=1 ip=10.100.0.6::10.100.0.5:255.255.255.252:customvm:eth0:off:1.1.1.1"
         );
+    }
+
+    #[test]
+    fn with_vsock() {
+        let config = VmConfig::new(2, 512, "/boot/vmlinux", "/dev/zvol/pool/vms/test")
+            .with_vsock("/var/lib/ember/vms/test/vsock.sock", 3);
+        assert_eq!(
+            config.vsock_uds_path.as_deref(),
+            Some("/var/lib/ember/vms/test/vsock.sock")
+        );
+        assert_eq!(config.vsock_guest_cid, 3);
+    }
+
+    #[test]
+    fn default_no_vsock() {
+        let config = VmConfig::new(1, 128, "/boot/vmlinux", "/dev/zvol/pool/vms/test");
+        assert!(config.vsock_uds_path.is_none());
+        assert_eq!(config.vsock_guest_cid, 3);
     }
 }

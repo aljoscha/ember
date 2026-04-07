@@ -106,6 +106,10 @@ pub struct CreateArgs {
     #[arg(long = "vm-config")]
     pub vm_config: Option<PathBuf>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
@@ -224,6 +228,10 @@ pub struct ForkArgs {
     #[arg(long)]
     pub network: Option<String>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after forking
     #[arg(long)]
     pub no_start: bool,
@@ -285,6 +293,23 @@ struct ResolvedVmCreate {
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
     ssh_key: Option<PathBuf>,
+    /// Whether vsock is enabled for this VM.
+    vsock: bool,
+}
+
+impl ResolvedVmCreate {
+    /// Build a `VsockInfo` if vsock is enabled, using the given state store
+    /// to derive the UDS path.
+    fn vsock_info(&self, store: &StateStore) -> Option<vm::VsockInfo> {
+        if self.vsock {
+            Some(vm::VsockInfo {
+                uds_path: store.vm_dir(&self.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// Resolve VM creation config by merging defaults, YAML config, and CLI flags.
@@ -344,6 +369,8 @@ fn resolve_create_config(
             .and_then(|s| s.key.as_ref().map(|p| config::vm::expand_tilde(p)))
     });
 
+    let vsock = args.vsock || yaml.and_then(|c| c.vsock).unwrap_or(false);
+
     Ok(ResolvedVmCreate {
         name: args.name.clone(),
         image,
@@ -356,6 +383,7 @@ fn resolve_create_config(
         no_start: args.no_start,
         ssh_user,
         ssh_key,
+        vsock,
     })
 }
 
@@ -547,6 +575,7 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
+        vsock: resolved.vsock_info(store),
     };
 
     vm::save(store, &metadata)?;
@@ -666,6 +695,17 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
+        vsock: if args.vsock {
+            Some(vm::VsockInfo {
+                uds_path: store.vm_dir(&args.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        } else {
+            source.vsock.as_ref().map(|_| vm::VsockInfo {
+                uds_path: store.vm_dir(&args.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        },
     };
 
     vm::save(&store, &metadata)?;
@@ -1204,6 +1244,12 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 if let Some(ref mac) = net.guest_mac {
                     println!("  Guest MAC:   {}", mac);
                 }
+            }
+
+            if let Some(ref vsock) = metadata.vsock {
+                println!("Vsock:");
+                println!("  UDS path:    {}", vsock.uds_path.display());
+                println!("  Guest CID:   {}", vsock.guest_cid);
             }
 
             println!("SSH:");
