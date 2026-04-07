@@ -465,12 +465,25 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     rollback.commit();
 
     if !resolved.no_start {
-        start(
+        if let Err(e) = start(
             &StartArgs {
                 name: resolved.name.clone(),
             },
             state_dir,
-        )?;
+        ) {
+            // Start failed — clean up the created VM so we don't leave
+            // orphaned state behind.
+            eprintln!("Start failed, cleaning up VM '{}'...", resolved.name);
+            let _ = delete(
+                &DeleteArgs {
+                    name: Some(resolved.name.clone()),
+                    all: false,
+                    force: true,
+                },
+                state_dir,
+            );
+            return Err(e);
+        }
     }
 
     Ok(())
