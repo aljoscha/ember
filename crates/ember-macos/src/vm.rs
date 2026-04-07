@@ -125,6 +125,11 @@ impl VmBackend for MacosVm {
             .arg("--ready-fd")
             .arg(write_fd_num.to_string());
 
+        // Pass vsock UDS path if vsock is enabled.
+        if let Some(ref vsock) = vm.vsock {
+            cmd.arg("--vsock-path").arg(&vsock.uds_path);
+        }
+
         // Redirect stdout/stderr to the serial log / null so the helper
         // doesn't interfere with ember's terminal output.
         cmd.stdin(Stdio::null());
