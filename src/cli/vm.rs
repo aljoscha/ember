@@ -420,7 +420,11 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         .find_by_reference(&resolved.image)?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "image '{}' not found locally — pull it first with: ember image pull {}",
+                "image '{}' not found locally\n\
+                 \n  Build from Dockerfile:  ember image build {} -f <Dockerfile>\
+                 \n  Pull from registry:     ember image pull {}\
+                 \n  List local images:      ember image list",
+                resolved.image,
                 resolved.image,
                 resolved.image
             )
