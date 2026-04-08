@@ -1206,15 +1206,22 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             }
 
             println!(
-                "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
-                "NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"
+                "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}",
+                "NAME", "STATUS", "IP", "VSOCK", "CPUS", "MEM", "DISK"
             );
             for vm in &vms {
+                let ip = vm
+                    .network
+                    .as_ref()
+                    .map(|n| n.guest_ip.as_str())
+                    .unwrap_or("-");
+                let vsock = if vm.vsock.is_some() { "✓" } else { "-" };
                 println!(
-                    "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
+                    "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}",
                     vm.name,
                     vm.status,
-                    vm.image,
+                    ip,
+                    vsock,
                     vm.cpus,
                     format_bytes_binary(vm.memory_mib as u64 * MIB),
                     format_bytes_binary(vm.disk_size_gib as u64 * GIB),
