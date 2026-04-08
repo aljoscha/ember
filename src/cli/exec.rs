@@ -116,10 +116,7 @@ fn exec_vsock(uds_path: &Path, command: &str) -> anyhow::Result<i32> {
         anyhow::bail!("emberd error: {err}");
     }
 
-    Ok(resp
-        .get("exit_code")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(1) as i32)
+    Ok(resp.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1) as i32)
 }
 
 /// Join command arguments into a single shell command string.
