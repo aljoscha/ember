@@ -381,6 +381,9 @@ func startVsockBridge(device: VZVirtioSocketDevice, udsPath: String) {
     // Store device reference for use in background accept loop.
     _vsockDeviceRef = device
 
+    // Keep server fd alive for the process lifetime.
+    _vsockServerFdRef = serverFd
+
     // Accept loop on a background queue.
     let acceptQueue = DispatchQueue(label: "vsock-accept", attributes: .concurrent)
     acceptQueue.async {
@@ -388,21 +391,29 @@ func startVsockBridge(device: VZVirtioSocketDevice, udsPath: String) {
             let clientFd = Darwin.accept(serverFd, nil, nil)
             guard clientFd >= 0 else {
                 if errno == EINTR { continue }
-                fputs("warning: vsock bridge: accept failed: \(String(cString: strerror(errno)))\n", stderr)
+                fputs("warning: vsock bridge: accept failed (errno \(errno)): \(String(cString: strerror(errno)))\n", stderr)
                 break
             }
 
-            guard let dev = _vsockDeviceRef else { close(clientFd); break }
+            guard let dev = _vsockDeviceRef else {
+                fputs("warning: vsock bridge: device ref lost, exiting accept loop\n", stderr)
+                close(clientFd)
+                break
+            }
 
             // Connect to the guest on the default vsock port (1024).
-            dev.connect(toPort: 1024) { result in
-                switch result {
-                case .success(let connection):
-                    fputs("vsock bridge: connected to guest port 1024\n", stderr)
-                    bridgeConnection(clientFd: clientFd, vsockConnection: connection)
-                case .failure(let error):
-                    fputs("warning: vsock bridge: guest connect failed: \(error.localizedDescription)\n", stderr)
-                    close(clientFd)
+            // VZVirtioSocketDevice must be used from the main queue.
+            fputs("vsock bridge: accepted client, connecting to guest port 1024...\n", stderr)
+            DispatchQueue.main.async {
+                dev.connect(toPort: 1024) { result in
+                    switch result {
+                    case .success(let connection):
+                        fputs("vsock bridge: connected to guest port 1024\n", stderr)
+                        bridgeConnection(clientFd: clientFd, vsockConnection: connection)
+                    case .failure(let error):
+                        fputs("warning: vsock bridge: guest connect failed: \(error.localizedDescription)\n", stderr)
+                        close(clientFd)
+                    }
                 }
             }
         }
@@ -421,18 +432,27 @@ func startVsockBridge(device: VZVirtioSocketDevice, udsPath: String) {
 
 /// Copy data from one file descriptor to another until EOF or error.
 /// Returns when the source fd is closed or an error occurs.
-func copyFd(from srcFd: Int32, to dstFd: Int32) {
+func copyFd(from srcFd: Int32, to dstFd: Int32, label: String = "") {
     let bufSize = 16384
     let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
     defer { buf.deallocate() }
 
     while true {
         let n = read(srcFd, buf, bufSize)
-        if n <= 0 { break }
+        if n < 0 {
+            let err = String(cString: strerror(errno))
+            fputs("vsock bridge: \(label) read error: \(err)\n", stderr)
+            break
+        }
+        if n == 0 { break } // EOF
         var written = 0
         while written < n {
             let w = write(dstFd, buf + written, n - written)
-            if w <= 0 { return }
+            if w <= 0 {
+                let err = String(cString: strerror(errno))
+                fputs("vsock bridge: \(label) write error: \(err)\n", stderr)
+                return
+            }
             written += w
         }
     }
@@ -440,20 +460,47 @@ func copyFd(from srcFd: Int32, to dstFd: Int32) {
 
 /// Bridge data between a UDS file descriptor and a vsock connection.
 /// Runs two concurrent copy loops (one per direction) until either side closes.
+///
+/// IMPORTANT: We must hold a strong reference to `vsockConnection` for the
+/// lifetime of the bridge. If ARC deallocates it, the underlying fd is closed
+/// and the bridge silently fails with empty reads.
 func bridgeConnection(clientFd: Int32, vsockConnection: VZVirtioSocketConnection) {
     let vsockFd = vsockConnection.fileDescriptor
+    fputs("vsock bridge: bridging client fd \(clientFd) <-> vsock fd \(vsockFd)\n", stderr)
+
+    // Hold a strong ref so ARC doesn't close the fd while copyFd is running.
+    let connectionRef = vsockConnection
+
+    let group = DispatchGroup()
 
     // client → guest
+    group.enter()
     DispatchQueue.global().async {
-        copyFd(from: clientFd, to: vsockFd)
+        copyFd(from: clientFd, to: vsockFd, label: "client→guest")
         shutdown(vsockFd, SHUT_WR)
+        group.leave()
     }
 
     // guest → client
+    group.enter()
     DispatchQueue.global().async {
-        copyFd(from: vsockFd, to: clientFd)
+        copyFd(from: vsockFd, to: clientFd, label: "guest→client")
         close(clientFd)
+        group.leave()
     }
+
+    // Release the connection reference only after both copy loops finish.
+    DispatchQueue.global().async {
+        group.wait()
+        fputs("vsock bridge: connection closed\n", stderr)
+        _keepAlive(connectionRef)
+    }
+}
+
+/// Prevent the compiler from optimizing away a strong reference.
+@inline(never)
+func _keepAlive(_ obj: AnyObject) {
+    withExtendedLifetime(obj) {}
 }
 
 /// Vsock listener delegate that accepts guest-initiated connections.
@@ -503,6 +550,7 @@ class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
 }
 
 nonisolated(unsafe) var _vsockDeviceRef: VZVirtioSocketDevice?
+nonisolated(unsafe) var _vsockServerFdRef: Int32 = -1
 nonisolated(unsafe) var _vsockListenerDelegateRef: VsockListenerDelegate?
 nonisolated(unsafe) var _vsockListenerObjRef: VZVirtioSocketListener?
 

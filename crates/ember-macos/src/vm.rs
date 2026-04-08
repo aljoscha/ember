@@ -130,11 +130,12 @@ impl VmBackend for MacosVm {
             cmd.arg("--vsock-path").arg(&vsock.uds_path);
         }
 
-        // Redirect stdout/stderr to the serial log / null so the helper
-        // doesn't interfere with ember's terminal output.
+        // Redirect stdout to null, stderr to a log file for debugging.
+        let stderr_log = std::fs::File::create(vm_dir.join("ember-vz.log"))
+            .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        cmd.stderr(Stdio::from(stderr_log));
 
         // SAFETY: pre_exec runs between fork and exec. We clear the
         // close-on-exec flag on the write fd so ember-vz inherits it.
