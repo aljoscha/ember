@@ -55,9 +55,15 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
 
 /// Join command arguments into a single shell command string.
 ///
-/// Arguments containing spaces, quotes, or shell metacharacters are
-/// single-quoted. This matches the behavior expected by remote shells.
+/// If there's a single argument, pass it verbatim — the user composed
+/// a shell command (e.g., `ember exec vm -- "echo hi | tee /tmp/out"`).
+///
+/// If there are multiple arguments, quote any that contain shell
+/// metacharacters so they're treated as literal arguments.
 fn shell_escape_join(args: &[String]) -> String {
+    if args.len() == 1 {
+        return args[0].clone();
+    }
     args.iter()
         .map(|arg| {
             if arg.is_empty()
