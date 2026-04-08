@@ -109,6 +109,10 @@ pub struct CreateArgs {
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
+
+    /// Wait for VM to be SSH-reachable after start (seconds, 0 to skip)
+    #[arg(long, default_value = "90")]
+    pub wait: u64,
 }
 
 #[derive(Args)]
@@ -281,6 +285,8 @@ struct ResolvedVmCreate {
     /// Network subnet from YAML config (used during `start`, not `create`).
     network: Option<String>,
     no_start: bool,
+    /// Seconds to wait for SSH after start (0 = don't wait).
+    wait: u64,
     /// SSH user override from YAML config.
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
@@ -354,6 +360,7 @@ fn resolve_create_config(
         boot_args,
         network,
         no_start: args.no_start,
+        wait: args.wait,
         ssh_user,
         ssh_key,
     })
@@ -484,9 +491,46 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
             );
             return Err(e);
         }
+
+        // Wait for SSH to become reachable (if --wait > 0).
+        if resolved.wait > 0 {
+            wait_for_ssh(&store, &resolved.name, resolved.wait)?;
+        }
     }
 
     Ok(())
+}
+
+/// Poll SSH until the VM responds or timeout is reached.
+fn wait_for_ssh(store: &StateStore, vm_name: &str, timeout_secs: u64) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let (metadata, network) = load_running_with_ip(store, vm_name)?;
+    let guest_ip = &network.guest_ip;
+    let key_path = &metadata.ssh.key;
+    let user = &metadata.ssh.user;
+
+    print!("Waiting for SSH");
+    let rt = tokio::runtime::Runtime::new()?;
+    let timeout = Duration::from_secs(timeout_secs);
+
+    match rt.block_on(async {
+        crate::ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await
+    }) {
+        Ok(client) => {
+            rt.block_on(async { client.close().await }).ok();
+            println!(" ready.");
+            Ok(())
+        }
+        Err(_) => {
+            println!(" timeout ({timeout_secs}s).");
+            eprintln!(
+                "  hint: VM is running but SSH is slow. Try:\n\
+                 \x20   ember exec --wait {timeout_secs} {vm_name} -- echo hello"
+            );
+            Ok(()) // Non-fatal — VM is running, SSH is just slow
+        }
+    }
 }
 
 /// Post-clone steps: grow disk, inject SSH key, save metadata.
