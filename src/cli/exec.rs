@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use clap::Args;
 
@@ -15,6 +16,10 @@ pub struct ExecArgs {
     #[arg(long)]
     pub user: Option<String>,
 
+    /// Wait up to N seconds for SSH to become available (default: 30)
+    #[arg(long, default_value = "30")]
+    pub wait: u64,
+
     /// Command to execute (everything after --)
     #[arg(last = true, required = true)]
     pub command: Vec<String>,
@@ -27,13 +32,15 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
     let guest_ip = &network.guest_ip;
     let key_path = &metadata.ssh.key;
     let user = args.user.as_deref().unwrap_or(&metadata.ssh.user);
+    let timeout = Duration::from_secs(args.wait);
 
     // Build the remote command string from the argument vector.
     let command = shell_escape_join(&args.command);
 
     let rt = tokio::runtime::Runtime::new()?;
     let exit_code = rt.block_on(async {
-        let mut client = ssh::client::connect(guest_ip, user, key_path).await?;
+        let mut client =
+            ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await?;
         let code = ssh::exec::exec(&mut client, &command).await?;
         let _ = client.close().await;
         Ok::<u32, anyhow::Error>(code)
