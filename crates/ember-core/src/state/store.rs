@@ -26,10 +26,13 @@ use crate::error::{Error, Result};
 /// ├── vms/
 /// │   └── <vm-name>/
 /// │       ├── vm.json
+/// │       ├── vsock.sock
 /// │       ├── firecracker.sock
 /// │       ├── firecracker.log
 /// │       ├── console.log
 /// │       └── firecracker.pid
+/// ├── vsock/
+/// │   └── cids.json
 /// └── network/
 ///     └── allocations.json
 /// ```
@@ -65,6 +68,7 @@ impl StateStore {
             self.kernel_dir(),
             self.root.join("images"),
             self.root.join("vms"),
+            self.root.join("vsock"),
             self.root.join("network"),
         ];
         for dir in &dirs {
@@ -99,6 +103,11 @@ impl StateStore {
     /// Path to network IP allocation tracking.
     pub fn network_allocations_path(&self) -> PathBuf {
         self.root.join("network").join("allocations.json")
+    }
+
+    /// Path to vsock CID allocation tracking.
+    pub fn vsock_allocations_path(&self) -> PathBuf {
+        self.root.join("vsock").join("cids.json")
     }
 
     /// Path to the global config file.
@@ -354,6 +363,7 @@ mod tests {
         assert!(root.join("kernels").is_dir());
         assert!(root.join("images").is_dir());
         assert!(root.join("vms").is_dir());
+        assert!(root.join("vsock").is_dir());
         assert!(root.join("network").is_dir());
     }
 
@@ -421,6 +431,10 @@ mod tests {
         assert_eq!(
             store.network_allocations_path(),
             PathBuf::from("/var/lib/ember/network/allocations.json")
+        );
+        assert_eq!(
+            store.vsock_allocations_path(),
+            PathBuf::from("/var/lib/ember/vsock/cids.json")
         );
         assert_eq!(
             store.config_path(),
