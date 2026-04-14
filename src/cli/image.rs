@@ -130,8 +130,8 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
         create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
-    let zvol = disk_path.to_string_lossy().to_string();
-    let entry = new_entry(&reference, &zvol, size_mib);
+    let disk = disk_path.to_string_lossy().to_string();
+    let entry = new_entry(&reference, &disk, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
@@ -206,8 +206,8 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
         create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
-    let zvol = disk_path.to_string_lossy().to_string();
-    let entry = new_build_entry(&args.name, &local_name, &zvol, size_mib);
+    let disk = disk_path.to_string_lossy().to_string();
+    let entry = new_build_entry(&args.name, &local_name, &disk, size_mib);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
@@ -252,7 +252,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Delete a local image: remove from registry and destroy ZFS zvol.
+/// Delete a local image: remove from registry and destroy backing storage.
 ///
 /// If VMs were cloned from this image, they hold a ZFS dependency on the
 /// image's `@base` snapshot. Without `--force`, the command lists the
@@ -261,7 +261,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
-    // Look up the image entry (don't remove from registry yet — the zvol
+    // Look up the image entry (don't remove from registry yet — the storage
     // destroy might fail if there are dependent clones).
     let registry = ImageRegistry::load(&store)?;
     let local_name = resolve_local_name(&registry, &args.name)?;
@@ -306,7 +306,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("Destroying storage for image '{}'...", local_name);
     storage.destroy_image_storage(&local_name, args.force)?;
 
-    // Remove from registry last, after the zvol is gone.
+    // Remove from registry last, after the storage is gone.
     image::registry::remove_image(&store, &local_name)?;
 
     println!("Image '{}' deleted.", entry.reference);
