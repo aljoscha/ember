@@ -5,29 +5,15 @@ edition = "2021"
 description = "Linux backend for ember: Firecracker + ZFS + TAP/iptables"
 
 [dependencies]
-ember-core = { path = "../ember-core" }
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# Async runtime (for SSH in graceful shutdown)
-tokio = { version = "1", features = ["full"] }
-
-# HTTP over Unix socket (Firecracker API)
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
-http-body-util = "0.1"
-hyperlocal = "0.9"
-
-# System (TAP ioctl, signals, process management)
-nix = { version = "0.29", features = ["fs", "ioctl", "net", "signal", "process", "user"] }
-
-# Error handling
-anyhow = "1"
-
-# Identifiers
-uuid = { version = "1", features = ["v4", "serde"] }
-
-# Temporary directories
-tempfile = "3"
+ember-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+hyperlocal = { workspace = true }
+nix = { workspace = true, features = ["fs", "ioctl", "net", "signal", "process", "user"] }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tempfile = { workspace = true }
