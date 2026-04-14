@@ -11,6 +11,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::backend::ResolvConfMode;
 use crate::error::{Error, Result};
 
 /// Common SSH public key filenames, in preference order.
@@ -222,7 +223,7 @@ fn write_hosts(rootfs_dir: &Path, hostname: Option<&str>) -> Result<()> {
 /// If the rootfs already has a `resolv.conf` (possibly a symlink from the
 /// container image, e.g. Ubuntu's link to `/run/systemd/resolve/...`),
 /// it is removed first.
-pub fn inject_resolv_conf(rootfs_dir: &Path) -> Result<()> {
+pub fn inject_resolv_conf(rootfs_dir: &Path, mode: &ResolvConfMode) -> Result<()> {
     let etc_dir = rootfs_dir.join("etc");
     fs::create_dir_all(&etc_dir).map_err(|e| Error::Io {
         path: etc_dir.clone(),
@@ -236,26 +237,19 @@ pub fn inject_resolv_conf(rootfs_dir: &Path) -> Result<()> {
         let _ = fs::remove_file(&resolv_path);
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        // vmnet's DHCP advertises the gateway as DNS but it doesn't forward
-        // queries. Write a static resolv.conf with public DNS servers.
-        fs::write(&resolv_path, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n").map_err(|e| {
-            Error::Io {
+    match mode {
+        ResolvConfMode::StaticContent(content) => {
+            fs::write(&resolv_path, content).map_err(|e| Error::Io {
                 path: resolv_path,
                 source: e,
-            }
-        })?;
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Symlink to /proc/net/pnp — the kernel writes DNS servers there
-        // from the ip= boot parameter.
-        std::os::unix::fs::symlink("/proc/net/pnp", &resolv_path).map_err(|e| Error::Io {
-            path: resolv_path,
-            source: e,
-        })?;
+            })?;
+        }
+        ResolvConfMode::Symlink(target) => {
+            std::os::unix::fs::symlink(target, &resolv_path).map_err(|e| Error::Io {
+                path: resolv_path,
+                source: e,
+            })?;
+        }
     }
 
     Ok(())
@@ -275,7 +269,7 @@ pub fn inject_resolv_conf(rootfs_dir: &Path) -> Result<()> {
 /// - Runs shutdown scripts on halt/reboot
 ///
 /// Any existing inittab is replaced.
-pub fn inject_inittab(rootfs_dir: &Path) -> Result<()> {
+pub fn inject_inittab(rootfs_dir: &Path, console_device: &str) -> Result<()> {
     let etc_dir = rootfs_dir.join("etc");
     fs::create_dir_all(&etc_dir).map_err(|e| Error::Io {
         path: etc_dir.clone(),
@@ -289,12 +283,7 @@ pub fn inject_inittab(rootfs_dir: &Path) -> Result<()> {
         let _ = fs::remove_file(&inittab_path);
     }
 
-    // Use the platform-appropriate console device:
-    // Linux/Firecracker uses ttyS0, macOS/AVF uses hvc0 (virtio console).
-    #[cfg(target_os = "linux")]
-    let console = "ttyS0";
-    #[cfg(target_os = "macos")]
-    let console = "hvc0";
+    let console = console_device;
 
     let contents = format!(
         "\
@@ -531,13 +520,13 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn inject_resolv_conf_creates_symlink() {
+    fn inject_resolv_conf_symlink_mode() {
         let rootfs = tempfile::tempdir().unwrap();
         fs::create_dir_all(rootfs.path().join("etc")).unwrap();
 
-        inject_resolv_conf(rootfs.path()).unwrap();
+        let mode = ResolvConfMode::Symlink("/proc/net/pnp");
+        inject_resolv_conf(rootfs.path(), &mode).unwrap();
 
         let resolv = rootfs.path().join("etc/resolv.conf");
         let meta = resolv.symlink_metadata().unwrap();
@@ -550,13 +539,13 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn inject_resolv_conf_creates_static_file() {
+    fn inject_resolv_conf_static_mode() {
         let rootfs = tempfile::tempdir().unwrap();
         fs::create_dir_all(rootfs.path().join("etc")).unwrap();
 
-        inject_resolv_conf(rootfs.path()).unwrap();
+        let mode = ResolvConfMode::StaticContent("nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
+        inject_resolv_conf(rootfs.path(), &mode).unwrap();
 
         let resolv = rootfs.path().join("etc/resolv.conf");
         let contents = fs::read_to_string(&resolv).unwrap();
@@ -570,7 +559,8 @@ mod tests {
     fn inject_resolv_conf_creates_etc_dir() {
         let rootfs = tempfile::tempdir().unwrap();
         // No etc/ dir yet — inject should create it.
-        inject_resolv_conf(rootfs.path()).unwrap();
+        let mode = ResolvConfMode::Symlink("/proc/net/pnp");
+        inject_resolv_conf(rootfs.path(), &mode).unwrap();
 
         let resolv = rootfs.path().join("etc/resolv.conf");
         assert!(resolv.symlink_metadata().is_ok());
@@ -583,14 +573,14 @@ mod tests {
         fs::create_dir_all(&etc).unwrap();
         fs::write(etc.join("resolv.conf"), "old content").unwrap();
 
-        inject_resolv_conf(rootfs.path()).unwrap();
+        let mode = ResolvConfMode::Symlink("/proc/net/pnp");
+        inject_resolv_conf(rootfs.path(), &mode).unwrap();
 
         let resolv = etc.join("resolv.conf");
         let contents = fs::read_to_string(&resolv).unwrap_or_default();
         assert!(!contents.contains("old content"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn inject_resolv_conf_replaces_symlink() {
         let rootfs = tempfile::tempdir().unwrap();
@@ -601,41 +591,46 @@ mod tests {
         std::os::unix::fs::symlink("/run/systemd/resolve/resolv.conf", etc.join("resolv.conf"))
             .unwrap();
 
-        inject_resolv_conf(rootfs.path()).unwrap();
+        let mode = ResolvConfMode::Symlink("/proc/net/pnp");
+        inject_resolv_conf(rootfs.path(), &mode).unwrap();
 
         let resolv = etc.join("resolv.conf");
         // Old symlink should be gone.
-        #[cfg(not(target_os = "macos"))]
-        {
-            let target = fs::read_link(&resolv).unwrap();
-            assert_eq!(
-                target.to_str().unwrap(),
-                "/proc/net/pnp",
-                "should replace old symlink with /proc/net/pnp"
-            );
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let contents = fs::read_to_string(&resolv).unwrap();
-            assert!(contents.contains("nameserver 8.8.8.8"));
-        }
+        let target = fs::read_link(&resolv).unwrap();
+        assert_eq!(
+            target.to_str().unwrap(),
+            "/proc/net/pnp",
+            "should replace old symlink with /proc/net/pnp"
+        );
     }
 
     #[test]
-    fn inject_inittab_creates_file() {
+    fn inject_inittab_creates_file_ttys0() {
         let rootfs = tempfile::tempdir().unwrap();
         fs::create_dir_all(rootfs.path().join("etc")).unwrap();
 
-        inject_inittab(rootfs.path()).unwrap();
+        inject_inittab(rootfs.path(), "ttyS0").unwrap();
 
         let inittab = rootfs.path().join("etc/inittab");
         assert!(inittab.exists());
 
         let contents = fs::read_to_string(&inittab).unwrap();
         assert!(contents.contains("::ctrlaltdel:/sbin/reboot"));
-        #[cfg(target_os = "linux")]
         assert!(contents.contains("ttyS0::respawn"));
-        #[cfg(target_os = "macos")]
+    }
+
+    #[test]
+    fn inject_inittab_creates_file_hvc0() {
+        let rootfs = tempfile::tempdir().unwrap();
+        fs::create_dir_all(rootfs.path().join("etc")).unwrap();
+
+        inject_inittab(rootfs.path(), "hvc0").unwrap();
+
+        let inittab = rootfs.path().join("etc/inittab");
+        assert!(inittab.exists());
+
+        let contents = fs::read_to_string(&inittab).unwrap();
+        assert!(contents.contains("::ctrlaltdel:/sbin/reboot"));
         assert!(contents.contains("hvc0::respawn"));
     }
 
@@ -643,7 +638,7 @@ mod tests {
     fn inject_inittab_creates_etc_dir() {
         let rootfs = tempfile::tempdir().unwrap();
 
-        inject_inittab(rootfs.path()).unwrap();
+        inject_inittab(rootfs.path(), "ttyS0").unwrap();
 
         let inittab = rootfs.path().join("etc/inittab");
         assert!(inittab.exists());
@@ -656,7 +651,7 @@ mod tests {
         fs::create_dir_all(&etc).unwrap();
         fs::write(etc.join("inittab"), "old content").unwrap();
 
-        inject_inittab(rootfs.path()).unwrap();
+        inject_inittab(rootfs.path(), "ttyS0").unwrap();
 
         let contents = fs::read_to_string(etc.join("inittab")).unwrap();
         assert!(contents.contains("::ctrlaltdel:/sbin/reboot"));

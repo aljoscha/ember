@@ -12,18 +12,8 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+use crate::backend::ImageToolConfig;
 use crate::error::{Error, Result};
-
-/// Whether we need fakeroot on macOS (non-root user).
-///
-/// When running as root, tar/mkfs.ext4 can set ownership natively, so
-/// fakeroot is unnecessary. This also avoids the arm64/arm64e DYLD
-/// injection incompatibility on newer macOS runners.
-///
-/// Always returns `false` on non-macOS (fakeroot is never used there).
-pub fn needs_fakeroot() -> bool {
-    cfg!(target_os = "macos") && !nix::unistd::geteuid().is_root()
-}
 
 /// A parsed OCI image reference.
 ///
@@ -143,7 +133,7 @@ const OCI_IMAGE_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 // ---------------------------------------------------------------------------
 
 /// Check whether a required CLI tool is available on `PATH`.
-fn check_tool(name: &str) -> Result<()> {
+fn check_tool(name: &str, hint: fn(&str) -> String) -> Result<()> {
     let output = Command::new("which")
         .arg(name)
         .output()
@@ -153,26 +143,12 @@ fn check_tool(name: &str) -> Result<()> {
         })?;
 
     if !output.status.success() {
-        let hint = install_hint(name);
+        let hint = hint(name);
         return Err(Error::Image(format!(
             "'{name}' is not installed — install it with: {hint}"
         )));
     }
     Ok(())
-}
-
-/// Platform-appropriate install command hint for a missing tool.
-fn install_hint(name: &str) -> String {
-    if cfg!(target_os = "macos") {
-        // Some Homebrew tools have a different formula name than the binary.
-        let pkg = match name {
-            "gtar" => "gnu-tar",
-            _ => name,
-        };
-        format!("`brew install {pkg}`")
-    } else {
-        format!("`pacman -S {name}` or `apt install {name}`")
-    }
 }
 
 /// Pull an OCI image and unpack its layers into a rootfs directory.
@@ -185,17 +161,18 @@ fn install_hint(name: &str) -> String {
 /// * `reference` — Parsed image reference.
 /// * `dest` — Working directory (must exist). The OCI layout is written
 ///   to `<dest>/oci/` and the rootfs to `<dest>/rootfs/`.
+/// * `config` — Platform-specific tool configuration (tar command, fakeroot, etc.).
 ///
 /// # Returns
 ///
 /// Path to the unpacked rootfs directory (`<dest>/rootfs/`).
-pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
-    check_tool("skopeo")?;
-    if cfg!(target_os = "macos") {
-        if needs_fakeroot() {
-            check_tool("fakeroot")?;
-        }
-        check_tool("gtar")?;
+pub fn pull(reference: &ImageReference, dest: &Path, config: &ImageToolConfig) -> Result<PathBuf> {
+    check_tool("skopeo", config.install_hint)?;
+    if config.needs_fakeroot {
+        check_tool("fakeroot", config.install_hint)?;
+    }
+    if config.tar_command != "tar" {
+        check_tool(config.tar_command, config.install_hint)?;
     }
 
     let oci_dir = dest.join("oci");
@@ -211,10 +188,11 @@ pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
     let mut cmd = Command::new("skopeo");
     cmd.args(["copy"]);
 
-    // On macOS, skopeo defaults to OS "darwin" when resolving multi-arch
-    // manifest lists. We always want Linux images for VMs.
-    if cfg!(target_os = "macos") {
-        cmd.args(["--override-os", "linux"]);
+    // When override_os is set (e.g., macOS), skopeo would otherwise default
+    // to the host OS when resolving multi-arch manifest lists. We always
+    // want Linux images for VMs.
+    if let Some(os) = config.override_os {
+        cmd.args(["--override-os", os]);
     }
 
     cmd.args([&docker_ref, &oci_ref]);
@@ -233,8 +211,14 @@ pub fn pull(reference: &ImageReference, dest: &Path) -> Result<PathBuf> {
 
     let layers = resolve_layers(&oci_dir)?;
     for digest in &layers {
-        clear_opaque_dirs(&oci_dir, digest, &rootfs_dir)?;
-        extract_layer(&oci_dir, digest, &rootfs_dir)?;
+        clear_opaque_dirs(&oci_dir, digest, &rootfs_dir, config.tar_command)?;
+        extract_layer(
+            &oci_dir,
+            digest,
+            &rootfs_dir,
+            config.tar_command,
+            config.needs_fakeroot,
+        )?;
         process_whiteouts(&rootfs_dir)?;
     }
 
@@ -317,21 +301,21 @@ fn blob_path(oci_dir: &Path, digest: &str) -> Result<PathBuf> {
 /// OCI opaque whiteouts mean "only the current layer's files should exist
 /// in this directory". We must remove previous-layer entries *before*
 /// extracting, so the current layer's files are the only ones that remain.
-fn clear_opaque_dirs(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> {
+fn clear_opaque_dirs(
+    oci_dir: &Path,
+    digest: &str,
+    rootfs_dir: &Path,
+    tar_command: &str,
+) -> Result<()> {
     let layer_path = blob_path(oci_dir, digest)?;
 
     // List tar contents (headers only — fast even for large layers).
-    let tar_cmd = if cfg!(target_os = "macos") {
-        "gtar"
-    } else {
-        "tar"
-    };
-    let output = Command::new(tar_cmd)
+    let output = Command::new(tar_command)
         .arg("tf")
         .arg(&layer_path)
         .output()
         .map_err(|e| Error::CommandExec {
-            command: format!("{tar_cmd} tf"),
+            command: format!("{tar_command} tf"),
             source: e,
         })?;
 
@@ -380,55 +364,54 @@ fn clear_opaque_dirs(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<
 
 /// Extract a single layer tar archive into the rootfs directory.
 ///
-/// On macOS, uses `fakeroot` + `gtar` so that ownership metadata from the tar
-/// archive is tracked even though non-root can't actually chown files. The
-/// fakeroot state is accumulated across layers and later consumed by
-/// `mkfs.ext4 -d` to produce an ext4 image with correct ownership.
+/// When `needs_fakeroot` is true, uses `fakeroot` + `tar_command` so that
+/// ownership metadata from the tar archive is tracked even though non-root
+/// can't actually chown files. The fakeroot state is accumulated across
+/// layers and later consumed by `mkfs.ext4 -d` to produce an ext4 image
+/// with correct ownership.
 ///
-/// On Linux (running as root), plain `tar xf` preserves ownership natively.
-fn extract_layer(oci_dir: &Path, digest: &str, rootfs_dir: &Path) -> Result<()> {
+/// When `needs_fakeroot` is false, plain `tar_command xf` preserves
+/// ownership natively (running as root).
+fn extract_layer(
+    oci_dir: &Path,
+    digest: &str,
+    rootfs_dir: &Path,
+    tar_command: &str,
+    needs_fakeroot: bool,
+) -> Result<()> {
     let layer_path = blob_path(oci_dir, digest)?;
 
-    if cfg!(target_os = "macos") {
-        let use_fakeroot = needs_fakeroot();
+    if needs_fakeroot {
         let state_file = rootfs_dir
             .parent()
             .expect("rootfs_dir has parent")
             .join("fakeroot.state");
-        let mut cmd = if use_fakeroot {
-            let mut c = Command::new("fakeroot");
-            c.arg("-s").arg(&state_file);
-            if state_file.exists() {
-                c.arg("-i").arg(&state_file);
-            }
-            c.arg("--").arg("gtar");
-            c
-        } else {
-            Command::new("gtar")
-        };
+        let mut cmd = Command::new("fakeroot");
+        cmd.arg("-s").arg(&state_file);
+        if state_file.exists() {
+            cmd.arg("-i").arg(&state_file);
+        }
+        cmd.arg("--").arg(tar_command);
         cmd.arg("xf").arg(&layer_path).arg("-C").arg(rootfs_dir);
-        let label = if use_fakeroot {
-            "fakeroot gtar xf"
-        } else {
-            "gtar xf"
-        };
+        let label = format!("fakeroot {tar_command} xf");
         let output = cmd.output().map_err(|e| Error::CommandExec {
-            command: label.to_string(),
+            command: label.clone(),
             source: e,
         })?;
-        Error::check_command(label, output)?;
+        Error::check_command(&label, output)?;
     } else {
-        let output = Command::new("tar")
+        let label = format!("{tar_command} xf");
+        let output = Command::new(tar_command)
             .arg("xf")
             .arg(&layer_path)
             .arg("-C")
             .arg(rootfs_dir)
             .output()
             .map_err(|e| Error::CommandExec {
-                command: "tar xf".to_string(),
+                command: label.clone(),
                 source: e,
             })?;
-        Error::check_command("tar xf", output)?;
+        Error::check_command(&label, output)?;
     }
 
     Ok(())

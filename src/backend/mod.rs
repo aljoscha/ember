@@ -30,5 +30,10 @@ pub type Storage = ember_macos::MacosStorage;
 #[cfg(target_os = "macos")]
 pub type Network = ember_macos::MacosNetwork;
 
+#[cfg(target_os = "linux")]
+pub type CurrentPlatform = ember_linux::LinuxPlatform;
+#[cfg(target_os = "macos")]
+pub type CurrentPlatform = ember_macos::MacosPlatform;
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("ember only supports Linux and macOS");

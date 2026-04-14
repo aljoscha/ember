@@ -3,14 +3,14 @@ mod cli;
 pub mod image;
 
 use clap::Parser;
-#[cfg(target_os = "linux")]
 use cli::kernel::KernelCommand;
 use cli::vm::VmCommand;
 use cli::{Cli, Command};
 
+use crate::backend::{CurrentPlatform, Platform};
+
 /// Check that the process is running as root (euid 0).
-/// Only needed on Linux where ZFS, TAP, and iptables require root.
-#[cfg(target_os = "linux")]
+/// Only needed on platforms where storage/networking require root.
 fn require_root() -> anyhow::Result<()> {
     if !nix::unistd::geteuid().is_root() {
         anyhow::bail!(
@@ -26,7 +26,6 @@ fn require_root() -> anyhow::Result<()> {
 /// SSH-based commands (ssh, exec, cp) only read VM state and invoke the
 /// system SSH client — no root required. Read-only queries (vm list, vm
 /// inspect) also work without elevated privileges.
-#[cfg(target_os = "linux")]
 fn needs_root(command: &Command) -> bool {
     !matches!(
         command,
@@ -64,23 +63,14 @@ fn needs_reconcile(command: &Command) -> bool {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Linux requires root for ZFS, TAP, and iptables operations.
-    // macOS runs entirely without root (vmnet, APFS clones).
-    #[cfg(target_os = "linux")]
-    if needs_root(&cli.command) {
+    // Check root if the platform requires it for privileged operations.
+    if CurrentPlatform::REQUIRES_ROOT && needs_root(&cli.command) {
         require_root()?;
     }
 
     // Lightweight state reconciliation on every privileged command.
-    // Linux: cleans up dead VMs, orphaned TAP devices. Requires root.
-    // macOS: cleans up dead VMs, releases orphaned IP allocations.
-    #[cfg(target_os = "linux")]
     if needs_reconcile(&cli.command) {
-        ember_linux::reconcile::run(&cli.state_dir);
-    }
-    #[cfg(target_os = "macos")]
-    if needs_reconcile(&cli.command) {
-        ember_macos::reconcile::run(&cli.state_dir);
+        CurrentPlatform::reconcile(&cli.state_dir);
     }
 
     match &cli.command {
@@ -95,10 +85,7 @@ fn main() -> anyhow::Result<()> {
         Command::Info => cli::info::run(&cli.state_dir),
         Command::Debug(cmd) => cli::debug::run(cmd, &cli.state_dir),
         Command::Reconcile => {
-            #[cfg(target_os = "linux")]
-            ember_linux::reconcile::run(&cli.state_dir);
-            #[cfg(target_os = "macos")]
-            ember_macos::reconcile::run(&cli.state_dir);
+            CurrentPlatform::reconcile(&cli.state_dir);
             Ok(())
         }
         Command::Version => {

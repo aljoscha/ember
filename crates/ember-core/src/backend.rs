@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::config::size::ByteSize;
 use crate::config::GlobalConfig;
 use crate::error::Result;
+use crate::image::registry::ImageEntry;
 use crate::state::vm::{NetworkInfo, VmMetadata};
 
 // ---------------------------------------------------------------------------
@@ -310,4 +311,105 @@ pub trait NetworkBackend {
             "guest IP discovery not supported — IPs are statically allocated".to_string(),
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Platform trait — covers everything not in Vm/Storage/Network backends
+// ---------------------------------------------------------------------------
+
+/// How to inject `/etc/resolv.conf` into a rootfs.
+pub enum ResolvConfMode {
+    /// Create a symlink to the given target (Linux: `/proc/net/pnp`).
+    Symlink(&'static str),
+    /// Write a static file with the given content (macOS: public DNS servers).
+    StaticContent(&'static str),
+}
+
+/// Platform-specific tool configuration for OCI image pull/build.
+pub struct ImageToolConfig {
+    /// `tar` command name: `"tar"` on Linux, `"gtar"` on macOS.
+    pub tar_command: &'static str,
+    /// Whether `fakeroot` is needed (macOS non-root only).
+    pub needs_fakeroot: bool,
+    /// Override OS for skopeo multi-arch manifests. `Some("linux")` on macOS.
+    pub override_os: Option<&'static str>,
+    /// Generate a platform-appropriate install hint for a missing tool.
+    pub install_hint: fn(&str) -> String,
+}
+
+/// Platform-level behaviors that don't belong in the VM/Storage/Network traits.
+///
+/// Covers lifecycle (root checks, reconciliation), display formatting,
+/// image injection parameters, ext4 creation, and WAN detection.
+/// Implemented by `LinuxPlatform` and `MacosPlatform` in the respective crates.
+///
+/// All methods are associated functions (no `&self`). The correct
+/// implementation is selected at compile time via a type alias.
+pub trait Platform {
+    /// Whether this platform requires root for privileged operations.
+    ///
+    /// Linux: `true` (ZFS, TAP, iptables need root).
+    /// macOS: `false` (vmnet, APFS clones run without root).
+    ///
+    /// The binary crate's `needs_root(command)` function decides *which*
+    /// commands are privileged; this constant just says whether root
+    /// matters at all on this platform.
+    const REQUIRES_ROOT: bool;
+
+    /// Run state reconciliation (clean up dead VMs, orphaned resources).
+    fn reconcile(state_dir: &Path);
+
+    /// Default state directory path.
+    ///
+    /// Linux: `/var/lib/ember`. macOS: `~/Library/Application Support/ember`.
+    fn default_state_dir() -> PathBuf;
+
+    /// Console device name for inittab injection.
+    ///
+    /// Linux/Firecracker: `"ttyS0"`. macOS/AVF: `"hvc0"`.
+    fn console_device() -> &'static str;
+
+    /// How to configure `/etc/resolv.conf` in injected images.
+    fn resolv_conf_mode() -> ResolvConfMode;
+
+    /// Platform-specific tool configuration for OCI image pull/build.
+    fn image_tool_config() -> ImageToolConfig;
+
+    /// Human-readable label for the disk path field.
+    ///
+    /// Linux: `"ZFS zvol"`. macOS: `"Disk image"`.
+    fn disk_path_label() -> &'static str;
+
+    /// Platform-specific hint shown when ember is not initialized.
+    fn init_hint() -> &'static str;
+
+    /// Extra fields to display in `vm inspect` table output.
+    fn inspect_vm_extra(metadata: &VmMetadata) -> Vec<(&'static str, String)>;
+
+    /// Extra fields to display in `image inspect` table output.
+    fn inspect_image_extra(entry: &ImageEntry) -> Vec<(&'static str, String)>;
+
+    /// Extra fields to display in `ember info` output.
+    fn info_extra(config: &GlobalConfig) -> Vec<(&'static str, String)>;
+
+    /// Pre-pause/resume validation.
+    ///
+    /// Linux: checks Firecracker API socket exists. macOS: no-op.
+    fn pre_pause_check(metadata: &VmMetadata) -> anyhow::Result<()>;
+
+    /// Post-delete cleanup hook.
+    ///
+    /// Linux: `udevadm settle`. macOS: no-op.
+    fn post_delete_cleanup();
+
+    /// Detect the WAN interface, or use a user-provided override.
+    ///
+    /// Returns `(resolved_iface, messages_to_print)`.
+    fn detect_wan_iface(user_provided: Option<&str>) -> (Option<String>, Vec<String>);
+
+    /// Create an ext4 filesystem image from a rootfs directory.
+    fn create_ext4_image(rootfs_dir: &Path, image_path: &Path, size_mib: u64) -> Result<()>;
+
+    /// Estimate the ext4 image size needed to hold a rootfs directory.
+    fn estimate_ext4_size_mib(rootfs_dir: &Path) -> Result<u64>;
 }

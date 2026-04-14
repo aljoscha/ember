@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 
 use super::fmt::{format_bytes_binary, MIB};
 use super::vm::OutputFormat;
-use crate::backend::{Storage, StorageBackend};
+use crate::backend::{CurrentPlatform, Platform, Storage, StorageBackend};
 use crate::image;
 use ember_core::config::GlobalConfig;
 use ember_core::image::pull::ImageReference;
@@ -116,7 +116,11 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Step 1: Pull OCI image and unpack layers.
     println!("  Downloading and unpacking layers...");
-    let rootfs_dir = image::pull::pull(&reference, work_dir.path())?;
+    let rootfs_dir = image::pull::pull(
+        &reference,
+        work_dir.path(),
+        &CurrentPlatform::image_tool_config(),
+    )?;
 
     // Step 2: Inject SSH authorized_keys, resolv.conf, and inittab into rootfs.
     inject_image_config(&rootfs_dir, true)?;
@@ -186,7 +190,12 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Step 1: Build container image and export rootfs.
     println!("  Building container image...");
-    let rootfs_dir = image::build::build(&dockerfile, work_dir.path(), &local_name)?;
+    let rootfs_dir = image::build::build(
+        &dockerfile,
+        work_dir.path(),
+        &local_name,
+        &CurrentPlatform::image_tool_config(),
+    )?;
 
     // Step 2: Inject SSH authorized_keys and resolv.conf into rootfs.
     // Skip inittab — systemd-based images handle init and CtrlAltDel natively.
@@ -331,10 +340,9 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
         OutputFormat::Table => {
             println!("Reference:   {}", entry.reference);
             println!("Local name:  {}", entry.local_name);
-            #[cfg(target_os = "linux")]
-            println!("ZFS zvol:    {}", entry.zvol);
-            #[cfg(target_os = "macos")]
-            println!("Disk image:  {}", entry.zvol);
+            for (label, value) in CurrentPlatform::inspect_image_extra(entry) {
+                println!("{:<13}{}", label, value);
+            }
             println!("Size:        {}", format_bytes_binary(entry.size_mib * MIB));
             println!("Pulled:      {}", entry.pulled_at);
         }
@@ -364,9 +372,9 @@ fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Resul
         }
     }
     image::inject::inject_hosts(rootfs_dir)?;
-    image::inject::inject_resolv_conf(rootfs_dir)?;
+    image::inject::inject_resolv_conf(rootfs_dir, &CurrentPlatform::resolv_conf_mode())?;
     if inject_inittab {
-        image::inject::inject_inittab(rootfs_dir)?;
+        image::inject::inject_inittab(rootfs_dir, CurrentPlatform::console_device())?;
     }
     Ok(())
 }
@@ -381,13 +389,13 @@ fn create_image_from_rootfs(
     name: &str,
     storage: &Storage,
 ) -> anyhow::Result<(u64, PathBuf, ember_core::cleanup::Rollback)> {
-    let size_mib = image::ext4::estimate_size_mib(rootfs_dir)?;
+    let size_mib = CurrentPlatform::estimate_ext4_size_mib(rootfs_dir)?;
     let ext4_path = work_dir.join("rootfs.ext4");
     println!(
         "  Creating ext4 image ({})...",
         format_bytes_binary(size_mib * MIB)
     );
-    image::ext4::create(rootfs_dir, &ext4_path, size_mib)?;
+    CurrentPlatform::create_ext4_image(rootfs_dir, &ext4_path, size_mib)?;
 
     // Use the actual file size after shrink_to_fit, not the pre-shrink estimate.
     let size_mib = std::fs::metadata(&ext4_path)

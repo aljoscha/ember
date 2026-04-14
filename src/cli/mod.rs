@@ -13,6 +13,8 @@ pub mod vm;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use crate::backend::Platform;
+
 #[derive(Parser)]
 #[command(
     name = "ember",
@@ -35,15 +37,7 @@ pub struct Cli {
 /// Linux: `/var/lib/ember` (requires root, alongside ZFS datasets).
 /// macOS: `~/Library/Application Support/ember/` (no root, APFS clones).
 fn default_state_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("ember");
-        }
-    }
-    PathBuf::from("/var/lib/ember")
+    crate::backend::CurrentPlatform::default_state_dir()
 }
 
 #[derive(Subcommand)]

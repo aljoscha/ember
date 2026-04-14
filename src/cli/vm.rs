@@ -4,7 +4,9 @@ use clap::{Args, Subcommand};
 use uuid::Uuid;
 
 use super::fmt::{format_bytes_binary, GIB, MIB};
-use crate::backend::{Network, NetworkBackend, Storage, StorageBackend, Vm, VmBackend};
+use crate::backend::{
+    CurrentPlatform, Network, NetworkBackend, Platform, Storage, StorageBackend, Vm, VmBackend,
+};
 use crate::image;
 use ember_core::config;
 use ember_core::config::size::ByteSize;
@@ -848,21 +850,8 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // On Linux, verify the Firecracker API socket exists before attempting pause.
-    // On macOS, pause uses signals to the ember-vz process (no socket needed).
-    #[cfg(target_os = "linux")]
-    {
-        let socket_path = &metadata.api_socket;
-        if !socket_path.exists() {
-            anyhow::bail!(
-                "vm '{}' is marked as running but API socket not found at {}\n\
-                 Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
-                args.name,
-                socket_path.display(),
-                args.name
-            );
-        }
-    }
+    // Platform-specific pre-pause validation (e.g. API socket check on Linux).
+    CurrentPlatform::pre_pause_check(&metadata)?;
 
     println!("Pausing VM '{}'...", args.name);
     Vm::pause(&metadata)?;
@@ -895,21 +884,8 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // On Linux, verify the Firecracker API socket exists before attempting resume.
-    // On macOS, resume uses signals to the ember-vz process (no socket needed).
-    #[cfg(target_os = "linux")]
-    {
-        let socket_path = &metadata.api_socket;
-        if !socket_path.exists() {
-            anyhow::bail!(
-                "vm '{}' is marked as paused but API socket not found at {}\n\
-                 Hint: the Firecracker process may have crashed — try 'ember vm stop --force {}' and restart",
-                args.name,
-                socket_path.display(),
-                args.name
-            );
-        }
-    }
+    // Platform-specific pre-resume validation (e.g. API socket check on Linux).
+    CurrentPlatform::pre_pause_check(&metadata)?;
 
     println!("Resuming VM '{}'...", args.name);
     Vm::resume(&metadata)?;
@@ -1113,11 +1089,8 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
     let net_backend = Network::new(store.clone());
     let _ = net_backend.teardown(metadata);
 
-    // Wait for udev to finish processing device events (Linux only).
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("udevadm").arg("settle").status();
-    }
+    // Platform-specific post-delete cleanup (e.g. udevadm settle on Linux).
+    CurrentPlatform::post_delete_cleanup();
 
     // Destroy storage via the backend.
     let config: GlobalConfig = store.read(&store.config_path())?;
@@ -1199,14 +1172,8 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 format_bytes_binary(metadata.disk_size_gib as u64 * GIB)
             );
             println!("Kernel:      {}", metadata.kernel_path.display());
-            #[cfg(target_os = "linux")]
-            {
-                println!("ZFS zvol:    {}", metadata.disk_path);
-                println!("API socket:  {}", metadata.api_socket.display());
-            }
-            #[cfg(target_os = "macos")]
-            {
-                println!("Disk image:  {}", metadata.disk_path);
+            for (label, value) in CurrentPlatform::inspect_vm_extra(&metadata) {
+                println!("{:<13}{}", label, value);
             }
             println!("Created:     {}", metadata.created_at);
 
@@ -1216,8 +1183,9 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
 
             if let Some(ref net) = metadata.network {
                 println!("Network:");
-                #[cfg(target_os = "linux")]
-                println!("  TAP device:  {}", net.tap_device);
+                if !net.tap_device.is_empty() {
+                    println!("  TAP device:  {}", net.tap_device);
+                }
                 println!("  Host IP:     {}", net.host_ip);
                 println!("  Guest IP:    {}", net.guest_ip);
                 println!("  Netmask:     {}", net.netmask);
