@@ -1,7 +1,7 @@
 //! Local image registry tracking.
 //!
 //! Tracks metadata about images (pulled from OCI registries or built
-//! locally from Dockerfiles) that have been written to ZFS zvols.
+//! locally from Dockerfiles) that have been imported into storage.
 //! Persisted as `registry.json` in the state directory via [`StateStore`].
 
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,13 @@ pub struct ImageEntry {
     pub reference: String,
     /// Filesystem-safe local name (e.g. `library-alpine-latest`).
     pub local_name: String,
-    /// ZFS zvol name (e.g. `tank/ember/images/library-alpine-latest`).
-    pub zvol: String,
-    /// Disk size of the zvol in MiB.
+    /// Path to the backing storage for this image.
+    ///
+    /// Linux/ZFS: zvol path (e.g. `tank/ember/images/library-alpine-latest`).
+    /// macOS/APFS: `.img` file path (e.g. `~/Library/.../images/data/library-alpine-latest.img`).
+    #[serde(alias = "zvol")]
+    pub disk_path: String,
+    /// Disk size in MiB.
     pub size_mib: u64,
     /// ISO 8601 timestamp when the image was pulled.
     pub pulled_at: String,
@@ -99,11 +103,11 @@ impl ImageRegistry {
 }
 
 /// Build an [`ImageEntry`] from a pull result.
-pub fn new_entry(reference: &ImageReference, zvol: &str, size_mib: u64) -> ImageEntry {
+pub fn new_entry(reference: &ImageReference, disk_path: &str, size_mib: u64) -> ImageEntry {
     ImageEntry {
         reference: reference.to_string(),
         local_name: reference.local_name(),
-        zvol: zvol.to_string(),
+        disk_path: disk_path.to_string(),
         size_mib,
         pulled_at: now_iso8601(),
     }
@@ -113,11 +117,11 @@ pub fn new_entry(reference: &ImageReference, zvol: &str, size_mib: u64) -> Image
 ///
 /// The reference is stored as `local:<name>` to distinguish built
 /// images from pulled ones in `ember image list` output.
-pub fn new_build_entry(name: &str, local_name: &str, zvol: &str, size_mib: u64) -> ImageEntry {
+pub fn new_build_entry(name: &str, local_name: &str, disk_path: &str, size_mib: u64) -> ImageEntry {
     ImageEntry {
         reference: format!("local:{name}"),
         local_name: local_name.to_string(),
-        zvol: zvol.to_string(),
+        disk_path: disk_path.to_string(),
         size_mib,
         pulled_at: now_iso8601(),
     }
@@ -156,7 +160,7 @@ mod tests {
         ImageEntry {
             reference: format!("docker.io/library/{name}:latest"),
             local_name: format!("library-{name}-latest"),
-            zvol: format!("tank/ember/images/library-{name}-latest"),
+            disk_path: format!("tank/ember/images/library-{name}-latest"),
             size_mib: 64,
             pulled_at: "2026-01-01T00:00:00Z".to_string(),
         }
@@ -274,7 +278,7 @@ mod tests {
 
         assert_eq!(entry.reference, "docker.io/library/alpine:3.19");
         assert_eq!(entry.local_name, "library-alpine-3.19");
-        assert_eq!(entry.zvol, "tank/ember/images/library-alpine-3.19");
+        assert_eq!(entry.disk_path, "tank/ember/images/library-alpine-3.19");
         assert_eq!(entry.size_mib, 96);
         assert!(!entry.pulled_at.is_empty());
     }
@@ -308,7 +312,7 @@ mod tests {
 
         assert_eq!(json["reference"], "docker.io/library/alpine:latest");
         assert_eq!(json["local_name"], "library-alpine-latest");
-        assert_eq!(json["zvol"], "tank/ember/images/library-alpine-latest");
+        assert_eq!(json["disk_path"], "tank/ember/images/library-alpine-latest");
         assert_eq!(json["size_mib"], 64);
         assert_eq!(json["pulled_at"], "2026-01-01T00:00:00Z");
     }

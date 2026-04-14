@@ -64,7 +64,7 @@ impl Platform for MacosPlatform {
     }
 
     fn inspect_image_extra(entry: &ImageEntry) -> Vec<(&'static str, String)> {
-        vec![("Disk image", entry.zvol.clone())]
+        vec![("Disk image", entry.disk_path.clone())]
     }
 
     fn info_extra(_config: &GlobalConfig) -> Vec<(&'static str, String)> {

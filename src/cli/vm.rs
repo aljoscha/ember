@@ -387,10 +387,10 @@ fn ensure_kernel(
 /// Create a new VM from an image.
 ///
 /// Workflow: load YAML config (if provided) → merge with CLI flags →
-/// look up image → ZFS clone @base snapshot → grow zvol if needed
-/// → mount zvol → inject per-VM SSH key → unmount → save metadata.
+/// look up image → clone base image → grow disk if needed
+/// → inject per-VM SSH key → save metadata.
 ///
-/// Uses a [`Rollback`] guard to ensure the zvol clone and state directory
+/// Uses a [`Rollback`] guard to ensure the disk clone and state directory
 /// are cleaned up if any step after cloning fails.
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     use ember_core::cleanup::Rollback;
@@ -500,7 +500,7 @@ fn create_post_clone(
     }
 
     // Inject per-VM SSH key into the rootfs image.
-    // Linux: mounts the zvol, writes the key, unmounts.
+    // Linux: mounts the block device, writes the key, unmounts.
     // macOS: uses debugfs to write directly into the ext4 image.
     let dev_path = storage.disk_device_path(&resolved.name);
     let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
@@ -559,7 +559,7 @@ fn create_post_clone(
 
 /// Fork an existing VM into a new independent VM.
 ///
-/// Workflow: validate source is stopped → snapshot source zvol → COW clone into
+/// Workflow: validate source is stopped → COW clone source disk into
 /// new VM → optionally grow disk → resolve kernel → save metadata → optionally start.
 ///
 /// No SSH key injection — the forked disk already has keys from the source VM.
@@ -900,7 +900,7 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Grow a stopped VM's disk.
 ///
 /// Workflow: enforce stopped/created state → check new size > current
-/// → grow zvol → expand ext4 → update metadata.
+/// → grow disk → expand ext4 → update metadata.
 fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let mut metadata = vm::require_stopped(&store, &args.name, "resizing")?;
@@ -1021,7 +1021,7 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
 /// Delete a VM and all its resources.
 ///
 /// Workflow: force-stop if running (requires --force) → clean up network →
-/// destroy ZFS zvol (recursively, including user snapshots) → remove state
+/// destroy storage (recursively, including user snapshots) → remove state
 /// directory.
 ///
 /// Each cleanup step is idempotent — continues if the resource is already gone.

@@ -56,7 +56,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn inspect_image_extra(entry: &ImageEntry) -> Vec<(&'static str, String)> {
-        vec![("ZFS zvol", entry.zvol.clone())]
+        vec![("ZFS zvol", entry.disk_path.clone())]
     }
 
     fn info_extra(config: &GlobalConfig) -> Vec<(&'static str, String)> {
