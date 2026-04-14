@@ -420,7 +420,8 @@ impl StorageBackend for MacosStorage {
     }
 
     /// Destroy storage for a base image (the raw `.img` file).
-    fn destroy_image_storage(&self, name: &str) -> Result<()> {
+    /// The `force` flag is a no-op on macOS (APFS clones are independent).
+    fn destroy_image_storage(&self, name: &str, _force: bool) -> Result<()> {
         let img = self.image_path(name);
         if img.exists() {
             fs::remove_file(&img).map_err(|e| Error::Io {

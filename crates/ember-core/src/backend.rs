@@ -175,9 +175,13 @@ pub trait StorageBackend {
 
     /// Destroy storage for a base image.
     ///
-    /// Linux: `zfs destroy pool/.../images/name` (and its @base snapshot).
-    /// macOS: `rm images/data/name.img`.
-    fn destroy_image_storage(&self, name: &str) -> Result<()>;
+    /// With `force: true`, also destroys any dependent storage (e.g. VM zvols
+    /// cloned from this image) that couldn't be cleaned up at the application
+    /// level — typically orphaned ZFS clones whose state files are already gone.
+    ///
+    /// Linux: `zfs destroy -r` (normal) or `zfs destroy -R` (force).
+    /// macOS: `rm images/data/name.img` (force flag is a no-op).
+    fn destroy_image_storage(&self, name: &str, force: bool) -> Result<()>;
 
     /// Get the mountable device path for a VM's root disk.
     ///

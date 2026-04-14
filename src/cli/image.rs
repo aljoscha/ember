@@ -304,7 +304,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = Storage::new(&config);
     println!("Destroying storage for image '{}'...", local_name);
-    storage.destroy_image_storage(&local_name)?;
+    storage.destroy_image_storage(&local_name, args.force)?;
 
     // Remove from registry last, after the zvol is gone.
     image::registry::remove_image(&store, &local_name)?;
@@ -409,7 +409,7 @@ fn create_image_from_rootfs(
         let storage = storage.clone();
         let n = name.to_string();
         rollback.push("image storage", move || {
-            let _ = storage.destroy_image_storage(&n);
+            let _ = storage.destroy_image_storage(&n, false);
         });
     }
 

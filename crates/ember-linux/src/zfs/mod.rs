@@ -17,9 +17,22 @@ pub const BASE_SNAPSHOT_NAME: &str = "base";
 /// Run `zfs destroy` on a dataset, volume, or snapshot.
 ///
 /// With `recursive: true`, passes `-r` to also destroy children and snapshots.
+/// With `force_dependents: true`, passes `-R` to also destroy dependent clones
+/// (e.g., VM zvols cloned from an image snapshot). `-R` implies `-r`.
 pub(crate) fn destroy(name: &str, recursive: bool) -> Result<()> {
+    destroy_impl(name, recursive, false)
+}
+
+/// Like [`destroy`], but with `-R` to also destroy dependent clones.
+pub(crate) fn destroy_with_dependents(name: &str) -> Result<()> {
+    destroy_impl(name, false, true)
+}
+
+fn destroy_impl(name: &str, recursive: bool, force_dependents: bool) -> Result<()> {
     let mut args = vec!["destroy"];
-    if recursive {
+    if force_dependents {
+        args.push("-R");
+    } else if recursive {
         args.push("-r");
     }
     args.push(name);
