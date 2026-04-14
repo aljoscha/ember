@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::backend::{CurrentPlatform, Platform};
 use ember_core::config::GlobalConfig;
 use ember_core::image::registry::ImageRegistry;
 use ember_core::state::store::StateStore;
@@ -7,17 +8,10 @@ use ember_core::state::vm;
 
 pub fn run(state_dir: &Path) -> anyhow::Result<()> {
     let Some(store) = StateStore::try_open(state_dir) else {
-        #[cfg(target_os = "linux")]
         anyhow::bail!(
-            "ember is not initialized (no state directory at {})\n\
-             Run: ember init --pool <pool> --device <device>",
-            state_dir.display()
-        );
-        #[cfg(target_os = "macos")]
-        anyhow::bail!(
-            "ember is not initialized (no state directory at {})\n\
-             Run: ember init",
-            state_dir.display()
+            "ember is not initialized (no state directory at {})\n{}",
+            state_dir.display(),
+            CurrentPlatform::init_hint()
         );
     };
 
@@ -32,11 +26,8 @@ pub fn run(state_dir: &Path) -> anyhow::Result<()> {
 
     println!("State dir:   {}", state_dir.display());
 
-    // ZFS pool/dataset are Linux-only; macOS uses APFS clones.
-    #[cfg(target_os = "linux")]
-    {
-        println!("ZFS pool:    {}", config.pool);
-        println!("Dataset:     {}/{}", config.pool, config.dataset);
+    for (label, value) in CurrentPlatform::info_extra(&config) {
+        println!("{:<13}{}", label, value);
     }
 
     println!(
@@ -46,13 +37,6 @@ pub fn run(state_dir: &Path) -> anyhow::Result<()> {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(downloaded on first vm create)".to_string())
-    );
-
-    // WAN interface is Linux-only (used for iptables NAT rules).
-    #[cfg(target_os = "linux")]
-    println!(
-        "WAN iface:   {}",
-        config.wan_iface.as_deref().unwrap_or("(not set)")
     );
 
     println!("Images:      {}", images.len());

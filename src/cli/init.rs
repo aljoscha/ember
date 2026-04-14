@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::Args;
 
-use crate::backend::{InitConfig, Storage, StorageBackend};
+use crate::backend::{CurrentPlatform, InitConfig, Platform, Storage, StorageBackend};
 use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 
@@ -56,40 +56,10 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     };
 
     // 5. Detect or use provided WAN interface.
-    // On macOS, vmnet handles networking — no WAN interface detection needed.
-    #[cfg(target_os = "linux")]
-    let wan_iface = if let Some(iface) = &args.wan_iface {
-        println!("Using WAN interface '{iface}' (from --wan-iface).");
-        Some(iface.clone())
-    } else {
-        match ember_linux::network::wan::detect() {
-            Ok(iface) => {
-                println!("Detected WAN interface: {iface}");
-                Some(iface)
-            }
-            Err(e) => {
-                println!("Warning: could not detect WAN interface: {e}");
-                println!("Networking will require --wan-iface at init time.");
-                None
-            }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    let wan_iface = if let Some(iface) = &args.wan_iface {
-        println!("Using WAN interface '{iface}' (from --wan-iface).");
-        Some(iface.clone())
-    } else {
-        match crate::backend::macos::network::detect_wan_iface() {
-            Ok(iface) => {
-                println!("Detected WAN interface: {iface}");
-                Some(iface)
-            }
-            Err(e) => {
-                println!("Warning: could not detect WAN interface: {e}");
-                None
-            }
-        }
-    };
+    let (wan_iface, messages) = CurrentPlatform::detect_wan_iface(args.wan_iface.as_deref());
+    for msg in &messages {
+        println!("{msg}");
+    }
 
     // 6. Write config.
     let config = GlobalConfig {

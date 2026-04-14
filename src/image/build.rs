@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ember_core::backend::ImageToolConfig;
 use ember_core::error::{Error, Result};
 
 /// Built-in Dockerfile for a VM-ready Ubuntu image.
@@ -66,17 +67,20 @@ fn detect_container_tool() -> Result<String> {
     ))
 }
 
-/// Check that `gtar` (and `fakeroot` if non-root) are available (macOS only).
+/// Check that the tar command (and `fakeroot` if non-root) are available.
 ///
 /// fakeroot is needed to preserve file ownership when extracting tar
 /// archives as a non-root user. When running as root, tar can set
 /// ownership natively.
-fn check_fakeroot_tools() -> Result<()> {
-    let mut tools: Vec<(&str, &str)> = vec![("gtar", "gnu-tar")];
-    if super::pull::needs_fakeroot() {
-        tools.push(("fakeroot", "fakeroot"));
+fn check_fakeroot_tools(config: &ImageToolConfig) -> Result<()> {
+    let mut tools: Vec<(&str, String)> = vec![(
+        config.tar_command,
+        (config.install_hint)(config.tar_command),
+    )];
+    if config.needs_fakeroot {
+        tools.push(("fakeroot", (config.install_hint)("fakeroot")));
     }
-    for (tool, pkg) in tools {
+    for (tool, hint) in tools {
         let ok = Command::new("which")
             .arg(tool)
             .output()
@@ -84,7 +88,7 @@ fn check_fakeroot_tools() -> Result<()> {
             .unwrap_or(false);
         if !ok {
             return Err(Error::Image(format!(
-                "'{tool}' is not installed — install it with: `brew install {pkg}`"
+                "'{tool}' is not installed — install it with: {hint}"
             )));
         }
     }
@@ -104,10 +108,15 @@ fn check_fakeroot_tools() -> Result<()> {
 /// 5. Extract the tarball into `<work_dir>/rootfs/`
 ///
 /// Returns the path to the unpacked rootfs directory.
-pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> {
+pub fn build(
+    dockerfile: &Path,
+    work_dir: &Path,
+    name: &str,
+    config: &ImageToolConfig,
+) -> Result<PathBuf> {
     let tool = detect_container_tool()?;
-    if cfg!(target_os = "macos") {
-        check_fakeroot_tools()?;
+    if config.needs_fakeroot {
+        check_fakeroot_tools(config)?;
     }
     let tag = format!("ember-build-{name}");
     let context_dir = dockerfile.parent().unwrap_or_else(|| Path::new("."));
@@ -128,7 +137,7 @@ pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> 
     Error::check_command(&format!("{tool} build"), output)?;
 
     // Steps 2-4 are wrapped so we always attempt cleanup.
-    let result = export_and_extract(&tool, &tag, work_dir);
+    let result = export_and_extract(&tool, &tag, work_dir, config);
 
     // Best-effort cleanup of the docker image.
     let _ = Command::new(&tool).args(["rmi", &tag]).output();
@@ -137,7 +146,12 @@ pub fn build(dockerfile: &Path, work_dir: &Path, name: &str) -> Result<PathBuf> 
 }
 
 /// Create a container, export its filesystem, clean up, and extract.
-fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf> {
+fn export_and_extract(
+    tool: &str,
+    tag: &str,
+    work_dir: &Path,
+    config: &ImageToolConfig,
+) -> Result<PathBuf> {
     // Create a throwaway container (not started).
     let output = Command::new(tool)
         .args(["create", tag])
@@ -177,12 +191,12 @@ fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf>
         source: e,
     })?;
 
-    // On macOS, use fakeroot + gtar to preserve ownership metadata from the
-    // tarball. Without fakeroot, tar as non-root can't chown, and mkfs.ext4 -d
-    // later bakes the macOS user's uid/gid into the ext4 image.
-    // When running as root, fakeroot is skipped (root can chown natively).
-    if cfg!(target_os = "macos") {
-        let use_fakeroot = super::pull::needs_fakeroot();
+    // When fakeroot is needed, use it with the platform tar command to preserve
+    // ownership metadata from the tarball. Without fakeroot, tar as non-root
+    // can't chown, and mkfs.ext4 -d later bakes the wrong uid/gid into the
+    // ext4 image. When running as root, fakeroot is skipped (root can chown natively).
+    if config.needs_fakeroot {
+        let use_fakeroot = config.needs_fakeroot;
         let state_file = work_dir.join("fakeroot.state");
         let mut cmd = if use_fakeroot {
             let mut c = Command::new("fakeroot");
@@ -190,22 +204,22 @@ fn export_and_extract(tool: &str, tag: &str, work_dir: &Path) -> Result<PathBuf>
             if state_file.exists() {
                 c.arg("-i").arg(&state_file);
             }
-            c.arg("--").arg("gtar");
+            c.arg("--").arg(config.tar_command);
             c
         } else {
-            Command::new("gtar")
+            Command::new(config.tar_command)
         };
         cmd.arg("xf").arg(&tarball).arg("-C").arg(&rootfs_dir);
         let label = if use_fakeroot {
-            "fakeroot gtar xf"
+            format!("fakeroot {} xf", config.tar_command)
         } else {
-            "gtar xf"
+            format!("{} xf", config.tar_command)
         };
         let output = cmd.output().map_err(|e| Error::CommandExec {
-            command: label.to_string(),
+            command: label.clone(),
             source: e,
         })?;
-        Error::check_command(label, output)?;
+        Error::check_command(&label, output)?;
     } else {
         let output = Command::new("tar")
             .args(["xf"])
