@@ -371,7 +371,6 @@ fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Resul
             );
         }
     }
-    image::inject::inject_hosts(rootfs_dir)?;
     image::inject::inject_resolv_conf(rootfs_dir, &CurrentPlatform::resolv_conf_mode())?;
     if inject_inittab {
         image::inject::inject_inittab(rootfs_dir, CurrentPlatform::console_device())?;
