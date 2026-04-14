@@ -269,7 +269,6 @@ const DEFAULT_DISK_SIZE: ByteSize = ByteSize::from_gib(8);
 /// Resolved VM creation configuration after merging defaults, YAML config, and CLI flags.
 ///
 /// Merge order: program defaults < YAML config < CLI flags.
-#[allow(dead_code)]
 struct ResolvedVmCreate {
     name: String,
     image: String,
