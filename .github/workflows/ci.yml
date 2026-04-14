@@ -37,3 +37,8 @@ jobs:
 
       - name: cargo fmt -- --check
         run: cargo fmt -- --check
+
+      - name: Check for unused dependencies
+        run: |
+          cargo install cargo-machete --locked
+          make udeps
