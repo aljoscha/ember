@@ -40,10 +40,6 @@ impl Platform for LinuxPlatform {
         }
     }
 
-    fn disk_path_label() -> &'static str {
-        "ZFS zvol"
-    }
-
     fn init_hint() -> &'static str {
         "Run: ember init --pool <pool> --device <device>"
     }

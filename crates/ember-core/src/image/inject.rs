@@ -164,7 +164,7 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
 /// stale or Docker-specific entries that don't apply inside a VM.
 ///
 /// Called at VM creation time when the VM name is known.
-pub fn inject_hosts_with_hostname(rootfs_dir: &Path, hostname: &str) -> Result<()> {
+pub fn inject_hosts(rootfs_dir: &Path, hostname: &str) -> Result<()> {
     let etc_dir = rootfs_dir.join("etc");
     fs::create_dir_all(&etc_dir).map_err(|e| Error::Io {
         path: etc_dir.clone(),
@@ -445,9 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn inject_hosts_with_hostname_creates_file() {
+    fn inject_hosts_creates_file() {
         let rootfs = tempfile::tempdir().unwrap();
-        inject_hosts_with_hostname(rootfs.path(), "my-test-vm").unwrap();
+        inject_hosts(rootfs.path(), "my-test-vm").unwrap();
 
         let hosts = rootfs.path().join("etc/hosts");
         let contents = fs::read_to_string(&hosts).unwrap();
@@ -456,22 +456,22 @@ mod tests {
     }
 
     #[test]
-    fn inject_hosts_with_hostname_creates_etc_dir() {
+    fn inject_hosts_creates_etc_dir() {
         let rootfs = tempfile::tempdir().unwrap();
-        inject_hosts_with_hostname(rootfs.path(), "testvm").unwrap();
+        inject_hosts(rootfs.path(), "testvm").unwrap();
 
         let hosts = rootfs.path().join("etc/hosts");
         assert!(hosts.exists());
     }
 
     #[test]
-    fn inject_hosts_with_hostname_replaces_existing() {
+    fn inject_hosts_replaces_existing() {
         let rootfs = tempfile::tempdir().unwrap();
         let etc = rootfs.path().join("etc");
         fs::create_dir_all(&etc).unwrap();
         fs::write(etc.join("hosts"), "old content").unwrap();
 
-        inject_hosts_with_hostname(rootfs.path(), "testvm").unwrap();
+        inject_hosts(rootfs.path(), "testvm").unwrap();
 
         let contents = fs::read_to_string(etc.join("hosts")).unwrap();
         assert!(contents.contains("127.0.0.1"));

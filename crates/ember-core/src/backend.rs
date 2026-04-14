@@ -267,7 +267,7 @@ pub trait StorageBackend {
     fn inject_hostname(&self, image_path: &Path, hostname: &str) -> Result<()> {
         let mount_dir = self.mount(image_path)?;
 
-        let inject_result = crate::image::inject::inject_hosts_with_hostname(&mount_dir, hostname);
+        let inject_result = crate::image::inject::inject_hosts(&mount_dir, hostname);
 
         let umount_result = self.unmount(&mount_dir);
 
@@ -374,11 +374,6 @@ pub trait Platform {
 
     /// Platform-specific tool configuration for OCI image pull/build.
     fn image_tool_config() -> ImageToolConfig;
-
-    /// Human-readable label for the disk path field.
-    ///
-    /// Linux: `"ZFS zvol"`. macOS: `"Disk image"`.
-    fn disk_path_label() -> &'static str;
 
     /// Platform-specific hint shown when ember is not initialized.
     fn init_hint() -> &'static str;

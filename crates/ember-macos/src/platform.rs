@@ -55,10 +55,6 @@ impl Platform for MacosPlatform {
         }
     }
 
-    fn disk_path_label() -> &'static str {
-        "Disk image"
-    }
-
     fn init_hint() -> &'static str {
         "Run: ember init"
     }
