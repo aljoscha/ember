@@ -196,42 +196,33 @@ fn export_and_extract(
     // can't chown, and mkfs.ext4 -d later bakes the wrong uid/gid into the
     // ext4 image. When running as root, fakeroot is skipped (root can chown natively).
     if config.needs_fakeroot {
-        let use_fakeroot = config.needs_fakeroot;
         let state_file = work_dir.join("fakeroot.state");
-        let mut cmd = if use_fakeroot {
-            let mut c = Command::new("fakeroot");
-            c.arg("-s").arg(&state_file);
-            if state_file.exists() {
-                c.arg("-i").arg(&state_file);
-            }
-            c.arg("--").arg(config.tar_command);
-            c
-        } else {
-            Command::new(config.tar_command)
-        };
+        let mut cmd = Command::new("fakeroot");
+        cmd.arg("-s").arg(&state_file);
+        if state_file.exists() {
+            cmd.arg("-i").arg(&state_file);
+        }
+        cmd.arg("--").arg(config.tar_command);
         cmd.arg("xf").arg(&tarball).arg("-C").arg(&rootfs_dir);
-        let label = if use_fakeroot {
-            format!("fakeroot {} xf", config.tar_command)
-        } else {
-            format!("{} xf", config.tar_command)
-        };
+        let label = format!("fakeroot {} xf", config.tar_command);
         let output = cmd.output().map_err(|e| Error::CommandExec {
             command: label.clone(),
             source: e,
         })?;
         Error::check_command(&label, output)?;
     } else {
-        let output = Command::new("tar")
+        let label = format!("{} xf", config.tar_command);
+        let output = Command::new(config.tar_command)
             .args(["xf"])
             .arg(&tarball)
             .arg("-C")
             .arg(&rootfs_dir)
             .output()
             .map_err(|e| Error::CommandExec {
-                command: "tar xf".to_string(),
+                command: label.clone(),
                 source: e,
             })?;
-        Error::check_command("tar xf", output)?;
+        Error::check_command(&label, output)?;
     }
 
     Ok(rootfs_dir)
