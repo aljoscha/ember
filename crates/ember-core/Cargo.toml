@@ -5,26 +5,15 @@ edition = "2021"
 description = "Shared types, traits, and utilities for ember"
 
 [dependencies]
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-
-# Error handling
-thiserror = "2"
-anyhow = "1"
-
-# System (signals, process management, flock)
-nix = { version = "0.29", features = ["fs", "signal", "process", "user"] }
-
-# SSH
-russh = "0.46"
-russh-keys = "0.46"
-async-trait = "0.1"
-tokio = { version = "1", features = ["full"] }
-
-# Identifiers
-uuid = { version = "1", features = ["v4", "serde"] }
-
-# Temporary directories
-tempfile = "3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+nix = { workspace = true, features = ["fs", "signal", "process", "user"] }
+russh = { workspace = true }
+russh-keys = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+tempfile = { workspace = true }
