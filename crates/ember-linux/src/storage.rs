@@ -184,9 +184,16 @@ impl StorageBackend for LinuxStorage {
     }
 
     /// Destroy the image zvol (includes its @base snapshot).
-    fn destroy_image_storage(&self, name: &str) -> Result<()> {
+    ///
+    /// With `force: true`, uses `zfs destroy -R` to also destroy any orphaned
+    /// dependent clones (VM zvols) that the application layer couldn't clean up.
+    fn destroy_image_storage(&self, name: &str, force: bool) -> Result<()> {
         let zvol = self.image_zvol(name);
-        zfs::volume::destroy(&zvol, true)
+        if force {
+            zfs::destroy_with_dependents(&zvol)
+        } else {
+            zfs::volume::destroy(&zvol, true)
+        }
     }
 
     /// Device path for a VM's root disk zvol.

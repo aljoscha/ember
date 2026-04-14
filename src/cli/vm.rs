@@ -1072,6 +1072,19 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Idempotent — each cleanup step continues if the resource is already gone.
 /// Called from `vm delete --force` and `image delete --force`.
 pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Result<()> {
+    // Recursively delete any VMs forked from this one first.
+    // On ZFS, fork children hold clone references to this VM's fork snapshots,
+    // preventing `zfs destroy -r` from succeeding on this VM.
+    let fork_children: Vec<VmMetadata> = vm::list(store)?
+        .into_iter()
+        .filter(|v| v.parent_vm.as_deref() == Some(&metadata.name))
+        .collect();
+
+    for child in &fork_children {
+        println!("Deleting forked VM '{}'...", child.name);
+        force_delete_vm(store, child)?;
+    }
+
     // Kill the hypervisor process if the VM is running/paused.
     if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) {
         if let Some(pid) = metadata.pid {
