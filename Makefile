@@ -4,7 +4,7 @@
 
 UNAME := $(shell uname -s)
 
-.PHONY: build release clean fmt check clippy test
+.PHONY: build release clean fmt check clippy test udeps
 
 build:
 	cargo build
@@ -39,3 +39,6 @@ clippy:
 
 test:
 	cargo test
+
+udeps:
+	cargo machete
