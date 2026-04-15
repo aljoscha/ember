@@ -106,6 +106,10 @@ pub struct CreateArgs {
     #[arg(long = "vm-config")]
     pub vm_config: Option<PathBuf>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
@@ -119,8 +123,13 @@ pub struct StartArgs {
 
 #[derive(Args)]
 pub struct StopArgs {
-    /// VM name
-    pub name: String,
+    /// VM name (required unless --all is used)
+    #[arg(required_unless_present = "all")]
+    pub name: Option<String>,
+
+    /// Stop all running VMs
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
 
     /// Force stop (SIGKILL)
     #[arg(long)]
@@ -181,8 +190,13 @@ pub struct UpdateConfigArgs {
 
 #[derive(Args)]
 pub struct DeleteArgs {
-    /// VM name
-    pub name: String,
+    /// VM name (required unless --all is used)
+    #[arg(required_unless_present = "all")]
+    pub name: Option<String>,
+
+    /// Delete all VMs
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
 
     /// Force delete (kill if running)
     #[arg(long)]
@@ -223,6 +237,10 @@ pub struct ForkArgs {
     /// Network subnet
     #[arg(long)]
     pub network: Option<String>,
+
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
 
     /// Don't start the VM after forking
     #[arg(long)]
@@ -285,6 +303,23 @@ struct ResolvedVmCreate {
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
     ssh_key: Option<PathBuf>,
+    /// Whether vsock is enabled for this VM.
+    vsock: bool,
+}
+
+impl ResolvedVmCreate {
+    /// Build a `VsockInfo` if vsock is enabled, using the given state store
+    /// to derive the UDS path.
+    fn vsock_info(&self, store: &StateStore) -> Option<vm::VsockInfo> {
+        if self.vsock {
+            Some(vm::VsockInfo {
+                uds_path: store.vm_dir(&self.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// Resolve VM creation config by merging defaults, YAML config, and CLI flags.
@@ -344,6 +379,8 @@ fn resolve_create_config(
             .and_then(|s| s.key.as_ref().map(|p| config::vm::expand_tilde(p)))
     });
 
+    let vsock = args.vsock || yaml.and_then(|c| c.vsock).unwrap_or(false);
+
     Ok(ResolvedVmCreate {
         name: args.name.clone(),
         image,
@@ -356,6 +393,7 @@ fn resolve_create_config(
         no_start: args.no_start,
         ssh_user,
         ssh_key,
+        vsock,
     })
 }
 
@@ -547,6 +585,7 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
+        vsock: resolved.vsock_info(store),
     };
 
     vm::save(store, &metadata)?;
@@ -666,6 +705,17 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
+        vsock: if args.vsock {
+            Some(vm::VsockInfo {
+                uds_path: store.vm_dir(&args.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        } else {
+            source.vsock.as_ref().map(|_| vm::VsockInfo {
+                uds_path: store.vm_dir(&args.name).join("vsock.sock"),
+                guest_cid: 3,
+            })
+        },
     };
 
     vm::save(&store, &metadata)?;
@@ -777,15 +827,20 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// if --force) → wait for exit → SIGKILL if still alive → clean up network +
 /// socket → update metadata.
 fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.all {
+        return stop_all(args.force, state_dir);
+    }
+
+    let name = args.name.as_deref().unwrap();
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Load and validate VM state.
-    let mut metadata = vm::load(&store, &args.name)?;
+    let mut metadata = vm::load(&store, name)?;
     match metadata.status {
         VmStatus::Running | VmStatus::Paused => {}
         _ => {
             return Err(Error::VmWrongState {
-                name: args.name.clone(),
+                name: name.to_string(),
                 actual: metadata.status.to_string(),
                 expected: "running or paused".to_string(),
             }
@@ -797,9 +852,9 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         anyhow::anyhow!(
             "vm '{}' is {} but has no PID — state may be corrupted\n\
              Hint: try 'ember vm delete --force {}' and recreate the VM",
-            args.name,
+            name,
             metadata.status,
-            args.name
+            name
         )
     })?;
 
@@ -810,7 +865,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!("Force-stopping VM (pid {pid})...");
         Vm::force_stop(&metadata)?;
     } else {
-        println!("Stopping VM '{}'...", args.name);
+        println!("Stopping VM '{}'...", name);
         Vm::stop(&metadata)?;
     }
 
@@ -824,7 +879,36 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     metadata.network = None;
     vm::save(&store, &metadata)?;
 
-    println!("VM '{}' stopped.", args.name);
+    println!("VM '{}' stopped.", name);
+    Ok(())
+}
+
+/// Stop all running/paused VMs.
+fn stop_all(force: bool, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let vms = vm::list(&store)?;
+    let targets: Vec<_> = vms
+        .iter()
+        .filter(|v| matches!(v.status, VmStatus::Running | VmStatus::Paused))
+        .collect();
+
+    if targets.is_empty() {
+        println!("No running VMs to stop.");
+        return Ok(());
+    }
+
+    println!("Stopping {} VMs...", targets.len());
+    for metadata in &targets {
+        let stop_args = StopArgs {
+            name: Some(metadata.name.clone()),
+            all: false,
+            force,
+        };
+        if let Err(e) = stop(&stop_args, state_dir) {
+            eprintln!("warning: failed to stop '{}': {}", metadata.name, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -1025,16 +1109,21 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
 ///
 /// Each cleanup step is idempotent — continues if the resource is already gone.
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.all {
+        return delete_all(args.force, state_dir);
+    }
+
+    let name = args.name.as_deref().unwrap();
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Load VM metadata (must exist).
-    let metadata = vm::load(&store, &args.name)?;
+    let metadata = vm::load(&store, name)?;
 
     // If the VM is running or paused, require --force.
     if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) && !args.force {
         anyhow::bail!(
             "vm '{}' is {} — stop it first or use --force",
-            args.name,
+            name,
             metadata.status
         );
     }
@@ -1043,13 +1132,13 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // On macOS/APFS this always returns empty — forks are independent.
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = Storage::new(&config);
-    let dependents = storage.storage_dependents(&args.name)?;
+    let dependents = storage.storage_dependents(name)?;
     if !dependents.is_empty() {
         if !args.force {
             anyhow::bail!(
                 "vm '{}' has dependent forks: {}\n\
                  Delete them first, or use --force to cascade-delete all dependents.",
-                args.name,
+                name,
                 dependents.join(", ")
             );
         }
@@ -1063,6 +1152,40 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     force_delete_vm(&store, &metadata)?;
+    Ok(())
+}
+
+/// Delete all VMs.
+fn delete_all(force: bool, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let vms = vm::list(&store)?;
+
+    if vms.is_empty() {
+        println!("No VMs to delete.");
+        return Ok(());
+    }
+
+    if !force {
+        let running = vms
+            .iter()
+            .any(|v| matches!(v.status, VmStatus::Running | VmStatus::Paused));
+        if running {
+            anyhow::bail!("some VMs are still running — use --force to stop and delete them");
+        }
+    }
+
+    println!("Deleting {} VMs...", vms.len());
+    for metadata in &vms {
+        let delete_args = DeleteArgs {
+            name: Some(metadata.name.clone()),
+            all: false,
+            force,
+        };
+        if let Err(e) = delete(&delete_args, state_dir) {
+            eprintln!("warning: failed to delete '{}': {}", metadata.name, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -1204,6 +1327,12 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 if let Some(ref mac) = net.guest_mac {
                     println!("  Guest MAC:   {}", mac);
                 }
+            }
+
+            if let Some(ref vsock) = metadata.vsock {
+                println!("Vsock:");
+                println!("  UDS path:    {}", vsock.uds_path.display());
+                println!("  Guest CID:   {}", vsock.guest_cid);
             }
 
             println!("SSH:");
