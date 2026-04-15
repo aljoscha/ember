@@ -26,10 +26,13 @@ use crate::error::{Error, Result};
 /// ├── vms/
 /// │   └── <vm-name>/
 /// │       ├── vm.json
+/// │       ├── vsock.sock
 /// │       ├── firecracker.sock
 /// │       ├── firecracker.log
 /// │       ├── console.log
 /// │       └── firecracker.pid
+/// ├── vsock/
+/// │   └── cids.json
 /// └── network/
 ///     └── allocations.json
 /// ```
@@ -65,6 +68,7 @@ impl StateStore {
             self.kernel_dir(),
             self.root.join("images"),
             self.root.join("vms"),
+            self.root.join("vsock"),
             self.root.join("network"),
         ];
         for dir in &dirs {
@@ -99,6 +103,11 @@ impl StateStore {
     /// Path to network IP allocation tracking.
     pub fn network_allocations_path(&self) -> PathBuf {
         self.root.join("network").join("allocations.json")
+    }
+
+    /// Path to vsock CID allocation tracking.
+    pub fn vsock_allocations_path(&self) -> PathBuf {
+        self.root.join("vsock").join("cids.json")
     }
 
     /// Path to the global config file.
@@ -150,7 +159,52 @@ impl StateStore {
         }
 
         let _lock = FileLock::exclusive(path)?;
+        self.write_inner(path, data)
+    }
 
+    /// Atomically read, modify, and write a JSON file under a single
+    /// exclusive lock.
+    ///
+    /// If the file doesn't exist, `default` is used as the initial value.
+    /// The closure receives a mutable reference and returns a result.
+    /// The modified value is written back while the lock is still held,
+    /// preventing TOCTOU races between concurrent processes.
+    pub fn update<T, R, F>(&self, path: &Path, default: T, f: F) -> Result<R>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce(&mut T) -> Result<R>,
+    {
+        // Ensure parent directory exists.
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
+
+        // Hold exclusive lock for the entire read-modify-write cycle.
+        let _lock = FileLock::exclusive(path)?;
+
+        let mut value: T = match fs::read_to_string(path) {
+            Ok(contents) => serde_json::from_str(&contents)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => default,
+            Err(e) => {
+                return Err(Error::Io {
+                    path: path.to_path_buf(),
+                    source: e,
+                })
+            }
+        };
+
+        let result = f(&mut value)?;
+        self.write_inner(path, &value)?;
+        Ok(result)
+    }
+
+    /// Write data to a JSON file atomically (temp file + rename).
+    ///
+    /// Caller must hold the appropriate lock.
+    fn write_inner<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
         // Write to temp file in the same directory (same filesystem for rename).
         let tmp_path = tmp_path_for(path);
         let json = serde_json::to_string_pretty(data)?;
@@ -354,6 +408,7 @@ mod tests {
         assert!(root.join("kernels").is_dir());
         assert!(root.join("images").is_dir());
         assert!(root.join("vms").is_dir());
+        assert!(root.join("vsock").is_dir());
         assert!(root.join("network").is_dir());
     }
 
@@ -421,6 +476,10 @@ mod tests {
         assert_eq!(
             store.network_allocations_path(),
             PathBuf::from("/var/lib/ember/network/allocations.json")
+        );
+        assert_eq!(
+            store.vsock_allocations_path(),
+            PathBuf::from("/var/lib/ember/vsock/cids.json")
         );
         assert_eq!(
             store.config_path(),

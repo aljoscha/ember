@@ -63,6 +63,22 @@ pub struct NetworkInfo {
     pub wan_iface: Option<String>,
 }
 
+/// Vsock configuration for host-guest communication.
+///
+/// When enabled, a virtio-vsock device is attached to the VM and a
+/// Unix domain socket is created on the host for communication.
+/// The guest connects via `AF_VSOCK` to CID 2 (host); host programs
+/// connect to the UDS at `uds_path`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VsockInfo {
+    /// Path to the Unix domain socket on the host.
+    /// e.g., `<state_dir>/vms/<name>/vsock.sock`
+    pub uds_path: PathBuf,
+    /// Guest CID (Context Identifier). Defaults to 3.
+    /// CID 0 and 1 are reserved; CID 2 is the host.
+    pub guest_cid: u32,
+}
+
 /// SSH connection configuration for a VM.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SshConfig {
@@ -132,6 +148,9 @@ pub struct VmMetadata {
     /// is purely informational — no cleanup or deletion constraints apply.
     #[serde(default, alias = "forked_from")]
     pub parent_vm: Option<String>,
+    /// Vsock configuration, if vsock is enabled for this VM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vsock: Option<VsockInfo>,
 }
 
 impl VmMetadata {
@@ -162,6 +181,7 @@ impl VmMetadata {
                 key: PathBuf::new(),
             },
             parent_vm: None,
+            vsock: None,
         }
     }
 }
@@ -354,6 +374,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             ssh: SshConfig::default(),
             parent_vm: None,
+            vsock: None,
         }
     }
 
@@ -497,6 +518,51 @@ mod tests {
         assert!(json["network"].is_null());
         assert!(json["pid"].is_null());
         assert_eq!(json["ssh"]["user"], "root");
+        // vsock is None, so it should be absent from JSON (skip_serializing_if)
+        assert!(json.get("vsock").is_none());
+    }
+
+    #[test]
+    fn vm_with_vsock_round_trip() {
+        let (_dir, store) = test_store();
+        let mut vm = sample_vm("vsockvm");
+        vm.vsock = Some(VsockInfo {
+            uds_path: PathBuf::from("/var/lib/ember/vms/vsockvm/vsock.sock"),
+            guest_cid: 3,
+        });
+
+        save(&store, &vm).unwrap();
+        let loaded = load(&store, "vsockvm").unwrap();
+        assert_eq!(loaded, vm);
+
+        let vsock = loaded.vsock.as_ref().unwrap();
+        assert_eq!(
+            vsock.uds_path,
+            PathBuf::from("/var/lib/ember/vms/vsockvm/vsock.sock")
+        );
+        assert_eq!(vsock.guest_cid, 3);
+    }
+
+    #[test]
+    fn vm_without_vsock_deserializes() {
+        // Ensure backwards compatibility: old vm.json without vsock field
+        // still deserializes correctly (vsock defaults to None).
+        let json = r#"{
+            "name": "oldvm",
+            "id": "00000000-0000-0000-0000-000000000000",
+            "status": "created",
+            "image": "alpine:latest",
+            "cpus": 1,
+            "memory_mib": 512,
+            "disk_size_gib": 4,
+            "kernel_path": "/boot/vmlinux",
+            "disk_path": "pool/vms/oldvm",
+            "api_socket": "/tmp/fc.sock",
+            "created_at": "2026-01-01T00:00:00Z",
+            "ssh": { "user": "root", "key": "/root/.ssh/id_ed25519" }
+        }"#;
+        let vm: VmMetadata = serde_json::from_str(json).unwrap();
+        assert!(vm.vsock.is_none());
     }
 
     #[test]

@@ -37,6 +37,8 @@ pub struct VmConfig {
     pub ssh: Option<VmSshConfig>,
     /// Custom boot arguments for the kernel.
     pub boot_args: Option<String>,
+    /// Enable vsock device for host-guest communication.
+    pub vsock: Option<bool>,
 }
 
 /// Network configuration within a VM YAML config.
@@ -179,6 +181,17 @@ boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
         assert!(config.network.is_none());
         assert!(config.ssh.is_none());
         assert!(config.boot_args.is_none());
+    }
+
+    #[test]
+    fn parse_vsock_config() {
+        let yaml = "image: alpine:latest\nvsock: true\n";
+        let config: VmConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.vsock, Some(true));
+
+        let yaml = "image: alpine:latest\n";
+        let config: VmConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.vsock.is_none());
     }
 
     #[test]
