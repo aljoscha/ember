@@ -83,6 +83,18 @@ pub enum VmState {
     Resumed,
 }
 
+/// Vsock device attached to the VM.
+///
+/// Firecracker creates a Unix domain socket at `uds_path` on the host.
+/// Guest programs connect via `AF_VSOCK` to CID 2 (host); host programs
+/// connect to the UDS and specify the guest CID + port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Vsock {
+    pub vsock_id: String,
+    pub guest_cid: u32,
+    pub uds_path: String,
+}
+
 /// Error body returned by Firecracker on failure.
 #[derive(Debug, Deserialize)]
 struct FaultResponse {
@@ -128,6 +140,11 @@ impl FirecrackerClient {
     pub async fn put_network_interface(&self, iface: &NetworkInterface) -> anyhow::Result<()> {
         let path = format!("/network-interfaces/{}", iface.iface_id);
         self.put(&path, iface).await
+    }
+
+    /// `PUT /vsock` — attach a vsock device to the VM.
+    pub async fn put_vsock(&self, vsock: &Vsock) -> anyhow::Result<()> {
+        self.put("/vsock", vsock).await
     }
 
     /// `PUT /actions` — start the VM, send Ctrl+Alt+Del, etc.

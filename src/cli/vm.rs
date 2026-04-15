@@ -106,6 +106,10 @@ pub struct CreateArgs {
     #[arg(long = "vm-config")]
     pub vm_config: Option<PathBuf>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
@@ -224,6 +228,10 @@ pub struct ForkArgs {
     #[arg(long)]
     pub network: Option<String>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after forking
     #[arg(long)]
     pub no_start: bool,
@@ -285,6 +293,44 @@ struct ResolvedVmCreate {
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
     ssh_key: Option<PathBuf>,
+    /// Whether vsock is enabled for this VM.
+    vsock: bool,
+}
+
+/// Maximum Unix domain socket path length.
+/// macOS: 104 bytes, Linux: 108 bytes. Use the smaller to be safe.
+const MAX_UDS_PATH_LEN: usize = 104;
+
+impl ResolvedVmCreate {
+    /// Build a `VsockInfo` if vsock is enabled, allocating a unique CID.
+    fn vsock_info(&self, store: &StateStore) -> anyhow::Result<Option<vm::VsockInfo>> {
+        if self.vsock {
+            let uds_path = store.vm_dir(&self.name).join("vsock.sock");
+            validate_uds_path(&uds_path)?;
+            let cid = ember_core::state::vsock::allocate(store, &self.name)?;
+            Ok(Some(vm::VsockInfo {
+                uds_path,
+                guest_cid: cid,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Validate that a UDS path doesn't exceed the OS limit for `sockaddr_un.sun_path`.
+fn validate_uds_path(path: &Path) -> anyhow::Result<()> {
+    let path_str = path.to_string_lossy();
+    if path_str.len() >= MAX_UDS_PATH_LEN {
+        anyhow::bail!(
+            "vsock UDS path is too long ({} bytes, max {}):\n  {}\n\
+             Hint: use a shorter --state-dir or VM name",
+            path_str.len(),
+            MAX_UDS_PATH_LEN - 1,
+            path_str,
+        );
+    }
+    Ok(())
 }
 
 /// Resolve VM creation config by merging defaults, YAML config, and CLI flags.
@@ -344,6 +390,8 @@ fn resolve_create_config(
             .and_then(|s| s.key.as_ref().map(|p| config::vm::expand_tilde(p)))
     });
 
+    let vsock = args.vsock || yaml.and_then(|c| c.vsock).unwrap_or(false);
+
     Ok(ResolvedVmCreate {
         name: args.name.clone(),
         image,
@@ -356,6 +404,7 @@ fn resolve_create_config(
         no_start: args.no_start,
         ssh_user,
         ssh_key,
+        vsock,
     })
 }
 
@@ -547,6 +596,7 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
+        vsock: resolved.vsock_info(store)?,
     };
 
     vm::save(store, &metadata)?;
@@ -666,6 +716,17 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
+        vsock: if args.vsock || source.vsock.is_some() {
+            let uds_path = store.vm_dir(&args.name).join("vsock.sock");
+            validate_uds_path(&uds_path)?;
+            let cid = ember_core::state::vsock::allocate(&store, &args.name)?;
+            Some(vm::VsockInfo {
+                uds_path,
+                guest_cid: cid,
+            })
+        } else {
+            None
+        },
     };
 
     vm::save(&store, &metadata)?;
@@ -1097,6 +1158,11 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         }
     }
 
+    // Release vsock CID if one was allocated.
+    if metadata.vsock.is_some() {
+        let _ = ember_core::state::vsock::release(store, &metadata.name);
+    }
+
     // Clean up networking via the backend.
     let net_backend = Network::new(store.clone());
     let _ = net_backend.teardown(metadata);
@@ -1206,6 +1272,12 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 }
             }
 
+            if let Some(ref vsock) = metadata.vsock {
+                println!("Vsock:");
+                println!("  UDS path:    {}", vsock.uds_path.display());
+                println!("  Guest CID:   {}", vsock.guest_cid);
+            }
+
             println!("SSH:");
             println!("  User:        {}", metadata.ssh.user);
             println!("  Key:         {}", metadata.ssh.key.display());
@@ -1213,4 +1285,34 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_uds_path_short_ok() {
+        let path = Path::new("/tmp/ember/vms/myvm/vsock.sock");
+        assert!(validate_uds_path(path).is_ok());
+    }
+
+    #[test]
+    fn validate_uds_path_at_limit_fails() {
+        // Build a path exactly at the limit (104 bytes).
+        let long_name = "x".repeat(MAX_UDS_PATH_LEN);
+        let path = PathBuf::from(long_name);
+        assert!(validate_uds_path(&path).is_err());
+    }
+
+    #[test]
+    fn validate_uds_path_over_limit_fails() {
+        let long_name = "x".repeat(MAX_UDS_PATH_LEN + 50);
+        let path = PathBuf::from(long_name);
+        let err = validate_uds_path(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("too long"),
+            "error should mention 'too long': {err}"
+        );
+    }
 }
