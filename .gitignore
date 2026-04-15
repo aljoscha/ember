@@ -2,6 +2,9 @@
 /target
 /crates/*/target
 
+# Staged emberd binary for image builds (built with `make emberd-image`)
+/images/emberd
+
 # Swift build artifacts
 /ember-vz/.build
 /ember-vz/.swiftpm
