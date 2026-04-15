@@ -109,6 +109,14 @@ pub struct CreateArgs {
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
+
+    /// Wait for VM to be SSH-reachable after start (seconds, 0 to skip)
+    #[arg(long, default_value = "90")]
+    pub wait: u64,
+
+    /// Output format (json prints VM metadata on success)
+    #[arg(long, default_value = "table")]
+    pub format: OutputFormat,
 }
 
 #[derive(Args)]
@@ -281,6 +289,10 @@ struct ResolvedVmCreate {
     /// Network subnet from YAML config (used during `start`, not `create`).
     network: Option<String>,
     no_start: bool,
+    /// Seconds to wait for SSH after start (0 = don't wait).
+    wait: u64,
+    /// Output format.
+    format: OutputFormat,
     /// SSH user override from YAML config.
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
@@ -354,6 +366,8 @@ fn resolve_create_config(
         boot_args,
         network,
         no_start: args.no_start,
+        wait: args.wait,
+        format: args.format.clone(),
         ssh_user,
         ssh_key,
     })
@@ -400,7 +414,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Load YAML config if provided.
     let yaml_config = match &args.vm_config {
         Some(path) => {
-            println!("Loading VM config from {}...", path.display());
+            eprintln!("Loading VM config from {}...", path.display());
             Some(config::vm::load(path)?)
         }
         None => None,
@@ -420,7 +434,11 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         .find_by_reference(&resolved.image)?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "image '{}' not found locally — pull it first with: ember image pull {}",
+                "image '{}' not found locally\n\
+                 \n  Build from Dockerfile:  ember image build {} -f <Dockerfile>\
+                 \n  Pull from registry:     ember image pull {}\
+                 \n  List local images:      ember image list",
+                resolved.image,
                 resolved.image,
                 resolved.image
             )
@@ -435,7 +453,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let mut rollback = Rollback::new();
 
     // Clone base image → per-VM disk (instant, copy-on-write).
-    println!("Cloning image for VM '{}'...", resolved.name);
+    eprintln!("Cloning image for VM '{}'...", resolved.name);
     let vm_disk_path = storage.clone_for_vm(&image_name, &resolved.name)?;
     let vm_disk = vm_disk_path.to_string_lossy().to_string();
     {
@@ -461,15 +479,75 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     rollback.commit();
 
     if !resolved.no_start {
-        start(
+        if let Err(e) = start(
             &StartArgs {
                 name: resolved.name.clone(),
             },
             state_dir,
-        )?;
+        ) {
+            // Start failed — clean up the created VM so we don't leave
+            // orphaned state behind.
+            eprintln!("Start failed, cleaning up VM '{}'...", resolved.name);
+            let _ = delete(
+                &DeleteArgs {
+                    name: resolved.name.clone(),
+                    force: true,
+                },
+                state_dir,
+            );
+            return Err(e);
+        }
+
+        // Wait for SSH to become reachable (if --wait > 0).
+        if resolved.wait > 0 {
+            wait_for_ssh(&store, &resolved.name, resolved.wait)?;
+        }
+    }
+
+    // Output result
+    match resolved.format {
+        OutputFormat::Json => {
+            let metadata = vm::load(&store, &resolved.name)?;
+            println!("{}", serde_json::to_string_pretty(&metadata)?);
+        }
+        OutputFormat::Table => {
+            eprintln!("VM '{}' ready.", resolved.name);
+        }
     }
 
     Ok(())
+}
+
+/// Poll SSH until the VM responds or timeout is reached.
+fn wait_for_ssh(store: &StateStore, vm_name: &str, timeout_secs: u64) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let (metadata, network) = load_running_with_ip(store, vm_name)?;
+    let guest_ip = &network.guest_ip;
+    let key_path = &metadata.ssh.key;
+    let user = &metadata.ssh.user;
+
+    eprint!("Waiting for SSH");
+    let rt = tokio::runtime::Runtime::new()?;
+    let timeout = Duration::from_secs(timeout_secs);
+
+    match rt.block_on(async {
+        ember_core::ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await
+    }) {
+        Ok(client) => {
+            rt.block_on(async { client.close().await }).ok();
+            eprintln!(" ready.");
+            Ok(())
+        }
+        Err(_) => {
+            eprintln!(" timeout ({timeout_secs}s).");
+            eprintln!(
+                "  hint: VM is running but SSH is slow. Try:\n\
+                 \x20   ember exec --wait {timeout_secs} {vm_name} -- echo hello"
+            );
+            Ok(()) // Non-fatal — VM is running, SSH is just slow
+        }
+    }
 }
 
 /// Post-clone steps: grow disk, inject SSH key, save metadata.
@@ -488,7 +566,7 @@ fn create_post_clone(
     let requested_size_mib = resolved.disk_size as u64 * 1024;
     let needs_resize = requested_size_mib > image_size_mib;
     if needs_resize {
-        println!(
+        eprintln!(
             "Growing disk to {}...",
             format_bytes_binary(resolved.disk_size as u64 * GIB)
         );
@@ -508,7 +586,7 @@ fn create_post_clone(
              Hint: create one with: ssh-keygen -t ed25519"
         )
     })?;
-    println!("Injecting SSH key from {}...", pubkey_path.display());
+    eprintln!("Injecting SSH key from {}...", pubkey_path.display());
     let detected_ssh_user = storage.inject_ssh_key(&dev_path, &pubkey_path)?;
 
     // Inject /etc/hosts with the VM hostname so sudo and other tools
@@ -551,7 +629,7 @@ fn create_post_clone(
 
     vm::save(store, &metadata)?;
 
-    println!("VM '{}' created successfully.", resolved.name);
+    eprintln!("VM '{}' created successfully.", resolved.name);
 
     Ok(())
 }
@@ -720,9 +798,9 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     // ── Networking ────────────────────────────────────────────────
 
     let net_backend = Network::new(store.clone());
-    println!("Setting up network...");
+    eprintln!("Setting up network...");
     let net_info = net_backend.setup(&metadata, &config)?;
-    println!(
+    eprintln!(
         "  Guest IP: {}, Host IP: {}",
         net_info.guest_ip, net_info.host_ip
     );
@@ -744,7 +822,7 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // ── Hypervisor ────────────────────────────────────────────────
 
-    println!("Starting VM...");
+    eprintln!("Starting VM...");
     let started = Vm::start(&metadata, &config)?;
     let pid = started.pid;
     {
@@ -767,7 +845,7 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Everything succeeded — keep all resources.
     rollback.commit();
 
-    println!("VM '{}' started (pid {}).", args.name, pid);
+    eprintln!("VM '{}' started (pid {}).", args.name, pid);
     Ok(())
 }
 
