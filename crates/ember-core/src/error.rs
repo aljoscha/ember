@@ -41,6 +41,10 @@ pub enum Error {
     #[error("image: {0}")]
     Image(String),
 
+    /// Vsock CID allocation error.
+    #[error("vsock: {0}")]
+    Vsock(String),
+
     /// SSH connection or command error.
     #[error("ssh: {0}")]
     Ssh(String),

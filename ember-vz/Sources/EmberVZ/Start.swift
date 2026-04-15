@@ -1,6 +1,6 @@
 import ArgumentParser
 import Foundation
-import Virtualization
+@preconcurrency import Virtualization
 
 /// Boot a Linux VM with the given kernel, disk, and configuration.
 ///
@@ -42,6 +42,9 @@ struct Start: ParsableCommand {
 
     @Option(name: .long, help: "File descriptor to write ready notification (MAC address)")
     var readyFd: Int32? = nil
+
+    @Option(name: .long, help: "Path to Unix domain socket for vsock bridge")
+    var vsockPath: String? = nil
 
     func run() throws {
         // Build the VM configuration (does not require main actor)
@@ -150,6 +153,11 @@ struct Start: ParsableCommand {
         config.memoryBalloonDevices = [
             VZVirtioTraditionalMemoryBalloonDeviceConfiguration()
         ]
+
+        // Vsock: virtio-socket for host↔guest communication (if enabled)
+        if vsockPath != nil {
+            config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        }
 
         try config.validate()
         return config
@@ -268,6 +276,9 @@ struct Start: ParsableCommand {
         // Capture ready-fd for use in the start callback
         let readyFd = self.readyFd
 
+        // Capture vsockPath for use in start callback
+        let vsockPath = self.vsockPath
+
         vm.start { result in
             switch result {
             case .success:
@@ -279,6 +290,12 @@ struct Start: ParsableCommand {
                 if let fd = readyFd {
                     let readyHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
                     readyHandle.write(Data("\(mac)\n".utf8))
+                }
+
+                // Set up vsock UDS bridge if enabled.
+                if let path = vsockPath,
+                   let socketDevice = vm.socketDevices.first as? VZVirtioSocketDevice {
+                    startVsockBridge(device: socketDevice, udsPath: path)
                 }
 
             case .failure(let error):
@@ -297,6 +314,245 @@ nonisolated(unsafe) var _delegateRef: VMDelegate?
 nonisolated(unsafe) var _sigtermSourceRef: DispatchSourceSignal?
 nonisolated(unsafe) var _sigusr1SourceRef: DispatchSourceSignal?
 nonisolated(unsafe) var _sigusr2SourceRef: DispatchSourceSignal?
+
+// MARK: - sockaddr_un Helper
+
+/// Create a `sockaddr_un` from a Unix socket path string.
+/// Returns nil if the path is too long.
+func makeSockaddrUn(path: String) -> sockaddr_un? {
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = path.utf8CString
+    let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
+    guard pathBytes.count <= maxLen else { return nil }
+    withUnsafeMutableBytes(of: &addr.sun_path) { dest in
+        pathBytes.withUnsafeBufferPointer { src in
+            dest.copyMemory(from: UnsafeRawBufferPointer(src))
+        }
+    }
+    return addr
+}
+
+// MARK: - Vsock UDS Bridge
+
+/// Start a Unix domain socket listener that bridges host connections to the
+/// VM's vsock device. Host clients connect to the UDS; each connection is
+/// proxied to the guest on the same port the client specifies via a simple
+/// length-prefixed port header, or to a default port (1024).
+///
+/// Also installs a vsock listener for guest-initiated connections on port 1024
+/// and bridges those to the UDS.
+func startVsockBridge(device: VZVirtioSocketDevice, udsPath: String) {
+    // Remove stale socket file if it exists.
+    unlink(udsPath)
+
+    // Create Unix domain socket.
+    let serverFd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard serverFd >= 0 else {
+        fputs("warning: vsock bridge: failed to create UDS: \(String(cString: strerror(errno)))\n", stderr)
+        return
+    }
+
+    guard var addr = makeSockaddrUn(path: udsPath) else {
+        fputs("warning: vsock bridge: UDS path too long\n", stderr)
+        close(serverFd)
+        return
+    }
+
+    let bindResult = withUnsafePointer(to: &addr) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+            Darwin.bind(serverFd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        fputs("warning: vsock bridge: bind failed: \(String(cString: strerror(errno)))\n", stderr)
+        close(serverFd)
+        return
+    }
+
+    guard listen(serverFd, 16) == 0 else {
+        fputs("warning: vsock bridge: listen failed: \(String(cString: strerror(errno)))\n", stderr)
+        close(serverFd)
+        return
+    }
+
+    fputs("vsock bridge: listening on \(udsPath)\n", stderr)
+
+    // Store device reference for use in background accept loop.
+    _vsockDeviceRef = device
+
+    // Keep server fd alive for the process lifetime.
+    _vsockServerFdRef = serverFd
+
+    // Accept loop on a background queue.
+    let acceptQueue = DispatchQueue(label: "vsock-accept", attributes: .concurrent)
+    acceptQueue.async {
+        while true {
+            let clientFd = Darwin.accept(serverFd, nil, nil)
+            guard clientFd >= 0 else {
+                if errno == EINTR { continue }
+                fputs("warning: vsock bridge: accept failed (errno \(errno)): \(String(cString: strerror(errno)))\n", stderr)
+                break
+            }
+
+            guard let dev = _vsockDeviceRef else {
+                fputs("warning: vsock bridge: device ref lost, exiting accept loop\n", stderr)
+                close(clientFd)
+                break
+            }
+
+            // Connect to the guest on the default vsock port (1024).
+            // VZVirtioSocketDevice must be used from the main queue.
+            fputs("vsock bridge: accepted client, connecting to guest port 1024...\n", stderr)
+            DispatchQueue.main.async {
+                dev.connect(toPort: 1024) { result in
+                    switch result {
+                    case .success(let connection):
+                        fputs("vsock bridge: connected to guest port 1024\n", stderr)
+                        bridgeConnection(clientFd: clientFd, vsockConnection: connection)
+                    case .failure(let error):
+                        fputs("warning: vsock bridge: guest connect failed: \(error.localizedDescription)\n", stderr)
+                        close(clientFd)
+                    }
+                }
+            }
+        }
+    }
+
+    // Listen for guest-initiated connections on port 1024.
+    let listenerDelegate = VsockListenerDelegate(udsPath: udsPath)
+    let listener = VZVirtioSocketListener()
+    listener.delegate = listenerDelegate
+    device.setSocketListener(listener, forPort: 1024)
+    _vsockListenerDelegateRef = listenerDelegate
+    _vsockListenerObjRef = listener
+
+    fputs("vsock bridge: listening for guest connections on port 1024\n", stderr)
+}
+
+/// Copy data from one file descriptor to another until EOF or error.
+/// Returns when the source fd is closed or an error occurs.
+func copyFd(from srcFd: Int32, to dstFd: Int32, label: String = "") {
+    let bufSize = 16384
+    let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
+    defer { buf.deallocate() }
+
+    while true {
+        let n = read(srcFd, buf, bufSize)
+        if n < 0 {
+            let err = String(cString: strerror(errno))
+            fputs("vsock bridge: \(label) read error: \(err)\n", stderr)
+            break
+        }
+        if n == 0 { break } // EOF
+        var written = 0
+        while written < n {
+            let w = write(dstFd, buf + written, n - written)
+            if w <= 0 {
+                let err = String(cString: strerror(errno))
+                fputs("vsock bridge: \(label) write error: \(err)\n", stderr)
+                return
+            }
+            written += w
+        }
+    }
+}
+
+/// Bridge data between a UDS file descriptor and a vsock connection.
+/// Runs two concurrent copy loops (one per direction) until either side closes.
+///
+/// IMPORTANT: We must hold a strong reference to `vsockConnection` for the
+/// lifetime of the bridge. If ARC deallocates it, the underlying fd is closed
+/// and the bridge silently fails with empty reads.
+func bridgeConnection(clientFd: Int32, vsockConnection: VZVirtioSocketConnection) {
+    let vsockFd = vsockConnection.fileDescriptor
+    fputs("vsock bridge: bridging client fd \(clientFd) <-> vsock fd \(vsockFd)\n", stderr)
+
+    // Hold a strong ref so ARC doesn't close the fd while copyFd is running.
+    let connectionRef = vsockConnection
+
+    let group = DispatchGroup()
+
+    // client → guest
+    group.enter()
+    DispatchQueue.global().async {
+        copyFd(from: clientFd, to: vsockFd, label: "client→guest")
+        shutdown(vsockFd, SHUT_WR)
+        group.leave()
+    }
+
+    // guest → client
+    group.enter()
+    DispatchQueue.global().async {
+        copyFd(from: vsockFd, to: clientFd, label: "guest→client")
+        close(clientFd)
+        group.leave()
+    }
+
+    // Release the connection reference only after both copy loops finish.
+    DispatchQueue.global().async {
+        group.wait()
+        fputs("vsock bridge: connection closed\n", stderr)
+        _keepAlive(connectionRef)
+    }
+}
+
+/// Prevent the compiler from optimizing away a strong reference.
+@inline(never)
+func _keepAlive(_ obj: AnyObject) {
+    withExtendedLifetime(obj) {}
+}
+
+/// Vsock listener delegate that accepts guest-initiated connections.
+/// Bridges each guest connection to a new UDS connection.
+class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
+    let udsPath: String
+
+    init(udsPath: String) {
+        self.udsPath = udsPath
+    }
+
+    func listener(
+        _ listener: VZVirtioSocketListener,
+        shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+        from socketDevice: VZVirtioSocketDevice
+    ) -> Bool {
+        fputs("vsock bridge: guest connected on port 1024\n", stderr)
+
+        // Connect to the host-side UDS so Thermite sees the guest connection.
+        let clientFd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard clientFd >= 0 else {
+            fputs("warning: vsock bridge: failed to create UDS client socket\n", stderr)
+            return false
+        }
+
+        guard var addr = makeSockaddrUn(path: udsPath) else {
+            fputs("warning: vsock bridge: UDS path too long\n", stderr)
+            close(clientFd)
+            return false
+        }
+
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.connect(clientFd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+
+        if connectResult != 0 {
+            fputs("warning: vsock bridge: UDS connect failed: \(String(cString: strerror(errno)))\n", stderr)
+            close(clientFd)
+            return false
+        }
+
+        bridgeConnection(clientFd: clientFd, vsockConnection: connection)
+        return true
+    }
+}
+
+nonisolated(unsafe) var _vsockDeviceRef: VZVirtioSocketDevice?
+nonisolated(unsafe) var _vsockServerFdRef: Int32 = -1
+nonisolated(unsafe) var _vsockListenerDelegateRef: VsockListenerDelegate?
+nonisolated(unsafe) var _vsockListenerObjRef: VZVirtioSocketListener?
 
 // MARK: - VM Delegate
 

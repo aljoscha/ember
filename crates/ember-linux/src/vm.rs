@@ -185,7 +185,7 @@ fn configure_and_boot(
     if let Some(ref boot_args) = vm.boot_args {
         vm_config = vm_config.with_boot_args(boot_args);
     }
-    let vm_config = vm_config.with_network(firecracker::config::VmNetworkConfig {
+    let mut vm_config = vm_config.with_network(firecracker::config::VmNetworkConfig {
         tap_device: net_info.tap_device.clone(),
         guest_ip: net_info.guest_ip.clone(),
         host_ip: net_info.host_ip.clone(),
@@ -194,6 +194,14 @@ fn configure_and_boot(
         hostname: vm.name.clone(),
         dns_servers,
     });
+
+    // Configure vsock device if enabled.
+    if let Some(ref vsock) = vm.vsock {
+        vm_config = vm_config.with_vsock(
+            vsock.uds_path.to_string_lossy().to_string(),
+            vsock.guest_cid,
+        );
+    }
 
     // Run the async API calls in a blocking runtime.
     let rt = tokio::runtime::Runtime::new()
