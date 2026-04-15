@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Shared types, traits, and utilities for ember"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

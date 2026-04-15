@@ -2,6 +2,9 @@
 members = ["crates/ember-core", "crates/ember-linux", "crates/ember-macos"]
 default-members = ["."]
 
+[workspace.lints.clippy]
+mod_module_files = "warn"
+
 [workspace.dependencies]
 # Internal crates
 ember-core = { path = "crates/ember-core" }
@@ -49,6 +52,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Lightweight VM manager with copy-on-write storage"
 license = "MIT"
+
+[lints]
+workspace = true
 
 [dependencies]
 ember-core = { workspace = true }

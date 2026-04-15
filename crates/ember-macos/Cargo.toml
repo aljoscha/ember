@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "macOS backend for ember: Apple Virtualization Framework + APFS clones + vmnet"
 
+[lints]
+workspace = true
+
 [dependencies]
 ember-core = { workspace = true }
 nix = { workspace = true, features = ["fs", "signal", "process", "user"] }
