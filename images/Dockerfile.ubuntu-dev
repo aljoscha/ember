@@ -76,6 +76,7 @@ RUN apt-get update \
         file \
         unzip \
         ncdu \
+        ripgrep \
         tig \
         man-db \
         bash-completion \
