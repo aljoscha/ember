@@ -10,7 +10,7 @@
 # The primary user is `ubuntu` (uid 1000) with passwordless sudo.
 # SSH connects as ubuntu by default; root is available via `sudo`.
 
-FROM ubuntu:resolute-20251101
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

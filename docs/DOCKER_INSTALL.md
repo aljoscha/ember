@@ -29,10 +29,7 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/doc
 chmod a+r /etc/apt/keyrings/docker.asc
 
 # 3. Add Docker repository
-# NOTE: We use "noble" (Ubuntu 24.04) instead of "resolute" (Ubuntu 26.04)
-# because Docker's official repo does not have complete packages for resolute yet.
-# The noble packages are binary-compatible with 26.04.
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
   > /etc/apt/sources.list.d/docker.list
 
 # 4. Install Docker Engine and plugins
@@ -61,7 +58,7 @@ RUN apt-get update \
   && install -m 0755 -d /etc/apt/keyrings \
   && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
   && chmod a+r /etc/apt/keyrings/docker.asc \
-  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
        > /etc/apt/sources.list.d/docker.list \
   && apt-get update \
   && apt-get install -y \
@@ -79,12 +76,6 @@ RUN apt-get update \
 > [official DinD documentation](https://hub.docker.com/_/docker) for details.
 
 ## Implications and Limitations
-
-### Codename pinning to `noble`
-The Docker apt repository does not yet publish `docker-ce`, `docker-ce-cli`, or `containerd.io`
-for the `resolute` (26.04) codename. We pin to `noble` (24.04 LTS) packages, which are
-binary-compatible. **When Docker publishes resolute packages, update the repo line to use
-`$(. /etc/os-release && echo "$VERSION_CODENAME")` instead of hardcoding `noble`.**
 
 ### Kernel version (6.1.102)
 The kernel is 6.1.x, which fully supports overlayfs, cgroups v2, and user namespaces.
