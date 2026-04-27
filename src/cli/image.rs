@@ -4,11 +4,11 @@ use clap::{Args, Subcommand};
 
 use super::fmt::{format_bytes_binary, MIB};
 use super::vm::OutputFormat;
-use crate::backend::{create_storage, CurrentPlatform, Platform, Storage};
+use crate::backend::{create_storage, CurrentPlatform, Platform, Storage, VolumeHandle};
 use crate::image;
 use ember_core::config::GlobalConfig;
 use ember_core::image::pull::ImageReference;
-use ember_core::image::registry::{new_build_entry, new_entry, ImageRegistry};
+use ember_core::image::registry::{new_build_entry, new_entry, ImageEntry, ImageRegistry};
 use ember_core::state::store::StateStore;
 use ember_core::state::vm::{self, VmMetadata};
 
@@ -126,12 +126,12 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     inject_image_config(&rootfs_dir, true)?;
 
     // Steps 3-4: Create ext4 image → import into storage backend.
-    let (size_mib, disk_path, rollback) =
+    let (size_mib, handle, rollback) =
         create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
-    let disk = disk_path.to_string_lossy().to_string();
-    let entry = new_entry(&reference, &disk, size_mib, None);
+    let disk = handle.disk_path.to_string_lossy().to_string();
+    let entry = new_entry(&reference, &disk, size_mib, handle.thin_id);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
@@ -202,12 +202,12 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     inject_image_config(&rootfs_dir, false)?;
 
     // Steps 3-4: Create ext4 image → import into storage backend.
-    let (size_mib, disk_path, rollback) =
+    let (size_mib, handle, rollback) =
         create_image_from_rootfs(&rootfs_dir, work_dir.path(), &local_name, &storage)?;
 
     // Step 5: Register in local image registry.
-    let disk = disk_path.to_string_lossy().to_string();
-    let entry = new_build_entry(&args.name, &local_name, &disk, size_mib, None);
+    let disk = handle.disk_path.to_string_lossy().to_string();
+    let entry = new_build_entry(&args.name, &local_name, &disk, size_mib, handle.thin_id);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
@@ -304,7 +304,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
     println!("Destroying storage for image '{}'...", local_name);
-    storage.destroy_image_storage(&local_name, args.force)?;
+    storage.destroy_image_storage(&entry, args.force)?;
 
     // Remove from registry last, after the storage is gone.
     image::registry::remove_image(&store, &local_name)?;
@@ -380,14 +380,15 @@ fn inject_image_config(rootfs_dir: &Path, inject_inittab: bool) -> anyhow::Resul
 
 /// Create an ext4 image from a rootfs directory and import it into storage.
 ///
-/// Returns `(size_mib, disk_path, rollback)` — the caller must register
-/// the image in the registry and then call `rollback.commit()` to finalize.
+/// Returns `(size_mib, handle, rollback)` — the caller pulls
+/// `handle.disk_path` and `handle.thin_id` to build an [`ImageEntry`]
+/// for the registry, then calls `rollback.commit()` to finalize.
 fn create_image_from_rootfs(
     rootfs_dir: &Path,
     work_dir: &Path,
     name: &str,
     storage: &Storage,
-) -> anyhow::Result<(u64, PathBuf, ember_core::cleanup::Rollback)> {
+) -> anyhow::Result<(u64, VolumeHandle, ember_core::cleanup::Rollback)> {
     let size_mib = CurrentPlatform::estimate_ext4_size_mib(rootfs_dir)?;
     let ext4_path = work_dir.join("rootfs.ext4");
     println!(
@@ -402,18 +403,33 @@ fn create_image_from_rootfs(
         .unwrap_or(size_mib);
 
     println!("  Importing image into storage...");
-    let disk_path = storage.create_image_volume(name, &ext4_path, size_mib)?;
+    let handle = storage.create_image_volume(name, &ext4_path, size_mib)?;
 
     let mut rollback = ember_core::cleanup::Rollback::new();
     {
         let storage = storage.clone();
-        let n = name.to_string();
+        let stub = stub_image_entry(name, &handle);
         rollback.push("image storage", move || {
-            let _ = storage.destroy_image_storage(&n, false);
+            let _ = storage.destroy_image_storage(&stub, false);
         });
     }
 
-    Ok((size_mib, disk_path, rollback))
+    Ok((size_mib, handle, rollback))
+}
+
+/// Build a minimal [`ImageEntry`] for use in cleanup paths where the
+/// real entry hasn't been (or no longer is) registered. The ZFS, btrfs,
+/// and dm-thin backends only inspect `local_name` and `thin_id`, so the
+/// remaining fields can be placeholders.
+fn stub_image_entry(local_name: &str, handle: &VolumeHandle) -> ImageEntry {
+    ImageEntry {
+        reference: String::new(),
+        local_name: local_name.to_string(),
+        disk_path: handle.disk_path.to_string_lossy().into_owned(),
+        size_mib: 0,
+        pulled_at: String::new(),
+        thin_id: handle.thin_id,
+    }
 }
 
 /// Resolve a user-provided image name to its registry local_name.

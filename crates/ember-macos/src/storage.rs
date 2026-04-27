@@ -18,9 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend};
+use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
 use ember_core::error::{Error, Result};
+use ember_core::image::registry::ImageEntry;
+use ember_core::state::vm::{SnapshotEntry, VmMetadata};
 
 /// macOS storage backend using APFS copy-on-write clones.
 ///
@@ -116,7 +118,7 @@ impl StorageBackend for MacosStorage {
         name: &str,
         image_path: &Path,
         _size_mib: u64,
-    ) -> Result<PathBuf> {
+    ) -> Result<VolumeHandle> {
         let dest = self.image_path(name);
 
         // Ensure the images directory exists.
@@ -137,7 +139,7 @@ impl StorageBackend for MacosStorage {
             let _ = fs::remove_file(image_path);
         }
 
-        Ok(dest)
+        Ok(VolumeHandle::from_path(dest))
     }
 
     /// Clone a base image for a new VM using APFS copy-on-write.
@@ -145,8 +147,8 @@ impl StorageBackend for MacosStorage {
     /// `cp -c` creates an instant CoW clone — the VM's rootfs shares blocks
     /// with the base image until written to. This is the macOS equivalent of
     /// `zfs clone pool/.../images/name@base pool/.../vms/vm_name`.
-    fn clone_for_vm(&self, image_name: &str, vm_name: &str) -> Result<PathBuf> {
-        let src = self.image_path(image_name);
+    fn clone_for_vm(&self, image: &ImageEntry, vm_name: &str) -> Result<VolumeHandle> {
+        let src = self.image_path(&image.local_name);
         if !src.exists() {
             return Err(Error::Image(format!(
                 "base image not found: {}",
@@ -170,7 +172,7 @@ impl StorageBackend for MacosStorage {
         let dest = self.vm_rootfs(vm_name);
         apfs_clone(&src, &dest)?;
 
-        Ok(dest)
+        Ok(VolumeHandle::from_path(dest))
     }
 
     /// Create a snapshot by APFS-cloning the VM's current rootfs.
@@ -178,7 +180,12 @@ impl StorageBackend for MacosStorage {
     /// `cp -c vms/<vm>/rootfs.img → vms/<vm>/snapshots/<snap>.img`
     /// This is instant (CoW) and costs no additional disk space until
     /// the VM's rootfs diverges from the snapshot.
-    fn snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+    fn snapshot(
+        &self,
+        vm: &VmMetadata,
+        snap_name: &str,
+    ) -> Result<Option<SnapshotEntry>> {
+        let vm_name = vm.name.as_str();
         let src = self.vm_rootfs(vm_name);
         if !src.exists() {
             return Err(Error::Image(format!(
@@ -201,7 +208,8 @@ impl StorageBackend for MacosStorage {
         }
 
         apfs_clone(&src, &dest)?;
-        Ok(())
+        // APFS tracks snapshots as files on disk; nothing to add to vm.json.
+        Ok(None)
     }
 
     /// Restore a snapshot by replacing the VM's rootfs with an APFS clone
@@ -210,7 +218,8 @@ impl StorageBackend for MacosStorage {
     /// `cp -c vms/<vm>/snapshots/<snap>.img → vms/<vm>/rootfs.img`
     /// The old rootfs is removed first, then replaced with a fresh CoW clone
     /// of the snapshot.
-    fn restore_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+    fn restore_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<VolumeHandle> {
+        let vm_name = vm.name.as_str();
         let snap_path = self
             .vm_snapshots_dir(vm_name)
             .join(format!("{snap_name}.img"));
@@ -237,10 +246,10 @@ impl StorageBackend for MacosStorage {
 
         // Atomic rename replaces the old rootfs in one operation.
         fs::rename(&tmp_rootfs, &rootfs).map_err(|e| Error::Io {
-            path: rootfs,
+            path: rootfs.clone(),
             source: e,
         })?;
-        Ok(())
+        Ok(VolumeHandle::from_path(rootfs))
     }
 
     /// Delete a snapshot by removing its image file.
@@ -248,7 +257,8 @@ impl StorageBackend for MacosStorage {
     /// APFS reference-counts the underlying blocks — deleting a snapshot only
     /// frees blocks that are not shared with other clones (rootfs or other
     /// snapshots).
-    fn delete_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()> {
+    fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()> {
+        let vm_name = vm.name.as_str();
         let snap_path = self
             .vm_snapshots_dir(vm_name)
             .join(format!("{snap_name}.img"));
@@ -269,8 +279,8 @@ impl StorageBackend for MacosStorage {
     ///
     /// Each `.img` file in the directory is a snapshot. Metadata (creation
     /// time, size) comes from `fs::metadata` on each file.
-    fn list_snapshots(&self, vm_name: &str) -> Result<Vec<SnapshotInfo>> {
-        let snap_dir = self.vm_snapshots_dir(vm_name);
+    fn list_snapshots(&self, vm: &VmMetadata) -> Result<Vec<SnapshotInfo>> {
+        let snap_dir = self.vm_snapshots_dir(&vm.name);
         if !snap_dir.exists() {
             return Ok(vec![]);
         }
@@ -335,8 +345,8 @@ impl StorageBackend for MacosStorage {
     ///
     /// Only growing is supported — the CLI layer prevents shrink attempts.
     /// Requires `e2fsprogs` from Homebrew (`brew install e2fsprogs`).
-    fn resize(&self, vm_name: &str, new_size: ByteSize) -> Result<()> {
-        let rootfs = self.vm_rootfs(vm_name);
+    fn resize(&self, vm: &VmMetadata, new_size: ByteSize) -> Result<()> {
+        let rootfs = self.vm_rootfs(&vm.name);
         if !rootfs.exists() {
             return Err(Error::Image(format!(
                 "VM rootfs not found: {}",
@@ -408,8 +418,8 @@ impl StorageBackend for MacosStorage {
     /// Destroy all storage for a VM: rootfs image, snapshots, and VM directory.
     ///
     /// Silently succeeds if the directory doesn't exist (idempotent delete).
-    fn destroy_vm_storage(&self, vm_name: &str) -> Result<()> {
-        let vm_dir = self.vm_dir(vm_name);
+    fn destroy_vm_storage(&self, vm: &VmMetadata) -> Result<()> {
+        let vm_dir = self.vm_dir(&vm.name);
         if vm_dir.exists() {
             fs::remove_dir_all(&vm_dir).map_err(|e| Error::Io {
                 path: vm_dir,
@@ -421,8 +431,8 @@ impl StorageBackend for MacosStorage {
 
     /// Destroy storage for a base image (the raw `.img` file).
     /// The `force` flag is a no-op on macOS (APFS clones are independent).
-    fn destroy_image_storage(&self, name: &str, _force: bool) -> Result<()> {
-        let img = self.image_path(name);
+    fn destroy_image_storage(&self, image: &ImageEntry, _force: bool) -> Result<()> {
+        let img = self.image_path(&image.local_name);
         if img.exists() {
             fs::remove_file(&img).map_err(|e| Error::Io {
                 path: img,
@@ -436,8 +446,8 @@ impl StorageBackend for MacosStorage {
     ///
     /// On macOS the raw `.img` file is passed directly to AVF — no
     /// block device indirection like ZFS zvols.
-    fn disk_device_path(&self, vm_name: &str) -> PathBuf {
-        self.vm_rootfs(vm_name)
+    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf {
+        self.vm_rootfs(&vm.name)
     }
 
     /// Clone a source VM's disk for forking via APFS copy-on-write.
@@ -445,8 +455,8 @@ impl StorageBackend for MacosStorage {
     /// Directly clones the source VM's rootfs into the target VM's rootfs
     /// using `cp -c`. No intermediate snapshot is created — APFS clones
     /// are fully independent, so no cleanup or dependency tracking is needed.
-    fn clone_vm_storage(&self, source_vm: &str, target_vm: &str) -> Result<PathBuf> {
-        let source_rootfs = self.vm_rootfs(source_vm);
+    fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle> {
+        let source_rootfs = self.vm_rootfs(&source.name);
         if !source_rootfs.exists() {
             return Err(Error::Image(format!(
                 "source VM rootfs not found: {}",
@@ -469,16 +479,16 @@ impl StorageBackend for MacosStorage {
         let target_rootfs = self.vm_rootfs(target_vm);
         apfs_clone(&source_rootfs, &target_rootfs)?;
 
-        Ok(target_rootfs)
+        Ok(VolumeHandle::from_path(target_rootfs))
     }
 
     /// No-op on macOS — APFS clones are independent, nothing to clean up.
-    fn cleanup_fork(&self, _parent_vm: &str, _forked_vm: &str) -> Result<()> {
+    fn cleanup_fork(&self, _parent: &VmMetadata, _forked: &VmMetadata) -> Result<()> {
         Ok(())
     }
 
     /// Always returns empty on macOS — APFS clones are independent.
-    fn storage_dependents(&self, _vm_name: &str) -> Result<Vec<String>> {
+    fn storage_dependents(&self, _vm: &VmMetadata) -> Result<Vec<String>> {
         Ok(vec![])
     }
 
