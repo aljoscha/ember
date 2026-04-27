@@ -131,7 +131,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Step 5: Register in local image registry.
     let disk = disk_path.to_string_lossy().to_string();
-    let entry = new_entry(&reference, &disk, size_mib);
+    let entry = new_entry(&reference, &disk, size_mib, None);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
@@ -207,7 +207,7 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Step 5: Register in local image registry.
     let disk = disk_path.to_string_lossy().to_string();
-    let entry = new_build_entry(&args.name, &local_name, &disk, size_mib);
+    let entry = new_build_entry(&args.name, &local_name, &disk, size_mib, None);
     let mut registry = ImageRegistry::load(&store)?;
     registry.add(entry);
     registry.save(&store)?;
