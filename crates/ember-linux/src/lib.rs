@@ -1,3 +1,4 @@
+pub mod dm_thin;
 pub mod firecracker;
 pub mod image;
 pub mod network;

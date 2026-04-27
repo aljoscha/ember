@@ -602,6 +602,7 @@ dependencies = [
  "hyper-util",
  "hyperlocal",
  "nix",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",

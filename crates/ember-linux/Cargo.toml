@@ -20,3 +20,4 @@ nix = { workspace = true, features = ["fs", "ioctl", "net", "signal", "process",
 anyhow = { workspace = true }
 uuid = { workspace = true }
 tempfile = { workspace = true }
+rand = { workspace = true }
