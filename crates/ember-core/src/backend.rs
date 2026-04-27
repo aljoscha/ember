@@ -167,6 +167,20 @@ pub trait StorageBackend {
     where
         Self: Sized;
 
+    /// Tear down the backend infrastructure created by [`init`].
+    ///
+    /// Inverse of `init`. The backend is responsible for unmounting,
+    /// detaching, and (when `purge` is set) deleting backing files.
+    /// Block devices supplied by the user are left intact in either
+    /// case. The CLI removes `config.json` separately.
+    fn deinit(&self, purge: bool) -> Result<()>;
+
+    /// Grow the underlying pool capacity. Currently meaningful only for
+    /// dm-thin file-backed pools; ZFS/btrfs/APFS return an error since
+    /// they manage capacity differently (or the user resizes individual
+    /// VM disks via [`StorageBackend::resize`]).
+    fn grow(&self, new_size: ByteSize) -> Result<()>;
+
     /// Create a base image volume from an ext4 image file.
     ///
     /// `name` is the image identifier (e.g., `library-alpine-latest`).

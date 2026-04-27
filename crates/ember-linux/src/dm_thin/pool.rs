@@ -50,6 +50,32 @@ pub struct PoolStatus {
     pub mode: PoolMode,
 }
 
+/// List active device-mapper device names whose name starts with
+/// `prefix`. Useful for finding all `ember-vm-*` and `ember-img-*`
+/// volumes during teardown.
+pub fn list_with_prefix(prefix: &str) -> Result<Vec<String>> {
+    let output = Command::new("dmsetup")
+        .arg("ls")
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "dmsetup ls".to_string(),
+            source: e,
+        })?;
+    let output = Error::check_command("dmsetup ls", output)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?;
+            if name.starts_with(prefix) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect())
+}
+
 /// Whether a device-mapper device with the given name is currently active.
 ///
 /// Uses `dmsetup info` which exits 0 when the device exists, non-zero

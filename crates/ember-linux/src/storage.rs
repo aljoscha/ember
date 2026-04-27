@@ -18,9 +18,16 @@ use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::{SnapshotEntry, VmMetadata};
 
+/// LinuxStorage's pool name (cached at construction). Needed for
+/// `deinit` since the trait method has no access to `InitConfig`.
+const _: () = (); // keep Cargo from collapsing the import block above
+
 /// Linux storage backend using ZFS zvols.
 #[derive(Clone)]
 pub struct LinuxStorage {
+    /// ZFS pool name (e.g., "tank"). Cached so `deinit` can call
+    /// `zpool destroy` without re-reading the config.
+    pool: String,
     /// ZFS images dataset path (e.g., "tank/ember/images").
     images_dataset: String,
     /// ZFS VMs dataset path (e.g., "tank/ember/vms").
@@ -33,6 +40,7 @@ impl LinuxStorage {
     /// Extracts the ZFS pool/dataset paths that all storage operations need.
     pub fn new(config: &GlobalConfig) -> Self {
         Self {
+            pool: config.pool.clone(),
             images_dataset: config.images_dataset(),
             vms_dataset: config.vms_dataset(),
         }
@@ -192,6 +200,31 @@ impl StorageBackend for LinuxStorage {
         // Ignore errors — the zvol may already be gone.
         let _ = zfs::volume::destroy(&zvol, true);
         Ok(())
+    }
+
+    fn deinit(&self, _purge: bool) -> Result<()> {
+        // `zpool destroy` is destructive — there is no equivalent of
+        // "purge: keep the data". The flag is accepted for trait
+        // uniformity but ignored here: ZFS pools always go.
+        if !zfs::pool::exists(&self.pool)? {
+            return Ok(());
+        }
+        let output = ProcessCommand::new("zpool")
+            .args(["destroy", "-f", &self.pool])
+            .output()
+            .map_err(|e| Error::CommandExec {
+                command: "zpool destroy".to_string(),
+                source: e,
+            })?;
+        Error::check_command("zpool destroy", output)?;
+        println!("Destroyed ZFS pool '{}'.", self.pool);
+        Ok(())
+    }
+
+    fn grow(&self, _new_size: ByteSize) -> Result<()> {
+        Err(Error::Zfs(
+            "ZFS pools auto-expand by default; use `zpool online -e` if needed".to_string(),
+        ))
     }
 
     /// Destroy the image zvol (includes its @base snapshot).
