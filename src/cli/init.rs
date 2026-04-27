@@ -35,6 +35,7 @@ pub struct InitArgs {
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
     // 1-2. Create or verify ZFS pool and datasets via the storage backend.
     let init_config = InitConfig {
+        storage_backend: ember_core::config::StorageKind::Zfs,
         state_dir: state_dir.to_path_buf(),
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),

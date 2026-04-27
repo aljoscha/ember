@@ -76,6 +76,9 @@ impl VolumeHandle {
 /// Carries the subset of init arguments that the storage backend needs.
 /// Platform-specific fields are ignored on backends that don't use them.
 pub struct InitConfig {
+    /// Selected storage backend. Drives the [`StorageBackend::init`]
+    /// dispatch performed by `init_storage` in each platform crate.
+    pub storage_backend: crate::config::StorageKind,
     /// Path to the state directory (e.g., `/var/lib/ember` or `~/Library/Application Support/ember`).
     pub state_dir: PathBuf,
     /// ZFS pool name. Used on Linux for `zfs create`; ignored on macOS.
