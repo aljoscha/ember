@@ -179,7 +179,18 @@ fn configure_and_boot(
     let dns_servers = network::dns::detect_nameservers(wan_iface);
 
     // Build VM configuration.
-    let rootfs_path = zfs::volume::device_path(&vm.disk_path);
+    //
+    // ZFS records the dataset name in `disk_path` (e.g.
+    // `tank/ember/vms/myvm`) and needs `device_path` to prepend
+    // `/dev/zvol/`. dm-thin records the activated `/dev/mapper/...`
+    // path directly. ZFS dataset names cannot start with `/` (the
+    // pool name must begin with a letter), so the leading slash is a
+    // safe discriminator.
+    let rootfs_path = if vm.disk_path.starts_with('/') {
+        std::path::PathBuf::from(&vm.disk_path)
+    } else {
+        zfs::volume::device_path(&vm.disk_path)
+    };
     let mut vm_config =
         firecracker::config::VmConfig::new(vm.cpus, vm.memory_mib, &vm.kernel_path, &rootfs_path);
     if let Some(ref boot_args) = vm.boot_args {
