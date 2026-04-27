@@ -39,6 +39,11 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         device: args.device.clone(),
+        storage_path: None,
+        btrfs_size: None,
+        dm_thin_size: None,
+        dm_thin_metadata_size: None,
+        dm_thin_block_size: None,
     };
     init_storage(&init_config)?;
 
@@ -63,11 +68,14 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // 6. Write config.
     let config = GlobalConfig {
+        storage_backend: ember_core::config::StorageKind::Zfs,
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         kernel_path,
         wan_iface,
         state_dir: state_dir.to_path_buf(),
+        storage_path: None,
+        dm_thin_block_size: None,
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
@@ -79,16 +87,29 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ember_core::config::StorageKind;
     use std::path::PathBuf;
+
+    fn zfs_config(pool: &str, dataset: &str) -> GlobalConfig {
+        GlobalConfig {
+            storage_backend: StorageKind::Zfs,
+            pool: pool.to_string(),
+            dataset: dataset.to_string(),
+            kernel_path: None,
+            wan_iface: None,
+            state_dir: PathBuf::default(),
+            storage_path: None,
+            dm_thin_block_size: None,
+        }
+    }
 
     #[test]
     fn global_config_round_trip_with_kernel() {
         let config = GlobalConfig {
-            pool: "testpool".to_string(),
-            dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/var/lib/ember/kernels/vmlinux")),
             wan_iface: Some("eth0".to_string()),
             state_dir: PathBuf::from("/var/lib/ember"),
+            ..zfs_config("testpool", "ember")
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -98,14 +119,7 @@ mod tests {
 
     #[test]
     fn global_config_round_trip_without_kernel() {
-        let config = GlobalConfig {
-            pool: "mypool".to_string(),
-            dataset: "mydata".to_string(),
-            kernel_path: None,
-            wan_iface: None,
-            state_dir: PathBuf::default(),
-        };
-
+        let config = zfs_config("mypool", "mydata");
         let json = serde_json::to_string(&config).unwrap();
         let loaded: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded, config);
@@ -114,11 +128,9 @@ mod tests {
     #[test]
     fn global_config_json_format() {
         let config = GlobalConfig {
-            pool: "tank".to_string(),
-            dataset: "ember".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
             wan_iface: Some("wlp2s0".to_string()),
-            state_dir: PathBuf::default(),
+            ..zfs_config("tank", "ember")
         };
 
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
@@ -126,18 +138,12 @@ mod tests {
         assert_eq!(json["dataset"], "ember");
         assert_eq!(json["kernel_path"], "/kernels/vmlinux");
         assert_eq!(json["wan_iface"], "wlp2s0");
+        assert_eq!(json["storage_backend"], "zfs");
     }
 
     #[test]
     fn global_config_null_kernel_in_json() {
-        let config = GlobalConfig {
-            pool: "tank".to_string(),
-            dataset: "ember".to_string(),
-            kernel_path: None,
-            wan_iface: None,
-            state_dir: PathBuf::default(),
-        };
-
+        let config = zfs_config("tank", "ember");
         let json: serde_json::Value = serde_json::to_value(&config).unwrap();
         assert!(json["kernel_path"].is_null());
     }
@@ -149,11 +155,9 @@ mod tests {
         store.init().unwrap();
 
         let config = GlobalConfig {
-            pool: "testpool".to_string(),
-            dataset: "ember".to_string(),
-            kernel_path: None,
             wan_iface: Some("eth0".to_string()),
             state_dir: dir.path().to_path_buf(),
+            ..zfs_config("testpool", "ember")
         };
         store.write(&store.config_path(), &config).unwrap();
 
@@ -170,23 +174,18 @@ mod tests {
         let store = StateStore::new(dir.path().to_path_buf());
         store.init().unwrap();
 
-        // First write.
         let config1 = GlobalConfig {
-            pool: "pool1".to_string(),
-            dataset: "ds1".to_string(),
-            kernel_path: None,
             wan_iface: Some("eth0".to_string()),
             state_dir: dir.path().to_path_buf(),
+            ..zfs_config("pool1", "ds1")
         };
         store.write(&store.config_path(), &config1).unwrap();
 
-        // Second write (simulates re-running init).
         let config2 = GlobalConfig {
-            pool: "pool2".to_string(),
-            dataset: "ds2".to_string(),
             kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
             wan_iface: Some("wlp2s0".to_string()),
             state_dir: dir.path().to_path_buf(),
+            ..zfs_config("pool2", "ds2")
         };
         store.write(&store.config_path(), &config2).unwrap();
 
@@ -196,10 +195,12 @@ mod tests {
 
     #[test]
     fn global_config_backwards_compatible_without_wan_iface() {
-        // Older config.json files won't have wan_iface — serde(default) handles this.
+        // Older config.json files won't have wan_iface or storage_backend
+        // — serde(default) handles both.
         let json = r#"{"pool":"tank","dataset":"ember","kernel_path":null}"#;
         let loaded: GlobalConfig = serde_json::from_str(json).unwrap();
         assert_eq!(loaded.pool, "tank");
         assert_eq!(loaded.wan_iface, None);
+        assert_eq!(loaded.storage_backend, StorageKind::Zfs);
     }
 }

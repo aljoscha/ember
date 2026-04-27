@@ -49,8 +49,7 @@ pub struct SnapshotInfo {
 /// Configuration for storage backend initialization during `ember init`.
 ///
 /// Carries the subset of init arguments that the storage backend needs.
-/// Platform-specific fields (like ZFS pool/dataset) are ignored on platforms
-/// that don't use them.
+/// Platform-specific fields are ignored on backends that don't use them.
 pub struct InitConfig {
     /// Path to the state directory (e.g., `/var/lib/ember` or `~/Library/Application Support/ember`).
     pub state_dir: PathBuf,
@@ -59,8 +58,24 @@ pub struct InitConfig {
     /// Dataset name within the ZFS pool. Used on Linux; ignored on macOS.
     pub dataset: String,
     /// Block device for ZFS pool creation (e.g., `/dev/loop0`).
-    /// Only used on Linux when creating a new pool.
+    /// Only used by the ZFS backend when creating a new pool.
     pub device: Option<String>,
+    /// Backing path for non-ZFS backends.
+    ///
+    /// * btrfs: block device or sparse image file path.
+    /// * dm-thin: directory for metadata.img/data.img, or a raw block device.
+    pub storage_path: Option<PathBuf>,
+    /// Size for the file-backed btrfs image (e.g., `"50G"`). When set, the
+    /// btrfs backend treats `storage_path` as a sparse file to create.
+    pub btrfs_size: Option<String>,
+    /// Size of the dm-thin data device (e.g., `"50G"`). Required for
+    /// file-backed dm-thin pools, ignored for raw block devices.
+    pub dm_thin_size: Option<String>,
+    /// Override metadata device size for dm-thin (e.g., `"800M"`).
+    /// `None` lets the backend compute it via `thin_metadata_size`.
+    pub dm_thin_metadata_size: Option<String>,
+    /// dm-thin pool block size in 512-byte sectors. `None` uses the backend default.
+    pub dm_thin_block_size: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
