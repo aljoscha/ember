@@ -38,6 +38,17 @@ cargo build --release
 
 The binary is at `./target/release/ember`.
 
+### Linux (Debian/Ubuntu .deb)
+
+Build a `.deb` package with [`cargo-deb`](https://github.com/kornelski/cargo-deb):
+
+```bash
+cargo install cargo-deb
+cargo deb
+```
+
+The package lands at `./target/debian/ember_<version>_<arch>.deb`. Install with `sudo apt install ./target/debian/ember_<version>_<arch>.deb`. Firecracker is not packaged in Debian/Ubuntu and must be installed separately.
+
 #### Linux dependencies
 
 | Dependency | Purpose |
