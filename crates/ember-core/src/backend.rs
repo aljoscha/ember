@@ -32,8 +32,10 @@ pub struct StartedVm {
 
 /// Platform-agnostic snapshot information.
 ///
-/// On Linux this is backed by ZFS snapshots (`zfs list -t snapshot`).
-/// On macOS this is backed by APFS clone files in the VM's `snapshots/` directory.
+/// On Linux/ZFS this is backed by `zfs list -t snapshot`.
+/// On macOS/APFS this is backed by APFS clone files in the VM's
+/// `snapshots/` directory. On Linux/dm-thin this is backed by entries
+/// stored on `VmMetadata::snapshots`.
 pub struct SnapshotInfo {
     /// Snapshot name (e.g., "snap1"). Does not include dataset path or directory prefix.
     pub name: String,
@@ -43,7 +45,30 @@ pub struct SnapshotInfo {
     ///
     /// - Linux/ZFS: `referenced` property (bytes the snapshot points to).
     /// - macOS/APFS: logical file size via `stat`.
+    /// - Linux/dm-thin: virtual volume size at snapshot time.
     pub size: u64,
+}
+
+/// A storage volume returned by the [`StorageBackend`] when a fresh
+/// volume is created (image base, VM clone, fork, restore).
+///
+/// `disk_path` is what gets recorded on `VmMetadata::disk_path` /
+/// `ImageEntry::disk_path` and passed to Firecracker as
+/// `path_on_host`. `thin_id` is meaningful only for the dm-thin
+/// backend; ZFS and macOS impls always return `None`.
+pub struct VolumeHandle {
+    pub disk_path: PathBuf,
+    pub thin_id: Option<u64>,
+}
+
+impl VolumeHandle {
+    /// Build a handle for backends that have no thin id concept.
+    pub fn from_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            disk_path: path.into(),
+            thin_id: None,
+        }
+    }
 }
 
 /// Configuration for storage backend initialization during `ember init`.
@@ -121,17 +146,20 @@ pub trait VmBackend {
 
 /// Storage backend: manages disk images, clones, and snapshots.
 ///
-/// - **Linux**: ZFS zvols with snapshots and `zfs clone`.
-/// - **macOS**: raw `.img` files with APFS CoW clones (`cp -c`).
+/// - **Linux/ZFS**: ZFS zvols with snapshots and `zfs clone`.
+/// - **Linux/dm-thin**: device-mapper thin volumes with kernel snapshots.
+/// - **macOS/APFS**: raw `.img` files with APFS CoW clones (`cp -c`).
 ///
-/// Methods use `&self` so the implementation can hold platform-specific config
-/// (e.g., ZFS pool/dataset paths on Linux, state directory on macOS).
-/// `init` is an associated function since it's called before the backend is constructed.
+/// Methods take `&VmMetadata` / `&ImageEntry` rather than bare names
+/// for operations that need backend-specific state living on the
+/// record (notably `thin_id` for dm-thin). Methods that *create* fresh
+/// volumes return [`VolumeHandle`] so the caller can persist the new
+/// `thin_id` (if any) on the matching record.
+///
+/// `init` is an associated function since it's called before the
+/// backend is constructed.
 pub trait StorageBackend {
     /// Initialize storage during `ember init`.
-    ///
-    /// Linux: creates ZFS pool (if needed) and datasets.
-    /// macOS: validates the state directory is on an APFS volume.
     fn init(config: &InitConfig) -> Result<()>
     where
         Self: Sized;
@@ -140,98 +168,87 @@ pub trait StorageBackend {
     ///
     /// `name` is the image identifier (e.g., `library-alpine-latest`).
     /// `image_path` is the path to the ext4 image file to import.
-    /// `size_mib` is the image size in MiB (used for zvol creation on Linux).
+    /// `size_mib` is the image size in MiB.
     ///
-    /// Returns the zvol path (Linux) or .img file path (macOS).
-    ///
-    /// Linux: creates a zvol, writes the image via `dd`, creates `@base` snapshot.
-    /// macOS: copies the `.img` file into `images/data/`.
-    fn create_image_volume(&self, name: &str, image_path: &Path, size_mib: u64) -> Result<PathBuf>;
+    /// Linux/ZFS: creates a zvol, writes the image via `dd`, creates `@base` snapshot.
+    /// Linux/dm-thin: allocates a thin volume, writes the image, snaps it as the base id.
+    /// macOS/APFS: copies the `.img` file into `images/data/`.
+    fn create_image_volume(
+        &self,
+        name: &str,
+        image_path: &Path,
+        size_mib: u64,
+    ) -> Result<VolumeHandle>;
 
-    /// Clone a base image for a new VM. Returns the zvol path (Linux) or
-    /// .img file path (macOS).
+    /// Clone a base image for a new VM.
     ///
-    /// Linux: `zfs clone pool/.../images/name@base pool/.../vms/vm_name`.
-    /// macOS: `cp -c images/data/name.img vms/vm_name/rootfs.img`.
-    fn clone_for_vm(&self, image_name: &str, vm_name: &str) -> Result<PathBuf>;
+    /// Linux/ZFS: `zfs clone <image>@base <pool>/.../vms/<vm_name>`.
+    /// Linux/dm-thin: snapshot the image's base thin id into a fresh thin id.
+    /// macOS/APFS: `cp -c <image>.img <vm>/rootfs.img`.
+    fn clone_for_vm(&self, image: &ImageEntry, vm_name: &str) -> Result<VolumeHandle>;
 
     /// Create a named snapshot of a VM's current disk state.
     ///
-    /// Linux: `zfs snapshot pool/.../vms/vm_name@snap_name`.
-    /// macOS: `cp -c vms/vm_name/rootfs.img vms/vm_name/snapshots/snap_name.img`.
-    fn snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
+    /// Returns `Some(SnapshotEntry)` when the backend persists snapshot
+    /// metadata in user-space state (dm-thin). Returns `None` when the
+    /// backend tracks snapshots itself (ZFS in the kernel, APFS as
+    /// files on disk).
+    fn snapshot(
+        &self,
+        vm: &VmMetadata,
+        snap_name: &str,
+    ) -> Result<Option<crate::state::vm::SnapshotEntry>>;
 
     /// Restore a VM's disk to a previously created snapshot.
     ///
-    /// Linux: `zfs rollback pool/.../vms/vm_name@snap_name`.
-    /// macOS: `cp -c vms/vm_name/snapshots/snap_name.img vms/vm_name/rootfs.img`.
-    fn restore_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
+    /// Returns a fresh `VolumeHandle` because some backends generate a
+    /// new identifier on restore (dm-thin's `delete` + `create_snap`
+    /// produces a new `thin_id`). For backends that mutate the volume
+    /// in place (ZFS rollback) or replace the file atomically (APFS),
+    /// the handle's `thin_id` is `None`.
+    fn restore_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<VolumeHandle>;
 
     /// Delete a snapshot.
-    ///
-    /// Linux: `zfs destroy pool/.../vms/vm_name@snap_name`.
-    /// macOS: `rm vms/vm_name/snapshots/snap_name.img`.
-    fn delete_snapshot(&self, vm_name: &str, snap_name: &str) -> Result<()>;
+    fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()>;
 
     /// List all snapshots for a VM.
-    fn list_snapshots(&self, vm_name: &str) -> Result<Vec<SnapshotInfo>>;
+    fn list_snapshots(&self, vm: &VmMetadata) -> Result<Vec<SnapshotInfo>>;
 
-    /// Resize a VM's disk to `new_size`.
-    ///
-    /// Linux: `zfs set volsize=... + resize2fs`.
-    /// macOS: `truncate -s ... + resize2fs`.
-    fn resize(&self, vm_name: &str, new_size: ByteSize) -> Result<()>;
+    /// Resize a VM's disk to `new_size`. Caller is responsible for
+    /// stopping the VM first.
+    fn resize(&self, vm: &VmMetadata, new_size: ByteSize) -> Result<()>;
 
     /// Destroy all storage for a VM (disk image, snapshots).
-    ///
-    /// Linux: `zfs destroy -r pool/.../vms/vm_name`.
-    /// macOS: `rm -rf vms/vm_name/` (disk files only; state is separate).
-    fn destroy_vm_storage(&self, vm_name: &str) -> Result<()>;
+    fn destroy_vm_storage(&self, vm: &VmMetadata) -> Result<()>;
 
     /// Destroy storage for a base image.
     ///
-    /// With `force: true`, also destroys any dependent storage (e.g. VM zvols
-    /// cloned from this image) that couldn't be cleaned up at the application
-    /// level — typically orphaned ZFS clones whose state files are already gone.
-    ///
-    /// Linux: `zfs destroy -r` (normal) or `zfs destroy -R` (force).
-    /// macOS: `rm images/data/name.img` (force flag is a no-op).
-    fn destroy_image_storage(&self, name: &str, force: bool) -> Result<()>;
+    /// With `force: true`, also destroys any dependent storage (e.g.
+    /// VM zvols cloned from this image) that couldn't be cleaned up at
+    /// the application level — typically orphaned ZFS clones whose
+    /// state files are already gone.
+    fn destroy_image_storage(&self, image: &ImageEntry, force: bool) -> Result<()>;
 
-    /// Get the mountable device path for a VM's root disk.
+    /// Mountable device path for a VM's root disk.
     ///
-    /// Linux: `/dev/zvol/pool/dataset/vms/vm_name` (block device for the zvol).
-    /// macOS: `state_dir/vms/vm_name/rootfs.img` (raw disk image file).
-    fn disk_device_path(&self, vm_name: &str) -> PathBuf;
+    /// Linux/ZFS: `/dev/zvol/pool/dataset/vms/vm_name`.
+    /// Linux/dm-thin: `/dev/mapper/ember-vm-<vm_name>`.
+    /// macOS/APFS: `<state_dir>/vms/<vm_name>/rootfs.img`.
+    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf;
 
     /// Clone a VM's disk storage to create a new VM (used by `vm fork`).
-    ///
-    /// Returns the disk path for the new VM.
-    ///
-    /// On Linux, this creates a ZFS snapshot on the source VM and clones it.
-    /// The snapshot naming convention is internal to the backend.
-    /// On macOS, this does a direct `cp -c` (APFS CoW clone) — no intermediate
-    /// snapshot, no dependency between source and target.
-    fn clone_vm_storage(&self, source_vm: &str, target_vm: &str) -> Result<PathBuf>;
+    fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle>;
 
     /// Clean up fork-related resources on the source VM.
     ///
-    /// Called when deleting a forked VM to remove any backend-specific
-    /// resources (e.g., ZFS snapshot on the source VM). The backend
-    /// reconstructs the resource name from the parent/forked VM names.
-    ///
-    /// No-op on backends where forks are independent (e.g., macOS/APFS).
-    fn cleanup_fork(&self, parent_vm: &str, forked_vm: &str) -> Result<()>;
+    /// Used by ZFS to drop the per-fork snapshot it created on the
+    /// source's dataset. No-op on backends where forks are independent
+    /// (dm-thin, APFS).
+    fn cleanup_fork(&self, parent: &VmMetadata, forked: &VmMetadata) -> Result<()>;
 
-    /// Check if deleting this VM would break other VMs' storage.
-    ///
-    /// Returns the names of VMs whose storage depends on this VM
-    /// (e.g., ZFS clones that reference snapshots on this VM's dataset).
-    /// An empty vec means the VM can be safely deleted.
-    ///
-    /// On Linux/ZFS, fork snapshots create a real dependency chain.
-    /// On macOS/APFS, forks are independent — always returns empty.
-    fn storage_dependents(&self, vm_name: &str) -> Result<Vec<String>>;
+    /// VMs whose storage depends on `vm` and would break if `vm` were
+    /// destroyed. Empty for backends whose forks are independent.
+    fn storage_dependents(&self, vm: &VmMetadata) -> Result<Vec<String>>;
 
     /// Mount a disk image and return the mount point path.
     ///

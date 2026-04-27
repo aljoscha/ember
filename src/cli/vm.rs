@@ -6,6 +6,7 @@ use uuid::Uuid;
 use super::fmt::{format_bytes_binary, GIB, MIB};
 use crate::backend::{
     create_storage, CurrentPlatform, Network, NetworkBackend, Platform, Storage, Vm, VmBackend,
+    VolumeHandle,
 };
 use crate::image;
 use ember_core::config;
@@ -15,6 +16,30 @@ use ember_core::error::Error;
 use ember_core::image::registry::ImageRegistry;
 use ember_core::state::store::StateStore;
 use ember_core::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
+
+/// Build a placeholder [`VmMetadata`] from a freshly returned
+/// [`VolumeHandle`].
+///
+/// Used between `clone_for_vm`/`clone_vm_storage` and the moment the
+/// fully populated metadata is constructed: the storage backend reads
+/// `name`, `disk_path`, and `thin_id` from this stub for resize, mount,
+/// and SSH-key injection. All other fields are placeholders inherited
+/// from [`VmMetadata::default_for_teardown`].
+fn pending_metadata(name: &str, handle: &VolumeHandle) -> VmMetadata {
+    let mut m = VmMetadata::default_for_teardown();
+    m.name = name.to_string();
+    m.disk_path = handle.disk_path.to_string_lossy().into_owned();
+    m.thin_id = handle.thin_id;
+    m
+}
+
+/// Build a placeholder [`VmMetadata`] when only the name is available
+/// (e.g., recovery paths where the real record can no longer be loaded).
+fn name_only_metadata(name: &str) -> VmMetadata {
+    let mut m = VmMetadata::default_for_teardown();
+    m.name = name.to_string();
+    m
+}
 
 /// Load a running VM with network info, checking that the guest IP is resolved.
 ///
@@ -426,7 +451,6 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
             )
         })?;
 
-    let image_name = image_entry.local_name.clone();
     let image_ref = image_entry.reference.clone();
     let image_size_mib = image_entry.size_mib;
 
@@ -436,15 +460,15 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Clone base image → per-VM disk (instant, copy-on-write).
     println!("Cloning image for VM '{}'...", resolved.name);
-    let vm_disk_path = storage.clone_for_vm(&image_name, &resolved.name)?;
-    let vm_disk = vm_disk_path.to_string_lossy().to_string();
+    let handle = storage.clone_for_vm(image_entry, &resolved.name)?;
+    let pending = pending_metadata(&resolved.name, &handle);
     {
         let storage = storage.clone();
         let sd = state_dir.to_path_buf();
-        let name = resolved.name.clone();
+        let pending = pending.clone();
         rollback.push("VM storage clone", move || {
-            let _ = storage.destroy_vm_storage(&name);
-            let _ = vm::delete(&StateStore::new(sd), &name);
+            let _ = storage.destroy_vm_storage(&pending);
+            let _ = vm::delete(&StateStore::new(sd), &pending.name);
         });
     }
 
@@ -453,7 +477,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         &store,
         &mut global_config,
         &storage,
-        &vm_disk,
+        &pending,
         image_size_mib,
         &image_ref,
     )?;
@@ -475,12 +499,15 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Post-clone steps: grow disk, inject SSH key, save metadata.
 ///
 /// Separated from [`create`] so the caller can clean up storage on failure.
+/// `pending` is the in-progress VM metadata (built from the [`VolumeHandle`]
+/// returned by `clone_for_vm`); the storage backend reads `name`, `disk_path`,
+/// and `thin_id` from it for the resize/inject calls below.
 fn create_post_clone(
     resolved: &ResolvedVmCreate,
     store: &StateStore,
     global_config: &mut GlobalConfig,
     storage: &Storage,
-    vm_disk: &str,
+    pending: &VmMetadata,
     image_size_mib: u64,
     image_ref: &str,
 ) -> anyhow::Result<()> {
@@ -492,16 +519,13 @@ fn create_post_clone(
             "Growing disk to {}...",
             format_bytes_binary(resolved.disk_size as u64 * GIB)
         );
-        storage.resize(
-            &resolved.name,
-            ByteSize::from_gib(resolved.disk_size as u64),
-        )?;
+        storage.resize(pending, ByteSize::from_gib(resolved.disk_size as u64))?;
     }
 
     // Inject per-VM SSH key into the rootfs image.
     // Linux: mounts the block device, writes the key, unmounts.
     // macOS: uses debugfs to write directly into the ext4 image.
-    let dev_path = storage.disk_device_path(&resolved.name);
+    let dev_path = storage.disk_device_path(pending);
     let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
         anyhow::anyhow!(
             "no SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub\n\
@@ -525,7 +549,8 @@ fn create_post_clone(
             .unwrap_or_else(|| PathBuf::from("/root/.ssh/id_ed25519"))
     });
 
-    // Build and save VM metadata.
+    // Build and save VM metadata. The disk path and thin_id come from
+    // the pending stub built right after `clone_for_vm` returned.
     let metadata = VmMetadata {
         name: resolved.name.clone(),
         id: Uuid::new_v4(),
@@ -535,7 +560,7 @@ fn create_post_clone(
         memory_mib: resolved.memory,
         disk_size_gib: resolved.disk_size,
         kernel_path,
-        disk_path: vm_disk.to_string(),
+        disk_path: pending.disk_path.clone(),
         boot_args: resolved.boot_args.clone(),
         subnet: resolved.network.clone(),
         network: None,
@@ -547,7 +572,7 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
-        thin_id: None,
+        thin_id: pending.thin_id,
         snapshots: Vec::new(),
     };
 
@@ -611,19 +636,19 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Clone source VM's storage into the new VM via the storage backend.
     println!("Forking '{}' → '{}'...", args.source, args.name);
-    let vm_disk_path = storage.clone_vm_storage(&args.source, &args.name)?;
-    let vm_disk = vm_disk_path.to_string_lossy().to_string();
+    let handle = storage.clone_vm_storage(&source, &args.name)?;
+    let pending = pending_metadata(&args.name, &handle);
 
     let mut rollback = Rollback::new();
     {
         let storage = storage.clone();
-        let parent = args.source.clone();
+        let parent = source.clone();
+        let pending = pending.clone();
         let sd = state_dir.to_path_buf();
-        let name = args.name.clone();
         rollback.push("fork clone + snapshot", move || {
-            let _ = storage.destroy_vm_storage(&name);
-            let _ = storage.cleanup_fork(&parent, &name);
-            let _ = vm::delete(&StateStore::new(sd), &name);
+            let _ = storage.destroy_vm_storage(&pending);
+            let _ = storage.cleanup_fork(&parent, &pending);
+            let _ = vm::delete(&StateStore::new(sd), &pending.name);
         });
     }
 
@@ -634,12 +659,12 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
             "Growing disk to {}...",
             format_bytes_binary(disk_size_gib as u64 * GIB)
         );
-        storage.resize(&args.name, ByteSize::from_gib(disk_size_gib as u64))?;
+        storage.resize(&pending, ByteSize::from_gib(disk_size_gib as u64))?;
     }
 
     // Inject /etc/hosts with the new VM's hostname (the cloned disk
     // still has the source VM's hostname from its creation).
-    let dev_path = storage.disk_device_path(&args.name);
+    let dev_path = storage.disk_device_path(&pending);
     storage.inject_hostname(&dev_path, &args.name)?;
 
     // Resolve kernel: CLI override or inherit from source.
@@ -659,7 +684,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         memory_mib,
         disk_size_gib,
         kernel_path,
-        disk_path: vm_disk,
+        disk_path: pending.disk_path.clone(),
         boot_args: source.boot_args.clone(),
         subnet,
         network: None,
@@ -668,7 +693,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
-        thin_id: None,
+        thin_id: pending.thin_id,
         snapshots: Vec::new(),
     };
 
@@ -931,7 +956,7 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
         "Resizing disk to {}...",
         format_bytes_binary(new_gib as u64 * GIB)
     );
-    storage.resize(&args.name, args.disk_size)?;
+    storage.resize(&metadata, args.disk_size)?;
 
     // Update metadata.
     metadata.disk_size_gib = new_gib;
@@ -1047,7 +1072,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // On macOS/APFS this always returns empty — forks are independent.
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    let dependents = storage.storage_dependents(&args.name)?;
+    let dependents = storage.storage_dependents(&metadata)?;
     if !dependents.is_empty() {
         if !args.force {
             anyhow::bail!(
@@ -1113,12 +1138,17 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
     let storage = create_storage(&config);
 
     println!("Destroying storage for VM '{}'...", metadata.name);
-    let _ = storage.destroy_vm_storage(&metadata.name);
+    let _ = storage.destroy_vm_storage(metadata);
 
     // Clean up fork-related resources on the parent VM (e.g. ZFS snapshot).
     // No-op on macOS/APFS where forks are independent.
-    if let Some(ref parent) = metadata.parent_vm {
-        let _ = storage.cleanup_fork(parent, &metadata.name);
+    if let Some(ref parent_name) = metadata.parent_vm {
+        // Use the parent's stored metadata if available; fall back to a
+        // name-only stub when the parent record is gone (e.g. cascade
+        // cleanup running in the wrong order).
+        let parent_md = vm::load(store, parent_name)
+            .unwrap_or_else(|_| name_only_metadata(parent_name));
+        let _ = storage.cleanup_fork(&parent_md, metadata);
     }
 
     // Remove the VM state directory.

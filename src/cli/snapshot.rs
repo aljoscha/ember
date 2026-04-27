@@ -81,7 +81,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    let _metadata = vm::load(&store, &args.vm_name)?;
+    let mut metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow the reserved snapshot name.
     if args.snapshot_name == RESERVED_SNAPSHOT_NAME {
@@ -89,7 +89,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     // Check the snapshot doesn't already exist.
-    let existing = storage.list_snapshots(&args.vm_name)?;
+    let existing = storage.list_snapshots(&metadata)?;
     if existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' already exists on vm '{}'",
@@ -98,7 +98,10 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    storage.snapshot(&args.vm_name, &args.snapshot_name)?;
+    if let Some(entry) = storage.snapshot(&metadata, &args.snapshot_name)? {
+        metadata.snapshots.push(entry);
+        vm::save(&store, &metadata)?;
+    }
 
     println!(
         "Created snapshot '{}' of vm '{}'",
@@ -115,9 +118,9 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    let _metadata = vm::load(&store, &args.vm_name)?;
+    let metadata = vm::load(&store, &args.vm_name)?;
 
-    let snapshots = storage.list_snapshots(&args.vm_name)?;
+    let snapshots = storage.list_snapshots(&metadata)?;
 
     match args.format {
         OutputFormat::Json => {
@@ -191,7 +194,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    let _metadata = vm::load(&store, &args.vm_name)?;
+    let mut metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow deleting the reserved snapshot.
     if args.snapshot_name == RESERVED_SNAPSHOT_NAME {
@@ -199,7 +202,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     // Verify the snapshot exists.
-    let existing = storage.list_snapshots(&args.vm_name)?;
+    let existing = storage.list_snapshots(&metadata)?;
     if !existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' does not exist on vm '{}'\n\
@@ -210,7 +213,15 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    storage.delete_snapshot(&args.vm_name, &args.snapshot_name)?;
+    storage.delete_snapshot(&metadata, &args.snapshot_name)?;
+
+    // For backends that track snapshots in vm.json (dm-thin), drop the
+    // entry. ZFS/APFS leave vm.snapshots empty; this is a no-op there.
+    let before = metadata.snapshots.len();
+    metadata.snapshots.retain(|s| s.name != args.snapshot_name);
+    if metadata.snapshots.len() != before {
+        vm::save(&store, &metadata)?;
+    }
 
     println!(
         "Deleted snapshot '{}' from vm '{}'",
@@ -227,10 +238,10 @@ fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    let _metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
+    let mut metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
 
     // Verify the snapshot exists.
-    let existing = storage.list_snapshots(&args.vm_name)?;
+    let existing = storage.list_snapshots(&metadata)?;
     if !existing.iter().any(|s| s.name == args.snapshot_name) {
         anyhow::bail!(
             "snapshot '{}' does not exist on vm '{}'\n\
@@ -241,7 +252,15 @@ fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
         );
     }
 
-    storage.restore_snapshot(&args.vm_name, &args.snapshot_name)?;
+    let handle = storage.restore_snapshot(&metadata, &args.snapshot_name)?;
+    // Persist any backend-specific identity change (dm-thin replaces the
+    // thin_id on restore; ZFS/APFS keep the same identity).
+    let new_disk_path = handle.disk_path.to_string_lossy().to_string();
+    if metadata.thin_id != handle.thin_id || metadata.disk_path != new_disk_path {
+        metadata.thin_id = handle.thin_id;
+        metadata.disk_path = new_disk_path;
+        vm::save(&store, &metadata)?;
+    }
 
     println!(
         "Restored vm '{}' to snapshot '{}'",
