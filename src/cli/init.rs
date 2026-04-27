@@ -1,27 +1,54 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 
 use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
-use ember_core::config::GlobalConfig;
+use ember_core::config::{GlobalConfig, StorageKind};
 use ember_core::state::store::StateStore;
 
 #[derive(Args)]
 pub struct InitArgs {
-    /// ZFS pool name (Linux only)
+    /// Storage backend: zfs (default) or dm-thin (Linux only)
+    #[cfg_attr(target_os = "macos", arg(long, default_value = "zfs", hide = true))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "zfs"))]
+    pub storage: StorageKind,
+
+    /// ZFS pool name (--storage zfs only)
     #[cfg_attr(target_os = "macos", arg(long, default_value = "ember", hide = true))]
     #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "ember"))]
     pub pool: String,
 
-    /// Block device for pool creation (Linux only)
+    /// Block device for ZFS pool creation (--storage zfs only)
     #[cfg_attr(target_os = "macos", arg(long, hide = true))]
     #[cfg_attr(not(target_os = "macos"), arg(long))]
     pub device: Option<String>,
 
-    /// Dataset name within the pool (Linux only)
+    /// Dataset name within the pool (--storage zfs only)
     #[cfg_attr(target_os = "macos", arg(long, default_value = "ember", hide = true))]
     #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "ember"))]
     pub dataset: String,
+
+    /// Backing path for non-ZFS backends (directory or block device).
+    ///
+    /// dm-thin: directory holding metadata.img/data.img, or a raw block
+    /// device. Defaults to /var/lib/ember/dm-thin when omitted.
+    #[arg(long)]
+    pub storage_path: Option<PathBuf>,
+
+    /// Pool size for file-backed dm-thin (e.g. `50G`). Required when
+    /// `--storage-path` is a file path; ignored for raw block devices.
+    #[arg(long)]
+    pub size: Option<String>,
+
+    /// Override metadata device size for dm-thin (e.g. `800M`).
+    /// `thin_metadata_size` computes a recommended value when omitted.
+    #[arg(long)]
+    pub metadata_size: Option<String>,
+
+    /// dm-thin pool block size in 512-byte sectors. Permanent at pool
+    /// creation. Defaults to 128 (= 64 KiB).
+    #[arg(long)]
+    pub block_size: Option<u32>,
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
@@ -33,27 +60,51 @@ pub struct InitArgs {
 }
 
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
-    // 1-2. Create or verify ZFS pool and datasets via the storage backend.
+    // Refuse to switch backends silently. Existing configs win unless
+    // the user runs `ember deinit` first.
+    let store = StateStore::new(state_dir.to_path_buf());
+    if let Ok(Some(existing)) = store.read_optional::<GlobalConfig>(&store.config_path()) {
+        if existing.storage_backend != args.storage {
+            anyhow::bail!(
+                "ember is already initialized with the {:?} backend; \
+                 run 'ember deinit' first to switch to {:?}",
+                existing.storage_backend,
+                args.storage,
+            );
+        }
+    }
+
+    // Resolve the dm-thin defaults so both InitConfig and GlobalConfig
+    // see the same values.
+    let storage_path = match args.storage {
+        StorageKind::DmThin => Some(
+            args.storage_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/var/lib/ember/dm-thin")),
+        ),
+        StorageKind::Btrfs => args.storage_path.clone(),
+        StorageKind::Zfs => None,
+    };
+
     let init_config = InitConfig {
-        storage_backend: ember_core::config::StorageKind::Zfs,
+        storage_backend: args.storage,
         state_dir: state_dir.to_path_buf(),
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         device: args.device.clone(),
-        storage_path: None,
+        storage_path: storage_path.clone(),
         btrfs_size: None,
-        dm_thin_size: None,
-        dm_thin_metadata_size: None,
-        dm_thin_block_size: None,
+        dm_thin_size: args.size.clone(),
+        dm_thin_metadata_size: args.metadata_size.clone(),
+        dm_thin_block_size: args.block_size,
     };
     init_storage(&init_config)?;
 
-    // 3. Initialize state directory structure.
-    let store = StateStore::new(state_dir.to_path_buf());
+    // Initialize state directory structure.
     store.init()?;
     println!("State directory initialized at {}", state_dir.display());
 
-    // 4. Download kernel if preset or path provided.
+    // Download kernel if preset or path provided.
     let kernel_path = if let Some(spec) = &args.kernel {
         Some(spec.resolve(&store)?)
     } else {
@@ -61,22 +112,22 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         None
     };
 
-    // 5. Detect or use provided WAN interface.
+    // Detect or use provided WAN interface.
     let (wan_iface, messages) = CurrentPlatform::detect_wan_iface(args.wan_iface.as_deref());
     for msg in &messages {
         println!("{msg}");
     }
 
-    // 6. Write config.
+    // Write config.
     let config = GlobalConfig {
-        storage_backend: ember_core::config::StorageKind::Zfs,
+        storage_backend: args.storage,
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         kernel_path,
         wan_iface,
         state_dir: state_dir.to_path_buf(),
-        storage_path: None,
-        dm_thin_block_size: None,
+        storage_path,
+        dm_thin_block_size: args.block_size,
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());

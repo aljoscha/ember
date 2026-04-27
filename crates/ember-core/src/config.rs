@@ -19,6 +19,21 @@ pub enum StorageKind {
     DmThin,
 }
 
+impl std::str::FromStr for StorageKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "zfs" => Ok(Self::Zfs),
+            "btrfs" => Ok(Self::Btrfs),
+            "dm-thin" | "dmthin" | "dm_thin" => Ok(Self::DmThin),
+            other => Err(format!(
+                "unknown storage backend '{other}' (expected zfs, btrfs, or dm-thin)"
+            )),
+        }
+    }
+}
+
 /// Global configuration written by `ember init`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
