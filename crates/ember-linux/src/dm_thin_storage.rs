@@ -508,6 +508,98 @@ impl StorageBackend for DmThinStorage {
         Ok(Vec::new())
     }
 
+    fn deinit(&self, purge: bool) -> Result<()> {
+        // 1. Deactivate every ember-managed thin volume so the pool
+        //    can be removed cleanly.
+        for prefix in [thin::IMAGE_PREFIX, thin::VM_PREFIX] {
+            for name in pool::list_with_prefix(prefix)? {
+                let _ = thin::deactivate(&name);
+            }
+        }
+        // 2. Drop the pool itself (if active).
+        if pool::exists(pool::POOL_NAME)? {
+            pool::remove(pool::POOL_NAME)?;
+        }
+        // 3. Detach the loop devices, if any.
+        let metadata_path = self.metadata_file();
+        let data_path = self.data_file();
+        if let Some(loop_dev) = loop_device::find_for(&metadata_path)? {
+            let _ = loop_device::detach(&loop_dev);
+        }
+        if let Some(loop_dev) = loop_device::find_for(&data_path)? {
+            let _ = loop_device::detach(&loop_dev);
+        }
+        // 4. Optionally delete the backing files. A raw block device
+        //    supplied by the user is always left alone.
+        if purge {
+            for path in [&metadata_path, &data_path] {
+                if path.is_file() {
+                    let _ = fs::remove_file(path);
+                }
+            }
+            // Remove the dm-thin directory itself if empty.
+            if self.storage_path.is_dir() {
+                let _ = fs::remove_dir(&self.storage_path);
+            }
+        }
+        println!("dm-thin pool '{}' torn down.", pool::POOL_NAME);
+        Ok(())
+    }
+
+    fn grow(&self, new_size: ByteSize) -> Result<()> {
+        self.ensure_pool_active()?;
+
+        let data_path = self.data_file();
+        let new_bytes = new_size.bytes();
+
+        if data_path.is_file() {
+            create_sparse_file(&data_path, new_bytes)?;
+        } else {
+            return Err(Error::Config(format!(
+                "data device {} is a raw block device — grow it externally first \
+                 (e.g. lvextend, cloud-volume resize) and then re-run `ember storage grow`",
+                data_path.display()
+            )));
+        }
+
+        // Make the loop driver pick up the new file size, then reload
+        // the pool table with the larger sector count.
+        let metadata_path = self.metadata_file();
+        let metadata_loop = loop_device::find_for(&metadata_path)?.ok_or_else(|| {
+            Error::Config(format!(
+                "metadata device {} is not attached to a loop device",
+                metadata_path.display()
+            ))
+        })?;
+        let data_loop = if data_path.is_file() {
+            let dev = loop_device::find_for(&data_path)?.ok_or_else(|| {
+                Error::Config(format!(
+                    "data device {} is not attached to a loop device",
+                    data_path.display()
+                ))
+            })?;
+            loop_device::refresh_size(&dev)?;
+            dev
+        } else {
+            data_path.clone()
+        };
+
+        let data_sectors = device_sectors(&data_loop)?;
+        pool::reload(
+            pool::POOL_NAME,
+            &metadata_loop,
+            &data_loop,
+            data_sectors,
+            self.block_size_sectors,
+            pool::DEFAULT_LOW_WATER_BLOCKS,
+        )?;
+        println!(
+            "Grew dm-thin pool data device to {}.",
+            format_bytes(new_bytes)
+        );
+        Ok(())
+    }
+
     fn mount(&self, path: &Path) -> Result<PathBuf> {
         zvol::wait_for_device(path)?;
 

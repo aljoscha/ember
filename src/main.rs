@@ -88,6 +88,8 @@ fn main() -> anyhow::Result<()> {
             CurrentPlatform::reconcile(&cli.state_dir);
             Ok(())
         }
+        Command::Deinit(args) => cli::deinit::run(args, &cli.state_dir),
+        Command::Storage(cmd) => cli::storage::run(cmd, &cli.state_dir),
         Command::Version => {
             println!("ember {}", env!("CARGO_PKG_VERSION"));
             Ok(())

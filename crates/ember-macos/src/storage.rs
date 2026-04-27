@@ -492,6 +492,37 @@ impl StorageBackend for MacosStorage {
         Ok(vec![])
     }
 
+    fn deinit(&self, purge: bool) -> Result<()> {
+        // The state directory layout (`images/`, `vms/`, `kernels/`,
+        // `network/`) is owned by ember; on `--purge` we drop the disk
+        // images so a future `ember init` starts clean.
+        if purge {
+            let images = self.images_dir();
+            if images.exists() {
+                fs::remove_dir_all(&images).map_err(|e| Error::Io {
+                    path: images,
+                    source: e,
+                })?;
+            }
+            let vms = self.vms_dir();
+            if vms.exists() {
+                fs::remove_dir_all(&vms).map_err(|e| Error::Io {
+                    path: vms,
+                    source: e,
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn grow(&self, _new_size: ByteSize) -> Result<()> {
+        Err(Error::Image(
+            "macOS/APFS has no pool concept — resize individual VMs with \
+             `ember vm resize` instead"
+                .to_string(),
+        ))
+    }
+
     /// Not supported for ext4 on macOS.
     ///
     /// macOS has no native ext4 mount support. Use [`inject_ssh_key`] for
