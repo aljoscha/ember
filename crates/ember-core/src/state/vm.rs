@@ -63,6 +63,26 @@ pub struct NetworkInfo {
     pub wan_iface: Option<String>,
 }
 
+/// A snapshot tracked by a backend that doesn't have a native list
+/// query.
+///
+/// ZFS records snapshots in the kernel and lists them via `zfs list -t
+/// snapshot`, so [`VmMetadata::snapshots`] stays empty for ZFS. dm-thin
+/// addresses snapshots by numeric thin id with no name attached at the
+/// kernel level, so it persists names + ids in `vm.json`. macOS APFS
+/// uses on-disk filenames, so it also doesn't need this list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotEntry {
+    /// User-visible snapshot name.
+    pub name: String,
+    /// Backend-specific thin id. Only meaningful for the dm-thin backend.
+    pub thin_id: u64,
+    /// ISO 8601 timestamp.
+    pub created_at: String,
+    /// Volume size in 512-byte sectors.
+    pub size_sectors: u64,
+}
+
 /// SSH connection configuration for a VM.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SshConfig {
@@ -132,6 +152,16 @@ pub struct VmMetadata {
     /// is purely informational — no cleanup or deletion constraints apply.
     #[serde(default, alias = "forked_from")]
     pub parent_vm: Option<String>,
+    /// dm-thin volume id. `None` for ZFS/APFS backends, which encode
+    /// volume identity in [`disk_path`](Self::disk_path) instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thin_id: Option<u64>,
+    /// Snapshots maintained by the storage backend in user-space state.
+    ///
+    /// dm-thin populates this; ZFS and macOS leave it empty and surface
+    /// snapshots through their native APIs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshots: Vec<SnapshotEntry>,
 }
 
 impl VmMetadata {
@@ -162,6 +192,8 @@ impl VmMetadata {
                 key: PathBuf::new(),
             },
             parent_vm: None,
+            thin_id: None,
+            snapshots: Vec::new(),
         }
     }
 }
@@ -354,6 +386,8 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             ssh: SshConfig::default(),
             parent_vm: None,
+            thin_id: None,
+            snapshots: Vec::new(),
         }
     }
 

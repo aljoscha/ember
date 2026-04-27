@@ -27,6 +27,9 @@ pub struct ImageEntry {
     pub size_mib: u64,
     /// ISO 8601 timestamp when the image was pulled.
     pub pulled_at: String,
+    /// dm-thin base snapshot id. `None` for other backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thin_id: Option<u64>,
 }
 
 /// The local image registry: a list of pulled images.
@@ -103,13 +106,19 @@ impl ImageRegistry {
 }
 
 /// Build an [`ImageEntry`] from a pull result.
-pub fn new_entry(reference: &ImageReference, disk_path: &str, size_mib: u64) -> ImageEntry {
+pub fn new_entry(
+    reference: &ImageReference,
+    disk_path: &str,
+    size_mib: u64,
+    thin_id: Option<u64>,
+) -> ImageEntry {
     ImageEntry {
         reference: reference.to_string(),
         local_name: reference.local_name(),
         disk_path: disk_path.to_string(),
         size_mib,
         pulled_at: now_iso8601(),
+        thin_id,
     }
 }
 
@@ -117,13 +126,20 @@ pub fn new_entry(reference: &ImageReference, disk_path: &str, size_mib: u64) -> 
 ///
 /// The reference is stored as `local:<name>` to distinguish built
 /// images from pulled ones in `ember image list` output.
-pub fn new_build_entry(name: &str, local_name: &str, disk_path: &str, size_mib: u64) -> ImageEntry {
+pub fn new_build_entry(
+    name: &str,
+    local_name: &str,
+    disk_path: &str,
+    size_mib: u64,
+    thin_id: Option<u64>,
+) -> ImageEntry {
     ImageEntry {
         reference: format!("local:{name}"),
         local_name: local_name.to_string(),
         disk_path: disk_path.to_string(),
         size_mib,
         pulled_at: now_iso8601(),
+        thin_id,
     }
 }
 
@@ -163,6 +179,7 @@ mod tests {
             disk_path: format!("tank/ember/images/library-{name}-latest"),
             size_mib: 64,
             pulled_at: "2026-01-01T00:00:00Z".to_string(),
+            thin_id: None,
         }
     }
 
@@ -274,13 +291,14 @@ mod tests {
     #[test]
     fn new_entry_builds_correctly() {
         let reference = ImageReference::parse("alpine:3.19").unwrap();
-        let entry = new_entry(&reference, "tank/ember/images/library-alpine-3.19", 96);
+        let entry = new_entry(&reference, "tank/ember/images/library-alpine-3.19", 96, None);
 
         assert_eq!(entry.reference, "docker.io/library/alpine:3.19");
         assert_eq!(entry.local_name, "library-alpine-3.19");
         assert_eq!(entry.disk_path, "tank/ember/images/library-alpine-3.19");
         assert_eq!(entry.size_mib, 96);
         assert!(!entry.pulled_at.is_empty());
+        assert_eq!(entry.thin_id, None);
     }
 
     #[test]

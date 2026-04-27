@@ -547,6 +547,8 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
+        thin_id: None,
+        snapshots: Vec::new(),
     };
 
     vm::save(store, &metadata)?;
@@ -666,6 +668,8 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
+        thin_id: None,
+        snapshots: Vec::new(),
     };
 
     vm::save(&store, &metadata)?;
