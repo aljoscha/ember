@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::Args;
 
-use crate::backend::{CurrentPlatform, InitConfig, Platform, Storage, StorageBackend};
+use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
 use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 
@@ -40,7 +40,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         dataset: args.dataset.clone(),
         device: args.device.clone(),
     };
-    Storage::init(&init_config)?;
+    init_storage(&init_config)?;
 
     // 3. Initialize state directory structure.
     let store = StateStore::new(state_dir.to_path_buf());

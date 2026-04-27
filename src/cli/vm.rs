@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::fmt::{format_bytes_binary, GIB, MIB};
 use crate::backend::{
-    CurrentPlatform, Network, NetworkBackend, Platform, Storage, StorageBackend, Vm, VmBackend,
+    create_storage, CurrentPlatform, Network, NetworkBackend, Platform, Storage, Vm, VmBackend,
 };
 use crate::image;
 use ember_core::config;
@@ -430,7 +430,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let image_ref = image_entry.reference.clone();
     let image_size_mib = image_entry.size_mib;
 
-    let storage = Storage::new(&global_config);
+    let storage = create_storage(&global_config);
 
     let mut rollback = Rollback::new();
 
@@ -605,7 +605,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let subnet = args.network.clone().or(source.subnet.clone());
 
-    let storage = Storage::new(&global_config);
+    let storage = create_storage(&global_config);
 
     // Clone source VM's storage into the new VM via the storage backend.
     println!("Forking '{}' → '{}'...", args.source, args.name);
@@ -922,7 +922,7 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Grow the disk via the storage backend (handles resize + ext4 expand).
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     println!(
         "Resizing disk to {}...",
         format_bytes_binary(new_gib as u64 * GIB)
@@ -1042,7 +1042,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Check for storage-level dependents (e.g. ZFS fork snapshots with clones).
     // On macOS/APFS this always returns empty — forks are independent.
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     let dependents = storage.storage_dependents(&args.name)?;
     if !dependents.is_empty() {
         if !args.force {
@@ -1106,7 +1106,7 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
 
     // Destroy storage via the backend.
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
 
     println!("Destroying storage for VM '{}'...", metadata.name);
     let _ = storage.destroy_vm_storage(&metadata.name);

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::{Args, Subcommand};
 
-use crate::backend::{Storage, StorageBackend};
+use crate::backend::create_storage;
 use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 use ember_core::state::vm;
@@ -80,7 +80,7 @@ pub fn run(cmd: &SnapshotCommand, state_dir: &Path) -> anyhow::Result<()> {
 fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     let _metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow the reserved snapshot name.
@@ -114,7 +114,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     let _metadata = vm::load(&store, &args.vm_name)?;
 
     let snapshots = storage.list_snapshots(&args.vm_name)?;
@@ -190,7 +190,7 @@ use super::fmt::format_bytes_binary as format_bytes;
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     let _metadata = vm::load(&store, &args.vm_name)?;
 
     // Disallow deleting the reserved snapshot.
@@ -226,7 +226,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn restore(args: &RestoreArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     let _metadata = vm::require_stopped(&store, &args.vm_name, "restoring a snapshot")?;
 
     // Verify the snapshot exists.
