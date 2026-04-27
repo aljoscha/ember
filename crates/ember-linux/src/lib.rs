@@ -1,4 +1,5 @@
 pub mod dm_thin;
+pub mod dm_thin_storage;
 pub mod firecracker;
 pub mod image;
 pub mod network;
@@ -10,6 +11,7 @@ pub mod vm;
 pub mod zfs;
 pub mod zvol;
 
+pub use dm_thin_storage::DmThinStorage;
 pub use network_backend::LinuxNetwork;
 pub use platform::LinuxPlatform;
 pub use storage::LinuxStorage;
@@ -18,16 +20,20 @@ pub use vm::LinuxVm;
 use std::sync::Arc;
 
 use ember_core::backend::{InitConfig, StorageBackend};
-use ember_core::config::GlobalConfig;
-use ember_core::error::Result;
+use ember_core::config::{GlobalConfig, StorageKind};
+use ember_core::error::{Error, Result};
 
 /// Construct the active storage backend.
 ///
 /// Returns the implementation indicated by [`GlobalConfig::storage_backend`].
-/// Currently only ZFS is wired up; btrfs and dm-thin variants are added in
-/// later phases of the multi-backend rollout.
+/// btrfs is not yet implemented and falls back to ZFS so existing
+/// configs keep working until Phase 7.
 pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
-    Arc::new(LinuxStorage::new(config))
+    match config.storage_backend {
+        StorageKind::Zfs => Arc::new(LinuxStorage::new(config)),
+        StorageKind::DmThin => Arc::new(DmThinStorage::new(config)),
+        StorageKind::Btrfs => Arc::new(LinuxStorage::new(config)),
+    }
 }
 
 /// Initialize storage during `ember init`.
@@ -36,5 +42,11 @@ pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
 /// trait object is unavailable here because the backend hasn't been
 /// constructed yet.
 pub fn init_storage(config: &InitConfig) -> Result<()> {
-    LinuxStorage::init(config)
+    match config.storage_backend {
+        StorageKind::Zfs => LinuxStorage::init(config),
+        StorageKind::DmThin => DmThinStorage::init(config),
+        StorageKind::Btrfs => Err(Error::Config(
+            "btrfs storage backend is not yet implemented".to_string(),
+        )),
+    }
 }
