@@ -4,6 +4,8 @@
 //! This module re-exports them and provides the type aliases that
 //! select the active platform backend at compile time.
 
+use std::sync::Arc;
+
 // Re-export all traits and shared types from ember-core.
 pub use ember_core::backend::*;
 
@@ -15,20 +17,26 @@ pub use ember_linux as linux;
 pub use ember_macos as macos;
 
 // Type aliases for the active platform backend.
-// Selected at compile time based on target OS.
+// `Vm`, `Network`, and `CurrentPlatform` are selected at compile time
+// via `#[cfg(target_os)]`. `Storage` is a runtime trait object so the
+// concrete implementation can be picked from `GlobalConfig` (e.g., ZFS
+// vs btrfs vs dm-thin on Linux).
 #[cfg(target_os = "linux")]
 pub type Vm = ember_linux::LinuxVm;
-#[cfg(target_os = "linux")]
-pub type Storage = ember_linux::LinuxStorage;
 #[cfg(target_os = "linux")]
 pub type Network = ember_linux::LinuxNetwork;
 
 #[cfg(target_os = "macos")]
 pub type Vm = ember_macos::MacosVm;
 #[cfg(target_os = "macos")]
-pub type Storage = ember_macos::MacosStorage;
-#[cfg(target_os = "macos")]
 pub type Network = ember_macos::MacosNetwork;
+
+pub type Storage = Arc<dyn StorageBackend>;
+
+#[cfg(target_os = "linux")]
+pub use ember_linux::{create_storage, init_storage};
+#[cfg(target_os = "macos")]
+pub use ember_macos::{create_storage, init_storage};
 
 #[cfg(target_os = "linux")]
 pub type CurrentPlatform = ember_linux::LinuxPlatform;

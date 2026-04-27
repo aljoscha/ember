@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 
 use super::fmt::{format_bytes_binary, MIB};
 use super::vm::OutputFormat;
-use crate::backend::{CurrentPlatform, Platform, Storage, StorageBackend};
+use crate::backend::{create_storage, CurrentPlatform, Platform, Storage};
 use crate::image;
 use ember_core::config::GlobalConfig;
 use ember_core::image::pull::ImageReference;
@@ -93,7 +93,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
 fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
 
     // Parse and validate the image reference.
     let reference = ImageReference::parse(&args.reference)?;
@@ -149,7 +149,7 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
 fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
 
     // Sanitize the name for storage use.
     let local_name = image::build::sanitize_name(&args.name)?;
@@ -302,7 +302,7 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Destroy the image's storage (zvol on Linux, .img file on macOS).
     let config: GlobalConfig = store.read(&store.config_path())?;
-    let storage = Storage::new(&config);
+    let storage = create_storage(&config);
     println!("Destroying storage for image '{}'...", local_name);
     storage.destroy_image_storage(&local_name, args.force)?;
 
