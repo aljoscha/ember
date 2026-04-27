@@ -169,18 +169,39 @@ Block devices are left intact, same as ZFS `zpool destroy`.
 
 ## Thin id allocation
 
-dm-thin addresses each volume by a numeric `dev_id`.
-The kernel parses it as `u64` (`drivers/md/dm-thin.c`, `read_dev_id`), so the full 64-bit space is available even though older documentation describes a 24-bit limit.
+dm-thin addresses each volume by a numeric `dev_id` and the kernel
+enforces `dev_id <= (1 << 24) - 1` in `drivers/md/dm-thin.c`:
 
-Ember picks a random `u64` per volume:
+```c
+#define MAX_DEV_ID ((1ULL << 24) - 1)
+
+if (*dev_id > MAX_DEV_ID) {
+    DMWARN("Message received with invalid device id: %llu", *dev_id);
+    return -EINVAL;
+}
+```
+
+So the usable space is 24 bits.
+Ember picks a random non-zero id within that range:
 
 ```rust
-fn fresh_thin_id(pool: &str) -> Result<u64> {
+const MAX_DEV_ID: u64 = (1 << 24) - 1;
+
+fn fresh_thin_id() -> u64 {
     loop {
-        let id: u64 = rand::random();
+        let id = (rand::random::<u32>() as u64) & MAX_DEV_ID;
+        if id != 0 {
+            return id;
+        }
+    }
+}
+
+fn allocate(pool: &str) -> Result<u64> {
+    loop {
+        let id = fresh_thin_id();
         match dmsetup_message(pool, &format!("create_thin {id}")) {
             Ok(()) => return Ok(id),
-            Err(e) if e.is_already_exists() => continue,  // EEXIST → retry
+            Err(e) if is_already_exists(&e) => continue,
             Err(e) => return Err(e),
         }
     }
@@ -189,12 +210,15 @@ fn fresh_thin_id(pool: &str) -> Result<u64> {
 
 Why this is safe:
 
-* Birthday collision in a 64-bit space first crosses 1% probability around 2^29 ids (~600 M). Realistic ember pools hold thousands at most. Collision probability is effectively zero.
-* The kernel atomically rejects duplicates via `EEXIST`. The retry loop is the entire concurrency story — two ember processes racing on `create_thin` cannot both succeed for the same id.
+* Birthday collision in a 24-bit space first crosses 1% probability around 1800 active ids. Realistic ember pools hold dozens to a few hundred volumes — well below that, and the kernel still rejects duplicates atomically (`EEXIST`) so the retry loop is the entire concurrency story.
+* Two ember processes racing on `create_thin` cannot both succeed for the same id; whoever lost retries.
 * No persistent counter, no allocator file, no flock around id generation.
 
 `create_snap` follows the same pattern (allocate id, retry on `EEXIST`).
 The `id` is recorded on the relevant `VmMetadata`/`ImageEntry`/`SnapshotEntry` under whichever lock already protects that record; the kernel pool itself remains the source of truth for liveness, queryable via `thin_dump` for recovery.
+
+The serialized type on those records stays `u64` so the on-disk format does not need to change if the kernel ever lifts the 24-bit cap.
+For now only the low 24 bits are populated.
 
 ## Pool sizing
 
@@ -606,7 +630,7 @@ The authoritative record of which ids are live lives in `ImageEntry`/`VmMetadata
 | Root required | Yes | Yes | Yes | No |
 | Filesystem validation | `zpool list` | `/proc/mounts` | `dmsetup status ember-pool` | APFS volume check at init |
 | Reactivation after reboot | Auto (zpool import) | Auto-mount | Explicit `ensure_pool_active` | Not applicable |
-| Identifier | Dataset path | File path | Random `u64` thin id | File path |
+| Identifier | Dataset path | File path | Random 24-bit thin id | File path |
 | State on disk | ZFS metadata | Filesystem metadata | Pool metadata (ids embedded in existing vm/image records) | Filesystem metadata |
 | Kernel module | Out-of-tree (DKMS) | In-tree | In-tree | N/A |
 | Checksums | Yes (ZFS) | Yes (data + metadata) | Metadata only | No |
