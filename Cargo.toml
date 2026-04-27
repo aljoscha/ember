@@ -56,6 +56,23 @@ license = "MIT"
 [lints]
 workspace = true
 
+[package.metadata.deb]
+maintainer = "Aljoscha Krettek <aljoscha.krettek@gmail.com>"
+copyright = "2026, ember authors"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Ember is a lightweight CLI for managing microVMs with copy-on-write storage.
+On Linux it uses Firecracker (KVM) for VMs and ZFS zvols for storage. \
+No daemon, no REST API — just a single binary."""
+section = "admin"
+priority = "optional"
+depends = "$auto, zfsutils-linux, iptables, iproute2, curl, skopeo"
+assets = [
+    ["target/release/ember", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/ember/README", "644"],
+    ["LICENSE", "usr/share/doc/ember/LICENSE", "644"],
+]
+
 [dependencies]
 ember-core = { workspace = true }
 clap = { workspace = true }
