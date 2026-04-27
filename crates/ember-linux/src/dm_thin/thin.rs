@@ -20,17 +20,33 @@ pub const IMAGE_PREFIX: &str = "ember-img-";
 /// Device-mapper name prefix for VM disks.
 pub const VM_PREFIX: &str = "ember-vm-";
 
-/// Pick a fresh non-zero `u64` thin id.
+/// Maximum thin device id accepted by the kernel.
 ///
-/// The kernel addresses thin volumes by 64-bit ids; we generate them
-/// uniformly at random. Birthday-collision math at this scale is well
-/// inside the noise floor (≈10⁻¹³ at 1000 volumes) and the kernel
-/// rejects duplicates atomically, so [`allocate`] retries on `EEXIST`.
+/// `drivers/md/dm-thin.c` enforces `dev_id <= (1 << 24) - 1`:
+///
+/// ```text
+/// if (*dev_id > MAX_DEV_ID) {
+///     DMWARN("Message received with invalid device id: %llu", *dev_id);
+///     return -EINVAL;
+/// }
+/// ```
+///
+/// Wider values were attempted earlier in this branch's history and
+/// the kernel rejected them with `EINVAL`, so we generate ids inside
+/// this 24-bit range.
+pub const MAX_DEV_ID: u64 = (1 << 24) - 1;
+
+/// Pick a fresh non-zero thin id within the kernel's 24-bit range.
+///
+/// Birthday collision at 50% hits around 4 K ids — well above any
+/// realistic ember workload (hundreds of volumes per pool). The
+/// kernel still rejects duplicates atomically and [`allocate`]
+/// retries on `EEXIST`, so the rare collision is harmless.
 fn fresh_thin_id() -> u64 {
-    // Avoid id 0 — it isn't reserved by the kernel but using a non-zero
-    // sentinel keeps logs/diagnostics easier to read.
+    // Avoid id 0 — keeps logs/diagnostics easier to read.
     loop {
-        let id: u64 = rand::random();
+        let raw: u32 = rand::random();
+        let id = (raw as u64) & MAX_DEV_ID;
         if id != 0 {
             return id;
         }
@@ -202,15 +218,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_thin_id_is_nonzero() {
-        for _ in 0..100 {
-            assert_ne!(fresh_thin_id(), 0);
+    fn fresh_thin_id_is_nonzero_and_in_range() {
+        for _ in 0..1000 {
+            let id = fresh_thin_id();
+            assert_ne!(id, 0);
+            assert!(id <= MAX_DEV_ID, "id {id} exceeds kernel max {MAX_DEV_ID}");
         }
     }
 
     #[test]
     fn fresh_thin_id_distribution() {
-        // Crude: 100 random u64s should all be distinct in practice.
+        // 100 random ids in a 24-bit space collide with probability
+        // ≈ 100²/(2·2²⁴) ≈ 3·10⁻⁴, so duplicates here would be a real bug.
         let ids: std::collections::HashSet<u64> =
             (0..100).map(|_| fresh_thin_id()).collect();
         assert_eq!(ids.len(), 100);
