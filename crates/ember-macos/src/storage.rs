@@ -180,11 +180,7 @@ impl StorageBackend for MacosStorage {
     /// `cp -c vms/<vm>/rootfs.img → vms/<vm>/snapshots/<snap>.img`
     /// This is instant (CoW) and costs no additional disk space until
     /// the VM's rootfs diverges from the snapshot.
-    fn snapshot(
-        &self,
-        vm: &VmMetadata,
-        snap_name: &str,
-    ) -> Result<Option<SnapshotEntry>> {
+    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
         let vm_name = vm.name.as_str();
         let src = self.vm_rootfs(vm_name);
         if !src.exists() {

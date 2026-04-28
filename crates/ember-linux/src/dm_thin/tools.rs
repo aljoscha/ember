@@ -16,11 +16,7 @@ use ember_core::error::{Error, Result};
 ///
 /// Wraps `thin_metadata_size --numeric-only --unit b`. The output is a
 /// single integer in bytes.
-pub fn metadata_size(
-    pool_size_bytes: u64,
-    block_size_bytes: u64,
-    max_thins: u64,
-) -> Result<u64> {
+pub fn metadata_size(pool_size_bytes: u64, block_size_bytes: u64, max_thins: u64) -> Result<u64> {
     let output = Command::new("thin_metadata_size")
         .args([
             "--block-size",

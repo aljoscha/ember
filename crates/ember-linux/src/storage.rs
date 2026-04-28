@@ -18,10 +18,6 @@ use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::{SnapshotEntry, VmMetadata};
 
-/// LinuxStorage's pool name (cached at construction). Needed for
-/// `deinit` since the trait method has no access to `InitConfig`.
-const _: () = (); // keep Cargo from collapsing the import block above
-
 /// Linux storage backend using ZFS zvols.
 #[derive(Clone)]
 pub struct LinuxStorage {
@@ -137,11 +133,7 @@ impl StorageBackend for LinuxStorage {
         Ok(VolumeHandle::from_path(vm_zvol))
     }
 
-    fn snapshot(
-        &self,
-        vm: &VmMetadata,
-        snap_name: &str,
-    ) -> Result<Option<SnapshotEntry>> {
+    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
         let zvol = self.vm_zvol(&vm.name);
         zfs::snapshot::create(&zvol, snap_name)?;
         // ZFS records snapshots in the kernel; nothing to add to vm.json.

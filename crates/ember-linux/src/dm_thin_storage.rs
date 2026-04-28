@@ -174,9 +174,7 @@ impl DmThinStorage {
 impl StorageBackend for DmThinStorage {
     fn init(config: &InitConfig) -> Result<()> {
         let storage_path = config.storage_path.clone().ok_or_else(|| {
-            Error::Config(
-                "dm-thin requires --storage-path (directory or block device)".to_string(),
-            )
+            Error::Config("dm-thin requires --storage-path (directory or block device)".to_string())
         })?;
 
         let block_size_sectors = config
@@ -337,11 +335,7 @@ impl StorageBackend for DmThinStorage {
         }
     }
 
-    fn snapshot(
-        &self,
-        vm: &VmMetadata,
-        snap_name: &str,
-    ) -> Result<Option<SnapshotEntry>> {
+    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
         self.ensure_pool_active()?;
         let vm_id = Self::require_vm_thin_id(vm)?;
         let dm_name = thin::vm_dm_name(&vm.name);
@@ -761,15 +755,13 @@ fn parse_size(spec: &str) -> Result<u64> {
         'K' | 'k' => (&trimmed[..trimmed.len() - 1], 1024_u64),
         'M' | 'm' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024),
         'G' | 'g' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024 * 1024),
-        'T' | 't' => (
-            &trimmed[..trimmed.len() - 1],
-            1024_u64 * 1024 * 1024 * 1024,
-        ),
+        'T' | 't' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024 * 1024 * 1024),
         _ => (trimmed, 1_u64),
     };
-    let n: u64 = num_part.trim().parse().map_err(|e| {
-        Error::Config(format!("invalid size '{spec}': {e}"))
-    })?;
+    let n: u64 = num_part
+        .trim()
+        .parse()
+        .map_err(|e| Error::Config(format!("invalid size '{spec}': {e}")))?;
     Ok(n * mult)
 }
 
