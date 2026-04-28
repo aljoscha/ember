@@ -106,12 +106,7 @@ pub fn is_active(name: &str) -> Result<bool> {
 ///
 /// `size_sectors` is the volume's virtual size; the pool only allocates
 /// blocks as the volume is written to.
-pub fn activate(
-    name: &str,
-    pool_name: &str,
-    thin_id: u64,
-    size_sectors: u64,
-) -> Result<PathBuf> {
+pub fn activate(name: &str, pool_name: &str, thin_id: u64, size_sectors: u64) -> Result<PathBuf> {
     let table = thin_table(pool_name, thin_id, size_sectors);
     let output = Command::new("dmsetup")
         .args(["create", name, "--table", &table])
@@ -154,12 +149,7 @@ pub fn resume(name: &str) -> Result<()> {
 /// Pool capacity is unaffected — thin volumes are virtually sized at
 /// activation time and only consume blocks as they are written. Caller
 /// is still responsible for filesystem-level resize (e.g. `resize2fs`).
-pub fn reload_size(
-    name: &str,
-    pool_name: &str,
-    thin_id: u64,
-    new_size_sectors: u64,
-) -> Result<()> {
+pub fn reload_size(name: &str, pool_name: &str, thin_id: u64, new_size_sectors: u64) -> Result<()> {
     let table = thin_table(pool_name, thin_id, new_size_sectors);
     suspend(name)?;
     let load = Command::new("dmsetup")
@@ -187,7 +177,13 @@ fn thin_table(pool_name: &str, thin_id: u64, size_sectors: u64) -> String {
 /// this is a defensive guard rather than a real transformation.
 pub fn sanitize_dm_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -230,8 +226,7 @@ mod tests {
     fn fresh_thin_id_distribution() {
         // 100 random ids in a 24-bit space collide with probability
         // ≈ 100²/(2·2²⁴) ≈ 3·10⁻⁴, so duplicates here would be a real bug.
-        let ids: std::collections::HashSet<u64> =
-            (0..100).map(|_| fresh_thin_id()).collect();
+        let ids: std::collections::HashSet<u64> = (0..100).map(|_| fresh_thin_id()).collect();
         assert_eq!(ids.len(), 100);
     }
 
@@ -244,8 +239,10 @@ mod tests {
     #[test]
     fn dm_names() {
         assert_eq!(vm_dm_name("myvm"), "ember-vm-myvm");
-        assert_eq!(image_dm_name("library-alpine-latest"),
-                   "ember-img-library-alpine-latest");
+        assert_eq!(
+            image_dm_name("library-alpine-latest"),
+            "ember-img-library-alpine-latest"
+        );
         assert_eq!(image_staging_dm_name("foo"), "ember-img-foo-staging");
     }
 

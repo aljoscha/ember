@@ -291,7 +291,12 @@ mod tests {
     #[test]
     fn new_entry_builds_correctly() {
         let reference = ImageReference::parse("alpine:3.19").unwrap();
-        let entry = new_entry(&reference, "tank/ember/images/library-alpine-3.19", 96, None);
+        let entry = new_entry(
+            &reference,
+            "tank/ember/images/library-alpine-3.19",
+            96,
+            None,
+        );
 
         assert_eq!(entry.reference, "docker.io/library/alpine:3.19");
         assert_eq!(entry.local_name, "library-alpine-3.19");

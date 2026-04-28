@@ -1146,8 +1146,8 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         // Use the parent's stored metadata if available; fall back to a
         // name-only stub when the parent record is gone (e.g. cascade
         // cleanup running in the wrong order).
-        let parent_md = vm::load(store, parent_name)
-            .unwrap_or_else(|_| name_only_metadata(parent_name));
+        let parent_md =
+            vm::load(store, parent_name).unwrap_or_else(|_| name_only_metadata(parent_name));
         let _ = storage.cleanup_fork(&parent_md, metadata);
     }
 

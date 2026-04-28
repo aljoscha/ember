@@ -88,6 +88,10 @@ pub fn find_for(file: &Path) -> Result<Option<PathBuf>> {
     // `losetup -j` exits 0 even when the file has no loop attached.
     let output = Error::check_command("losetup -j", output)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let first = stdout.lines().next().map(str::trim).filter(|s| !s.is_empty());
+    let first = stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     Ok(first.map(PathBuf::from))
 }
