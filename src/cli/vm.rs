@@ -25,11 +25,15 @@ use ember_core::state::vm::{self, NetworkInfo, SshConfig, VmMetadata, VmStatus};
 /// `name`, `disk_path`, and `thin_id` from this stub for resize, mount,
 /// and SSH-key injection. All other fields are placeholders inherited
 /// from [`VmMetadata::default_for_teardown`].
-fn pending_metadata(name: &str, handle: &VolumeHandle) -> VmMetadata {
+fn pending_metadata(name: &str, handle: &VolumeHandle, disk_size_gib: u32) -> VmMetadata {
     let mut m = VmMetadata::default_for_teardown();
     m.name = name.to_string();
     m.disk_path = handle.disk_path.to_string_lossy().into_owned();
     m.thin_id = handle.thin_id;
+    // dm-thin needs the size to (re)activate the thin device. Stash the
+    // requested disk size so `disk_device_path(pending)` can re-attach
+    // post-resize even if the kernel state was somehow torn down.
+    m.disk_size_gib = disk_size_gib;
     m
 }
 
@@ -461,7 +465,7 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Clone base image → per-VM disk (instant, copy-on-write).
     println!("Cloning image for VM '{}'...", resolved.name);
     let handle = storage.clone_for_vm(image_entry, &resolved.name)?;
-    let pending = pending_metadata(&resolved.name, &handle);
+    let pending = pending_metadata(&resolved.name, &handle, resolved.disk_size);
     {
         let storage = storage.clone();
         let sd = state_dir.to_path_buf();
@@ -525,7 +529,7 @@ fn create_post_clone(
     // Inject per-VM SSH key into the rootfs image.
     // Linux: mounts the block device, writes the key, unmounts.
     // macOS: uses debugfs to write directly into the ext4 image.
-    let dev_path = storage.disk_device_path(pending);
+    let dev_path = storage.disk_device_path(pending)?;
     let pubkey_path = image::inject::default_ssh_pubkey_path().ok_or_else(|| {
         anyhow::anyhow!(
             "no SSH public key found at ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub\n\
@@ -637,7 +641,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Clone source VM's storage into the new VM via the storage backend.
     println!("Forking '{}' → '{}'...", args.source, args.name);
     let handle = storage.clone_vm_storage(&source, &args.name)?;
-    let pending = pending_metadata(&args.name, &handle);
+    let pending = pending_metadata(&args.name, &handle, disk_size_gib);
 
     let mut rollback = Rollback::new();
     {
@@ -664,7 +668,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Inject /etc/hosts with the new VM's hostname (the cloned disk
     // still has the source VM's hostname from its creation).
-    let dev_path = storage.disk_device_path(&pending);
+    let dev_path = storage.disk_device_path(&pending)?;
     storage.inject_hostname(&dev_path, &args.name)?;
 
     // Resolve kernel: CLI override or inherit from source.

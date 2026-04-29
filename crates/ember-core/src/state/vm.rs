@@ -77,8 +77,10 @@ pub struct SnapshotEntry {
     pub name: String,
     /// Backend-specific thin id. Only meaningful for the dm-thin backend.
     pub thin_id: u64,
-    /// ISO 8601 timestamp.
-    pub created_at: String,
+    /// Creation time as Unix epoch seconds — same shape as
+    /// [`crate::backend::SnapshotInfo::created_at`] so the backend's
+    /// `list_snapshots` can copy this through without reparsing.
+    pub created_at: u64,
     /// Volume size in 512-byte sectors.
     pub size_sectors: u64,
 }
@@ -323,16 +325,21 @@ pub fn delete(store: &StateStore, name: &str) -> Result<()> {
     store.remove_dir(&dir)
 }
 
+/// Current UTC time as Unix epoch seconds.
+pub fn now_epoch_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Current UTC time as an ISO 8601 string (second precision).
 ///
 /// Format: `YYYY-MM-DDTHH:MM:SSZ` (always UTC).
 pub fn now_iso8601() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let secs = now_epoch_secs();
 
     // Break epoch seconds into date/time components.
     let days = secs / 86400;

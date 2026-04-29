@@ -50,8 +50,10 @@ impl VmBackend for LinuxVm {
 
         // Resolve the rootfs through the active storage backend so the
         // backend (ZFS, dm-thin, …) controls how `vm.disk_path` becomes
-        // the actual device path Firecracker sees.
-        let rootfs_path = crate::create_storage(config).disk_device_path(vm);
+        // the actual device path Firecracker sees. dm-thin lazily
+        // re-activates pool + thin devices here (pool tables are
+        // kernel-only state that vanishes on host reboot).
+        let rootfs_path = crate::create_storage(config).disk_device_path(vm)?;
 
         // Clean up stale socket from a previous run.
         if socket_path.exists() {

@@ -34,6 +34,22 @@ impl std::str::FromStr for StorageKind {
     }
 }
 
+/// How the dm-thin pool's data device is provided.
+///
+/// Resolved at `ember init` from the `--storage-path` argument and
+/// persisted on `GlobalConfig` so reactivation does not depend on a
+/// runtime filesystem probe — `is_dir()` could disagree with init if
+/// the directory was removed, or a raw device replaced a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DmThinMode {
+    /// `--storage-path` is a directory holding `metadata.img`/`data.img`.
+    File,
+    /// `--storage-path` is a raw block device used as the data device.
+    /// Metadata then lives under `state_dir/dm-thin-metadata.img`.
+    RawDevice,
+}
+
 /// Global configuration written by `ember init`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -59,10 +75,21 @@ pub struct GlobalConfig {
     /// * ZFS: unused.
     #[serde(default)]
     pub storage_path: Option<PathBuf>,
-    /// dm-thin pool block size in 512-byte sectors. Permanent at pool creation.
-    /// `None` means "use the backend default" (128 = 64 KiB).
+    /// dm-thin pool block size in 512-byte sectors. Permanent at pool
+    /// creation, so `ember init` resolves the user flag (or default) at
+    /// init time and persists the actual value here. `None` means "use
+    /// the backend default" — only legacy configs predating this
+    /// resolution should hit that branch; new configs always pin the
+    /// value the running pool was created with.
     #[serde(default)]
     pub dm_thin_block_size: Option<u32>,
+    /// dm-thin pool layout: file-backed (sparse files inside
+    /// `storage_path`) or raw-device (`storage_path` is a block device).
+    /// Resolved at `ember init` and persisted so reactivation does not
+    /// rely on a live `is_dir()` probe. `None` on legacy configs and on
+    /// non-dm-thin backends.
+    #[serde(default)]
+    pub dm_thin_mode: Option<DmThinMode>,
 }
 
 impl GlobalConfig {

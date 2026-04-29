@@ -233,9 +233,9 @@ impl StorageBackend for LinuxStorage {
     }
 
     /// Device path for a VM's root disk zvol.
-    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf {
+    fn disk_device_path(&self, vm: &VmMetadata) -> Result<PathBuf> {
         let zvol = self.vm_zvol(&vm.name);
-        zfs::volume::device_path(&zvol)
+        Ok(zfs::volume::device_path(&zvol))
     }
 
     /// Fork a VM's disk by snapshotting the source and cloning into a new VM.
