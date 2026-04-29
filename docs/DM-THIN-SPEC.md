@@ -125,9 +125,18 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub storage_path: Option<PathBuf>,
     /// dm-thin pool block size in 512-byte sectors (default: 128 = 64KiB).
-    /// Permanent at pool creation.
+    /// Permanent at pool creation; resolved to `Some(actual)` at init
+    /// time so the value the running pool was created with stays stable
+    /// across ember upgrades.
     #[serde(default)]
     pub dm_thin_block_size: Option<u32>,
+    /// dm-thin layout: `File` (sparse files inside `storage_path`) or
+    /// `RawDevice` (`storage_path` is a block device, metadata sits on
+    /// `state_dir/dm-thin-metadata.img`). Resolved at init from
+    /// `storage_path` and persisted so reactivation does not depend on
+    /// a live `is_dir()` probe.
+    #[serde(default)]
+    pub dm_thin_mode: Option<DmThinMode>,
 }
 ```
 
@@ -144,13 +153,16 @@ pub struct InitConfig {
     pub device: Option<String>,        // ZFS only
     pub storage_path: Option<PathBuf>, // btrfs + dm-thin
     pub btrfs_size: Option<String>,    // btrfs only
-    /// Size of the dm-thin data device (e.g., "50G").
+    /// Size of the dm-thin data device.
     /// Required for file-backed mode, ignored for device mode.
-    pub dm_thin_size: Option<String>,
+    pub dm_thin_size: Option<ByteSize>,
     /// Override metadata device size. Defaults to `thin_metadata_size` output.
-    pub dm_thin_metadata_size: Option<String>,
+    pub dm_thin_metadata_size: Option<ByteSize>,
     /// Pool block size in sectors. Defaults to 128 (64KiB).
     pub dm_thin_block_size: Option<u32>,
+    /// File-backed vs raw-device layout. The CLI resolves this from
+    /// `storage_path` so the backend trusts what it was handed.
+    pub dm_thin_mode: Option<DmThinMode>,
 }
 ```
 

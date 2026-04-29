@@ -14,7 +14,7 @@ use std::process::Command as ProcessCommand;
 
 use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
-use ember_core::config::GlobalConfig;
+use ember_core::config::{DmThinMode, GlobalConfig};
 use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::{SnapshotEntry, VmMetadata};
@@ -48,9 +48,19 @@ const MAX_METADATA_SIZE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 #[derive(Clone)]
 pub struct DmThinStorage {
     /// Backing path. Either a directory holding `metadata.img` and
-    /// `data.img`, or a raw block device (the metadata file then sits
-    /// alongside it under `<state_dir>/dm-thin-metadata.img`).
+    /// `data.img`, or a raw block device (the metadata file then lives
+    /// under `<state_dir>/dm-thin-metadata.img`).
     storage_path: PathBuf,
+    /// State directory (e.g. `/var/lib/ember`). Used as the persistent
+    /// home for the metadata sparse file when `storage_path` points at
+    /// a raw block device — `/dev/` is tmpfs on most distros and would
+    /// lose the metadata across reboots.
+    state_dir: PathBuf,
+    /// Layout resolved at `ember init`. Pinning this rather than
+    /// re-probing `storage_path.is_dir()` at runtime keeps reactivation
+    /// deterministic if the filesystem disagrees with init (e.g., the
+    /// directory was removed, or a raw device replaced a file).
+    mode: DmThinMode,
     /// Pool block size in 512-byte sectors. Permanent at pool creation;
     /// the value here must match what the running pool was created with.
     block_size_sectors: u32,
@@ -60,13 +70,25 @@ impl DmThinStorage {
     /// Build the backend handle from a parsed [`GlobalConfig`].
     ///
     /// Falls back to [`pool::DEFAULT_BLOCK_SIZE_SECTORS`] when the
-    /// config does not pin one.
+    /// config does not pin a block size, and to a live `is_dir()` probe
+    /// when no [`DmThinMode`] is persisted (legacy configs predating
+    /// the explicit field).
     pub fn new(config: &GlobalConfig) -> Self {
+        let storage_path = config
+            .storage_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/var/lib/ember/dm-thin"));
+        let mode = config.dm_thin_mode.unwrap_or_else(|| {
+            if storage_path.is_dir() || !storage_path.exists() {
+                DmThinMode::File
+            } else {
+                DmThinMode::RawDevice
+            }
+        });
         Self {
-            storage_path: config
-                .storage_path
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("/var/lib/ember/dm-thin")),
+            storage_path,
+            state_dir: config.state_dir.clone(),
+            mode,
             block_size_sectors: config
                 .dm_thin_block_size
                 .unwrap_or(pool::DEFAULT_BLOCK_SIZE_SECTORS),
@@ -75,20 +97,20 @@ impl DmThinStorage {
 
     /// Resolved metadata device path for the configured backing.
     fn metadata_file(&self) -> PathBuf {
-        if self.storage_path.is_dir() {
-            self.storage_path.join(METADATA_FILE)
-        } else {
-            // Raw block device: keep metadata as a sibling sparse file.
-            self.storage_path.with_file_name("dm-thin-metadata.img")
+        match self.mode {
+            DmThinMode::File => self.storage_path.join(METADATA_FILE),
+            // Raw block device: store metadata in the state directory
+            // rather than next to the device. `/dev/` is tmpfs on most
+            // distros and would vanish on reboot.
+            DmThinMode::RawDevice => self.state_dir.join("dm-thin-metadata.img"),
         }
     }
 
     /// Resolved data device path for the configured backing.
     fn data_file(&self) -> PathBuf {
-        if self.storage_path.is_dir() {
-            self.storage_path.join(DATA_FILE)
-        } else {
-            self.storage_path.clone()
+        match self.mode {
+            DmThinMode::File => self.storage_path.join(DATA_FILE),
+            DmThinMode::RawDevice => self.storage_path.clone(),
         }
     }
 
@@ -181,28 +203,33 @@ impl StorageBackend for DmThinStorage {
             .dm_thin_block_size
             .unwrap_or(pool::DEFAULT_BLOCK_SIZE_SECTORS);
 
+        // Layout (file vs raw device) is resolved by the CLI — the
+        // backend trusts what it was handed instead of re-probing the
+        // filesystem.
+        let mode = config.dm_thin_mode.ok_or_else(|| {
+            Error::Config("dm-thin requires a resolved layout mode in InitConfig".to_string())
+        })?;
+
         // Resolve metadata + data file paths and create them as sparse
         // files when missing. A raw block device is kept as-is for the
         // data side.
-        let (metadata_path, data_path) = resolve_init_paths(&storage_path)?;
+        let (metadata_path, data_path) = resolve_init_paths(&storage_path, &config.state_dir, mode);
 
-        let pool_size_bytes = match config.dm_thin_size.as_deref() {
-            Some(spec) => parse_size(spec)?,
-            None => {
-                if !data_path.is_file() {
-                    // Raw device: read its size directly.
-                    device_size_bytes(&data_path)?
-                } else {
+        let pool_size_bytes = match config.dm_thin_size {
+            Some(size) => size.bytes(),
+            None => match mode {
+                DmThinMode::RawDevice => device_size_bytes(&data_path)?,
+                DmThinMode::File => {
                     return Err(Error::Config(
                         "dm-thin --size is required when using a file-backed pool".to_string(),
                     ));
                 }
-            }
+            },
         };
 
         // Compute metadata size (or use an explicit override).
-        let metadata_size_bytes = match config.dm_thin_metadata_size.as_deref() {
-            Some(spec) => parse_size(spec)?,
+        let metadata_size_bytes = match config.dm_thin_metadata_size {
+            Some(size) => size.bytes(),
             None => {
                 let block_size_bytes = (block_size_sectors as u64) * SECTOR_SIZE;
                 let recommended =
@@ -355,7 +382,7 @@ impl StorageBackend for DmThinStorage {
         Ok(Some(SnapshotEntry {
             name: snap_name.to_string(),
             thin_id: snap_id,
-            created_at: ember_core::state::vm::now_iso8601(),
+            created_at: ember_core::state::vm::now_epoch_secs(),
             size_sectors,
         }))
     }
@@ -378,19 +405,33 @@ impl StorageBackend for DmThinStorage {
         let dm_name = thin::vm_dm_name(&vm.name);
         let size_sectors = Self::vm_size_sectors(vm);
 
-        // Tear down the live volume, free its thin id, then create a
-        // fresh thin id from the snapshot.
-        if pool::exists(&dm_name)? {
-            thin::deactivate(&dm_name)?;
-        }
-        thin::delete(pool::POOL_NAME, vm_id)?;
+        // Allocate the replacement thin id from the snapshot up-front so
+        // a failure here leaves `vm.thin_id` and the kernel pool
+        // unchanged. The old order (deactivate -> delete -> allocate)
+        // would orphan `vm.thin_id` on any allocate hiccup.
         let new_id = thin::allocate_snap(pool::POOL_NAME, snap_id)?;
-        let disk_path = thin::activate(&dm_name, pool::POOL_NAME, new_id, size_sectors)?;
 
-        Ok(VolumeHandle {
-            disk_path,
-            thin_id: Some(new_id),
-        })
+        // Once new_id exists, swap the dm-mapper slot over to it. Any
+        // failure from here on must release new_id so we don't leak
+        // kernel state.
+        let result = (|| -> Result<PathBuf> {
+            if pool::exists(&dm_name)? {
+                thin::deactivate(&dm_name)?;
+            }
+            thin::delete(pool::POOL_NAME, vm_id)?;
+            thin::activate(&dm_name, pool::POOL_NAME, new_id, size_sectors)
+        })();
+
+        match result {
+            Ok(disk_path) => Ok(VolumeHandle {
+                disk_path,
+                thin_id: Some(new_id),
+            }),
+            Err(e) => {
+                let _ = thin::delete(pool::POOL_NAME, new_id);
+                Err(e)
+            }
+        }
     }
 
     fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()> {
@@ -416,7 +457,7 @@ impl StorageBackend for DmThinStorage {
             .iter()
             .map(|s| SnapshotInfo {
                 name: s.name.clone(),
-                created_at: parse_iso8601(&s.created_at).unwrap_or(0),
+                created_at: s.created_at,
                 size: s.size_sectors * SECTOR_SIZE,
             })
             .collect())
@@ -468,8 +509,16 @@ impl StorageBackend for DmThinStorage {
         Ok(())
     }
 
-    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf {
-        thin::vm_device_path(&vm.name)
+    fn disk_device_path(&self, vm: &VmMetadata) -> Result<PathBuf> {
+        // Ensure the pool table and the per-VM thin device are live in
+        // the kernel. After a host reboot both are gone; without this,
+        // `vm start` would hand Firecracker a stale `/dev/mapper/...`
+        // path that resolves to ENOENT.
+        self.ensure_pool_active()?;
+        let thin_id = Self::require_vm_thin_id(vm)?;
+        let dm_name = thin::vm_dm_name(&vm.name);
+        let size_sectors = Self::vm_size_sectors(vm);
+        self.ensure_thin_active(&dm_name, thin_id, size_sectors)
     }
 
     fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle> {
@@ -631,24 +680,27 @@ impl StorageBackend for DmThinStorage {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Decide where the metadata + data backing live based on a single
-/// user-supplied `storage_path`.
+/// Decide where the metadata + data backing live based on the
+/// caller-resolved [`DmThinMode`].
 ///
-/// * Path is a directory (or doesn't exist): treat as a directory and
-///   place `metadata.img`/`data.img` inside.
-/// * Path is an existing file or block device: treat as the data
-///   device, with metadata as a sibling sparse file.
-fn resolve_init_paths(storage_path: &Path) -> Result<(PathBuf, PathBuf)> {
-    if storage_path.is_dir() || !storage_path.exists() {
-        Ok((
+/// * [`DmThinMode::File`]: `metadata.img`/`data.img` inside `storage_path`.
+/// * [`DmThinMode::RawDevice`]: `storage_path` is the data device, with
+///   metadata as a sparse file under `state_dir` (a raw device's parent
+///   is `/dev/`, which is tmpfs and would lose the metadata on reboot).
+fn resolve_init_paths(
+    storage_path: &Path,
+    state_dir: &Path,
+    mode: DmThinMode,
+) -> (PathBuf, PathBuf) {
+    match mode {
+        DmThinMode::File => (
             storage_path.join(METADATA_FILE),
             storage_path.join(DATA_FILE),
-        ))
-    } else {
-        Ok((
-            storage_path.with_file_name("dm-thin-metadata.img"),
+        ),
+        DmThinMode::RawDevice => (
+            state_dir.join("dm-thin-metadata.img"),
             storage_path.to_path_buf(),
-        ))
+        ),
     }
 }
 
@@ -745,26 +797,6 @@ fn device_size_bytes(path: &Path) -> Result<u64> {
     })
 }
 
-/// Parse a `<n>{K,M,G,T}?` size spec into bytes.
-fn parse_size(spec: &str) -> Result<u64> {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        return Err(Error::Config("empty size".to_string()));
-    }
-    let (num_part, mult) = match trimmed.chars().last().unwrap() {
-        'K' | 'k' => (&trimmed[..trimmed.len() - 1], 1024_u64),
-        'M' | 'm' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024),
-        'G' | 'g' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024 * 1024),
-        'T' | 't' => (&trimmed[..trimmed.len() - 1], 1024_u64 * 1024 * 1024 * 1024),
-        _ => (trimmed, 1_u64),
-    };
-    let n: u64 = num_part
-        .trim()
-        .parse()
-        .map_err(|e| Error::Config(format!("invalid size '{spec}': {e}")))?;
-    Ok(n * mult)
-}
-
 /// Format a byte count for log lines.
 fn format_bytes(bytes: u64) -> String {
     const TIB: u64 = 1024 * 1024 * 1024 * 1024;
@@ -779,32 +811,6 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
-}
-
-/// Parse an ISO 8601 timestamp into Unix epoch seconds. Robust enough
-/// for the in-house format produced by [`vm::now_iso8601`].
-fn parse_iso8601(s: &str) -> Option<u64> {
-    // Format: "YYYY-MM-DDTHH:MM:SSZ".
-    if s.len() < 20 {
-        return None;
-    }
-    let year: i64 = s.get(0..4)?.parse().ok()?;
-    let month: u64 = s.get(5..7)?.parse().ok()?;
-    let day: u64 = s.get(8..10)?.parse().ok()?;
-    let hour: u64 = s.get(11..13)?.parse().ok()?;
-    let min: u64 = s.get(14..16)?.parse().ok()?;
-    let sec: u64 = s.get(17..19)?.parse().ok()?;
-
-    // Shift March-based Howard Hinnant civil date.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = (y - era * 400) as u64;
-    let m = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe as i64 - 719468;
-    let secs = (days * 86400 + (hour * 3600 + min * 60 + sec) as i64) as u64;
-    Some(secs)
 }
 
 /// Run `dd` to copy an image file onto a block device.
@@ -860,41 +866,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_size_basic() {
-        assert_eq!(parse_size("0").unwrap(), 0);
-        assert_eq!(parse_size("100").unwrap(), 100);
-        assert_eq!(parse_size("4K").unwrap(), 4 * 1024);
-        assert_eq!(parse_size("16M").unwrap(), 16 * 1024 * 1024);
-        assert_eq!(parse_size("8G").unwrap(), 8u64 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("2T").unwrap(), 2u64 * 1024 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("4k").unwrap(), 4 * 1024);
-    }
-
-    #[test]
-    fn parse_size_rejects_garbage() {
-        assert!(parse_size("").is_err());
-        assert!(parse_size("abc").is_err());
-        assert!(parse_size("1Q").is_err());
-    }
-
-    #[test]
     fn format_bytes_units() {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MiB");
         assert_eq!(format_bytes(3u64 * 1024 * 1024 * 1024), "3.0 GiB");
-    }
-
-    #[test]
-    fn parse_iso8601_round_trip() {
-        // 2026-01-01T00:00:00Z is 1767225600.
-        assert_eq!(parse_iso8601("2026-01-01T00:00:00Z"), Some(1_767_225_600));
-        // 1970-01-01T00:00:00Z is the epoch.
-        assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
-    }
-
-    #[test]
-    fn parse_iso8601_rejects_short() {
-        assert_eq!(parse_iso8601(""), None);
-        assert_eq!(parse_iso8601("2026-01-01"), None);
     }
 }

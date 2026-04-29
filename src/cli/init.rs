@@ -3,8 +3,21 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 
 use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
-use ember_core::config::{GlobalConfig, StorageKind};
+use ember_core::config::size::ByteSize;
+use ember_core::config::{DmThinMode, GlobalConfig, StorageKind};
 use ember_core::state::store::StateStore;
+
+/// dm-thin pool block size (in 512-byte sectors) used when the user does
+/// not pass `--block-size`. Resolved here at init time and persisted on
+/// `GlobalConfig` so the value the running pool was created with stays
+/// stable across ember upgrades — block size is permanent at pool
+/// creation, and silently switching defaults later would orphan
+/// existing pools.
+#[cfg(target_os = "linux")]
+const DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS: u32 =
+    ember_linux::dm_thin::pool::DEFAULT_BLOCK_SIZE_SECTORS;
+#[cfg(not(target_os = "linux"))]
+const DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS: u32 = 128;
 
 #[derive(Args)]
 pub struct InitArgs {
@@ -38,12 +51,12 @@ pub struct InitArgs {
     /// Pool size for file-backed dm-thin (e.g. `50G`). Required when
     /// `--storage-path` is a file path; ignored for raw block devices.
     #[arg(long)]
-    pub size: Option<String>,
+    pub size: Option<ByteSize>,
 
     /// Override metadata device size for dm-thin (e.g. `800M`).
     /// `thin_metadata_size` computes a recommended value when omitted.
     #[arg(long)]
-    pub metadata_size: Option<String>,
+    pub metadata_size: Option<ByteSize>,
 
     /// dm-thin pool block size in 512-byte sectors. Permanent at pool
     /// creation. Defaults to 128 (= 64 KiB).
@@ -86,6 +99,32 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         StorageKind::Zfs => None,
     };
 
+    // Resolve block size up-front for dm-thin so the persisted config
+    // pins the value the pool was actually created with, even when the
+    // user omits `--block-size`.
+    let resolved_block_size = match args.storage {
+        StorageKind::DmThin => Some(
+            args.block_size
+                .unwrap_or(DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS),
+        ),
+        _ => args.block_size,
+    };
+
+    // Resolve file-vs-raw-device layout once and persist it. Doing this
+    // here rather than in the backend keeps the contract explicit:
+    // reactivation should not depend on a live `is_dir()` probe of
+    // `storage_path` agreeing with what init saw.
+    let resolved_dm_thin_mode = match (args.storage, storage_path.as_ref()) {
+        (StorageKind::DmThin, Some(path)) => {
+            if path.is_dir() || !path.exists() {
+                Some(DmThinMode::File)
+            } else {
+                Some(DmThinMode::RawDevice)
+            }
+        }
+        _ => None,
+    };
+
     let init_config = InitConfig {
         storage_backend: args.storage,
         state_dir: state_dir.to_path_buf(),
@@ -94,9 +133,10 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         device: args.device.clone(),
         storage_path: storage_path.clone(),
         btrfs_size: None,
-        dm_thin_size: args.size.clone(),
-        dm_thin_metadata_size: args.metadata_size.clone(),
-        dm_thin_block_size: args.block_size,
+        dm_thin_size: args.size,
+        dm_thin_metadata_size: args.metadata_size,
+        dm_thin_block_size: resolved_block_size,
+        dm_thin_mode: resolved_dm_thin_mode,
     };
     init_storage(&init_config)?;
 
@@ -127,7 +167,8 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         wan_iface,
         state_dir: state_dir.to_path_buf(),
         storage_path,
-        dm_thin_block_size: args.block_size,
+        dm_thin_block_size: resolved_block_size,
+        dm_thin_mode: resolved_dm_thin_mode,
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
@@ -152,6 +193,7 @@ mod tests {
             state_dir: PathBuf::default(),
             storage_path: None,
             dm_thin_block_size: None,
+            dm_thin_mode: None,
         }
     }
 

@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::size::ByteSize;
-use crate::config::GlobalConfig;
+use crate::config::{DmThinMode, GlobalConfig};
 use crate::error::Result;
 use crate::image::registry::ImageEntry;
 use crate::state::vm::{NetworkInfo, VmMetadata};
@@ -96,14 +96,18 @@ pub struct InitConfig {
     /// Size for the file-backed btrfs image (e.g., `"50G"`). When set, the
     /// btrfs backend treats `storage_path` as a sparse file to create.
     pub btrfs_size: Option<String>,
-    /// Size of the dm-thin data device (e.g., `"50G"`). Required for
-    /// file-backed dm-thin pools, ignored for raw block devices.
-    pub dm_thin_size: Option<String>,
-    /// Override metadata device size for dm-thin (e.g., `"800M"`).
-    /// `None` lets the backend compute it via `thin_metadata_size`.
-    pub dm_thin_metadata_size: Option<String>,
+    /// Size of the dm-thin data device. Required for file-backed
+    /// dm-thin pools, ignored for raw block devices.
+    pub dm_thin_size: Option<ByteSize>,
+    /// Override metadata device size for dm-thin. `None` lets the
+    /// backend compute it via `thin_metadata_size`.
+    pub dm_thin_metadata_size: Option<ByteSize>,
     /// dm-thin pool block size in 512-byte sectors. `None` uses the backend default.
     pub dm_thin_block_size: Option<u32>,
+    /// dm-thin layout (file-backed vs raw-device). Resolved by the CLI
+    /// from `storage_path` so the backend doesn't have to second-guess
+    /// what the user supplied.
+    pub dm_thin_mode: Option<DmThinMode>,
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +255,14 @@ pub trait StorageBackend {
     /// Linux/ZFS: `/dev/zvol/pool/dataset/vms/vm_name`.
     /// Linux/dm-thin: `/dev/mapper/ember-vm-<vm_name>`.
     /// macOS/APFS: `<state_dir>/vms/<vm_name>/rootfs.img`.
-    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf;
+    ///
+    /// Backends that lazily activate kernel state (notably dm-thin: pool
+    /// table + per-VM thin device live only in kernel memory and are
+    /// gone after a host reboot) must ensure the device is live before
+    /// returning. Callers — `LinuxVm::start`, `vm create`, `vm fork` —
+    /// rely on this so the path is immediately usable for `mount` /
+    /// `open`.
+    fn disk_device_path(&self, vm: &VmMetadata) -> Result<PathBuf>;
 
     /// Clone a VM's disk storage to create a new VM (used by `vm fork`).
     fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle>;

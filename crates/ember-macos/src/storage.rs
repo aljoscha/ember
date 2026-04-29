@@ -442,8 +442,8 @@ impl StorageBackend for MacosStorage {
     ///
     /// On macOS the raw `.img` file is passed directly to AVF — no
     /// block device indirection like ZFS zvols.
-    fn disk_device_path(&self, vm: &VmMetadata) -> PathBuf {
-        self.vm_rootfs(&vm.name)
+    fn disk_device_path(&self, vm: &VmMetadata) -> Result<PathBuf> {
+        Ok(self.vm_rootfs(&vm.name))
     }
 
     /// Clone a source VM's disk for forking via APFS copy-on-write.
