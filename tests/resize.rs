@@ -211,7 +211,7 @@ fn resize_grows_disk() {
     // Verify initial ZFS volsize.
     assert_eq!(
         common::linux::get_zvol_size_bytes(&vm_zvol),
-        1 * 1024 * 1024 * 1024,
+        1024 * 1024 * 1024,
         "initial zvol should be 1 GiB"
     );
 
