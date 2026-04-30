@@ -6,8 +6,7 @@
 //! - VM delete removes storage
 //! - Non-APFS (HFS+) detection and warnings
 //!
-//! Cross-platform snapshot and resize tests live in `snapshot.rs` and
-//! `resize.rs` respectively.
+//! Cross-platform resize tests live in `resize.rs`.
 //!
 //! Requirements:
 //! - macOS with APFS filesystem (default since 10.13)
@@ -58,7 +57,7 @@ fn apfs_clone_does_not_reduce_free_space() {
     );
 }
 
-/// `ember debug storage-efficiency` should report images, VMs, and snapshots.
+/// `ember debug storage-efficiency` should report images and VMs.
 #[test]
 #[ignore]
 fn storage_efficiency_shows_savings() {
@@ -72,17 +71,20 @@ fn storage_efficiency_shows_savings() {
         let vm_name = format!("effvm{i}");
         common::macos::create_test_vm_manual(&state_dir, &vm_name, "effimg-latest");
 
+        // Fork each VM to exercise a second layer of CoW (image → VM → fork).
+        let fork_name = format!("efffork{i}");
         let output = common::ember(&[
             "--state-dir",
             state,
-            "snapshot",
-            "create",
+            "vm",
+            "fork",
             &vm_name,
-            "snap1",
+            &fork_name,
+            "--no-start",
         ]);
         assert!(
             output.status.success(),
-            "snapshot create failed: {}",
+            "vm fork failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -101,25 +103,18 @@ fn storage_efficiency_shows_savings() {
     );
     assert!(stdout.contains("VMs:"), "expected 'VMs:' in: {stdout}");
     assert!(
-        stdout.contains("Snapshots:"),
-        "expected 'Snapshots:' in: {stdout}"
-    );
-    assert!(
         stdout.contains("Total logical:"),
         "expected 'Total logical:' in: {stdout}"
     );
 }
 
-/// VM delete should remove all storage (rootfs + snapshots directory).
+/// VM delete should remove all storage (rootfs + VM directory).
 #[test]
 #[ignore]
 fn vm_delete_removes_storage() {
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = common::macos::setup_with_vm(tmp.path(), "deltest", "delvm");
     let state = state_dir.to_str().unwrap();
-
-    let output = common::ember(&["--state-dir", state, "snapshot", "create", "delvm", "snap1"]);
-    assert!(output.status.success());
 
     let vm_dir = state_dir.join("vms").join("delvm");
     assert!(vm_dir.exists(), "VM dir should exist before delete");

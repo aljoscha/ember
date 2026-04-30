@@ -14,7 +14,7 @@ The goal is the same as the btrfs spec: drop the ZFS kernel module dependency an
 * **Sparse-file backing by default**: `ember init` creates two sparse files (metadata + data) on the existing filesystem and assembles them into a thin pool via `losetup` + `dmsetup`. A raw block device may be used instead, but is not required.
 * **Kernel-builtin**: dm-thin is in-tree (`CONFIG_DM_THIN_PROVISIONING`), shipped by every mainstream distribution since ~2012. No DKMS, no out-of-tree module, no licensing friction with the kernel.
 * **No filesystem on the pool**: The pool itself is a block-device factory. Each thin volume is independently formatted with ext4 (the same ext4 image pipeline used today). The pool does not see file-level structure.
-* **Thin volumes and snapshots are the same primitive**: In dm-thin, a snapshot is just another thin volume that shares blocks with its source. Image base, VM disk, user snapshot, and fork all use the same `create_snap` call.
+* **Thin volumes and snapshots are the same primitive**: In dm-thin, a snapshot is just another thin volume that shares blocks with its source. Image base, VM disk, and fork all use the same `create_snap` call.
 * **Random 64-bit thin ids**: Unlike ZFS where datasets are addressed by name, dm-thin volumes are addressed by numeric ids. Ember picks a random `u64` per volume and retries on the rare collision. The id is stored on the existing `VmMetadata`/`ImageEntry` records; no separate allocator state.
 * **Root required**: Same as ZFS — `dmsetup`, `losetup`, `mount`, and Firecracker all need root.
 
@@ -27,9 +27,7 @@ The goal is the same as the btrfs spec: drop the ZFS kernel module dependency an
 | `zfs create -V 10G pool/images/x` (zvol) | `dmsetup message ember-pool 0 "create_thin <random_u64>"` + `dmsetup create ember-img-x` | Thin volume replaces zvol |
 | `zfs snapshot pool/images/x@base` | `dmsetup message ember-pool 0 "create_snap <base_id> <src_id>"` | Snapshot is just another thin id |
 | `zfs clone pool/images/x@base pool/vms/y` | `create_snap <vm_id> <base_id>` + `dmsetup create ember-vm-y` | Same `create_snap`; activate as device |
-| `zfs snapshot pool/vms/y@snap` | suspend vm + `create_snap <snap_id> <vm_id>` + resume | Suspend ensures consistent on-disk state |
-| `zfs rollback pool/vms/y@snap` | remove vm device + delete vm thin + `create_snap <new_vm_id> <snap_id>` + recreate vm device | Restore replaces the live volume |
-| `zfs destroy pool/vms/y@snap` | `dmsetup message ember-pool 0 "delete <id>"` | Releases blocks back to the pool |
+| `zfs clone pool/vms/a@fork-b pool/vms/b` | suspend vm + `create_snap <fork_id> <vm_id>` + resume + activate | Fork is the same `create_snap` primitive |
 | `zfs set volsize=20G pool/vms/y` | `dmsetup suspend` + `dmsetup load` (new size) + `dmsetup resume` + `resize2fs` | Resize is a table reload |
 | `zfs destroy -r pool/vms/y` | `dmsetup remove ember-vm-y` + `delete <id>` | Two-step: deactivate then free |
 | `/dev/zvol/pool/vms/y` | `/dev/mapper/ember-vm-y` | Different path, same shape |
@@ -227,7 +225,7 @@ Why this is safe:
 * No persistent counter, no allocator file, no flock around id generation.
 
 `create_snap` follows the same pattern (allocate id, retry on `EEXIST`).
-The `id` is recorded on the relevant `VmMetadata`/`ImageEntry`/`SnapshotEntry` under whichever lock already protects that record; the kernel pool itself remains the source of truth for liveness, queryable via `thin_dump` for recovery.
+The `id` is recorded on the relevant `VmMetadata`/`ImageEntry` under whichever lock already protects that record; the kernel pool itself remains the source of truth for liveness, queryable via `thin_dump` for recovery.
 
 The serialized type on those records stays `u64` so the on-disk format does not need to change if the kernel ever lifts the 24-bit cap.
 For now only the low 24 bits are populated.
@@ -438,59 +436,6 @@ ember storage grow --size 100G
 Metadata cannot be resized in place.
 If `thin_metadata_size` for the new pool size exceeds the existing metadata device, ember refuses the grow and prints instructions for an offline metadata move using `pdata_tools` (out of scope for the initial implementation; doc only).
 
-## User snapshots
-
-```bash
-# Create
-ember snapshot create myvm s1
-→  id_s1 = fresh_thin_id()
-→  dmsetup suspend ember-vm-myvm
-→  dmsetup message ember-pool 0 "create_snap <id_s1> <id_vm>"
-→  dmsetup resume ember-vm-myvm
-   (id_s1 stays inactive — no /dev/mapper entry until restore)
-
-# Restore (VM must be stopped)
-ember snapshot restore myvm s1
-→  dmsetup remove ember-vm-myvm
-→  dmsetup message ember-pool 0 "delete <id_vm>"
-→  id_vm_new = fresh_thin_id()
-→  dmsetup message ember-pool 0 "create_snap <id_vm_new> <id_s1>"
-→  dmsetup create ember-vm-myvm --table "0 <sectors> thin /dev/mapper/ember-pool <id_vm_new>"
-   VmMetadata.thin_id = id_vm_new
-
-# List
-ember snapshot list myvm
-→  read snapshot records from VmMetadata (or a sidecar; see below)
-
-# Delete
-ember snapshot delete myvm s1
-→  dmsetup message ember-pool 0 "delete <id_s1>"
-```
-
-### Snapshot consistency
-
-Suspending the VM volume during `create_snap` flushes outstanding I/O and forces a metadata commit before the snapshot is taken.
-The kernel performs the equivalent of an fsync at the block layer.
-A guest that has not fsynced its in-flight writes may still see an uncrashed-but-dirty filesystem on the snapshot, exactly as with ZFS zvol snapshots.
-This matches existing behavior; no additional guarantees are introduced.
-
-### Snapshot metadata
-
-Snapshot records are stored alongside `VmMetadata`, since the existing ZFS backend reads them via `zfs::snapshot::list`.
-For dm-thin, ember maintains a `snapshots: Vec<SnapshotEntry>` list in `vm.json`:
-
-```rust
-pub struct SnapshotEntry {
-    pub name: String,
-    pub thin_id: u64,
-    pub created_at: String,
-    pub size_sectors: u64,
-}
-```
-
-`list_snapshots` reads this list.
-`size` reflects unique block usage and can be queried via `dmsetup status` or `thin_ls --metadata-snap` for accurate accounting; for the initial implementation, ember reports the volume's virtual size and defers exclusive-block accounting to a future enhancement.
-
 ## VM fork
 
 ```bash
@@ -552,7 +497,6 @@ pub struct VmMetadata {
     /// dm-thin volume id. None for ZFS/btrfs/APFS backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thin_id: Option<u64>,
-    pub snapshots: Vec<SnapshotEntry>,  // NEW: dm-thin owns this list
     // ...
 }
 
@@ -570,10 +514,6 @@ pub struct ImageEntry {
 
 The `#[serde(skip_serializing_if = "Option::is_none")]` keeps ZFS configs unchanged on disk.
 Existing `vm.json` and `registry.json` files are read without modification — the ZFS backend simply ignores `thin_id`.
-
-For ZFS, the `snapshots` list remains empty in `vm.json` and `list_snapshots` continues to read live state from `zfs::snapshot::list`.
-The dm-thin backend writes to it.
-This split is acceptable but slightly asymmetric; an alternative is for ZFS to mirror its snapshots into `vm.json` too, which is out of scope here.
 
 ## Image dependency tracking
 
@@ -620,7 +560,7 @@ pub struct DmThinStorage {
 
 The struct holds no allocator state.
 `fresh_thin_id()` generates a random `u64` and returns it; collisions are handled by the kernel (`create_thin` returns `EEXIST`) and the caller retries.
-The authoritative record of which ids are live lives in `ImageEntry`/`VmMetadata`/`SnapshotEntry`, which are already updated under the existing per-VM and registry locks — no new locking primitive is introduced.
+The authoritative record of which ids are live lives in `ImageEntry`/`VmMetadata`, which are already updated under the existing per-VM and registry locks — no new locking primitive is introduced.
 
 ### Display and platform adaptations
 
@@ -638,9 +578,6 @@ The authoritative record of which ids are live lives in `ImageEntry`/`VmMetadata
 | Init | `zpool create` + `zfs create` | `mkfs.btrfs` + `mount` + `mkdir` | `truncate` + `losetup` + `dmsetup create thin-pool` | `mkdir` |
 | Base image | zvol + `@base` snapshot | Raw `.img` file | Thin volume + snapshot id | Raw `.img` file |
 | VM clone | `zfs clone x@base y` | `cp --reflink=always x.img y.img` | `dmsetup message create_snap` + `dmsetup create` | `cp -c x.img y.img` |
-| Snapshot | `zfs snapshot y@snap` | `cp --reflink=always` | suspend + `create_snap` + resume | `cp -c` |
-| Restore | `zfs rollback y@snap` | `cp --reflink=always` + `mv` | remove + delete + `create_snap` + create | `cp -c` + `mv` |
-| Delete snap | `zfs destroy y@snap` | `rm snap.img` | `dmsetup message delete` | `rm snap.img` |
 | Resize | `zfs set volsize` + `resize2fs` | `truncate` + `resize2fs` | `dmsetup load` + `resize2fs` | `truncate` + `resize2fs` |
 | Fork | `zfs clone` (creates dependency) | `cp --reflink=always` (independent) | `create_snap` (independent) | `cp -c` (independent) |
 | Drive path | `/dev/zvol/...` | `.../rootfs.img` (file) | `/dev/mapper/...` | `.../rootfs.img` (file) |
@@ -671,7 +608,7 @@ The macOS `st_blocks` approach used by the btrfs and APFS backends does not appl
 * **Metadata exhaustion**: Less recoverable than data exhaustion. The metadata device must be sized generously at init. `ember storage info` should warn when metadata usage exceeds 80%.
 * **Block size is permanent**: Chosen at `dmsetup create`; cannot be changed without rebuilding the pool. The 64 KiB default is a balance; users with very large VM disks (~hundreds of GiB) may want 128–256 KiB blocks for lower metadata overhead.
 * **Loop device limits**: The default `max_loop=8` per kernel module load can be a constraint on systems with many loop-using services. Ember uses two loop devices total (metadata and data); the limit only matters when other software is competing. Documented as a troubleshooting hint, not a hard requirement.
-* **Numeric id lifecycle**: Thin ids live on `VmMetadata`/`ImageEntry`/`SnapshotEntry`. Loss of the state directory therefore loses the name→id map even though the pool metadata is intact. Recovery is possible via `thin_dump` (lists all live thin ids) but requires manual reconstruction. No worse than the equivalent loss for ZFS or btrfs configs.
+* **Numeric id lifecycle**: Thin ids live on `VmMetadata`/`ImageEntry`. Loss of the state directory therefore loses the name→id map even though the pool metadata is intact. Recovery is possible via `thin_dump` (lists all live thin ids) but requires manual reconstruction. No worse than the equivalent loss for ZFS or btrfs configs.
 * **Concurrent invocations**: Race-free by construction. The kernel rejects duplicate ids atomically; the random-pick-and-retry loop tolerates concurrent creators without coordination. Per-record state mutation (writing `thin_id` into `vm.json` etc.) is already serialized by the existing per-VM and registry locks.
 * **No data checksums**: Bit rot on the underlying block device goes undetected. Users who need this should layer dm-thin on top of LVM mirrors or hardware RAID, or stay on ZFS.
 * **No `send`/`receive` equivalent**: Backup and migration require `dd` of the activated device, or `thin_dump` + `thin_delta` for incremental sync. Out of scope for the initial implementation.

@@ -1,16 +1,14 @@
 //! macOS storage backend: APFS copy-on-write clones for disk images.
 //!
 //! Uses raw `.img` files (ext4) and `cp -c` (APFS CoW clones) for instant
-//! VM cloning and snapshots. No ZFS, no root privileges required.
+//! VM cloning. No ZFS, no root privileges required.
 //!
 //! Storage layout under the state directory:
 //! ```text
 //! ~/Library/Application Support/ember/
 //! ├── images/data/<name>-<tag>.img      # Base ext4 disk images
 //! └── vms/<vm-name>/
-//!     ├── rootfs.img                    # APFS clone of base image
-//!     └── snapshots/
-//!         └── <snap>.img                # APFS clone at snapshot time
+//!     └── rootfs.img                    # APFS clone of base image
 //! ```
 
 use std::fs;
@@ -18,16 +16,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend, VolumeHandle};
+use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
 use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
-use ember_core::state::vm::{SnapshotEntry, VmMetadata};
+use ember_core::state::vm::VmMetadata;
 
 /// macOS storage backend using APFS copy-on-write clones.
 ///
-/// Holds the state directory path, from which all image/VM/snapshot
-/// paths are derived.
+/// Holds the state directory path, from which all image/VM paths are
+/// derived.
 #[derive(Clone)]
 pub struct MacosStorage {
     /// Root state directory (e.g., `~/Library/Application Support/ember`).
@@ -62,11 +60,6 @@ impl MacosStorage {
     /// Path to a VM's rootfs disk image.
     fn vm_rootfs(&self, vm_name: &str) -> PathBuf {
         self.vm_dir(vm_name).join("rootfs.img")
-    }
-
-    /// Path to a VM's snapshots directory.
-    fn vm_snapshots_dir(&self, vm_name: &str) -> PathBuf {
-        self.vm_dir(vm_name).join("snapshots")
     }
 
     /// Path to a base image file.
@@ -162,175 +155,10 @@ impl StorageBackend for MacosStorage {
             source: e,
         })?;
 
-        // Create snapshots directory for this VM.
-        let snap_dir = self.vm_snapshots_dir(vm_name);
-        fs::create_dir_all(&snap_dir).map_err(|e| Error::Io {
-            path: snap_dir,
-            source: e,
-        })?;
-
         let dest = self.vm_rootfs(vm_name);
         apfs_clone(&src, &dest)?;
 
         Ok(VolumeHandle::from_path(dest))
-    }
-
-    /// Create a snapshot by APFS-cloning the VM's current rootfs.
-    ///
-    /// `cp -c vms/<vm>/rootfs.img → vms/<vm>/snapshots/<snap>.img`
-    /// This is instant (CoW) and costs no additional disk space until
-    /// the VM's rootfs diverges from the snapshot.
-    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
-        let vm_name = vm.name.as_str();
-        let src = self.vm_rootfs(vm_name);
-        if !src.exists() {
-            return Err(Error::Image(format!(
-                "VM rootfs not found: {}",
-                src.display()
-            )));
-        }
-
-        let snap_dir = self.vm_snapshots_dir(vm_name);
-        fs::create_dir_all(&snap_dir).map_err(|e| Error::Io {
-            path: snap_dir.clone(),
-            source: e,
-        })?;
-
-        let dest = snap_dir.join(format!("{snap_name}.img"));
-        if dest.exists() {
-            return Err(Error::Image(format!(
-                "snapshot '{snap_name}' already exists for VM '{vm_name}'"
-            )));
-        }
-
-        apfs_clone(&src, &dest)?;
-        // APFS tracks snapshots as files on disk; nothing to add to vm.json.
-        Ok(None)
-    }
-
-    /// Restore a snapshot by replacing the VM's rootfs with an APFS clone
-    /// of the snapshot file.
-    ///
-    /// `cp -c vms/<vm>/snapshots/<snap>.img → vms/<vm>/rootfs.img`
-    /// The old rootfs is removed first, then replaced with a fresh CoW clone
-    /// of the snapshot.
-    fn restore_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<VolumeHandle> {
-        let vm_name = vm.name.as_str();
-        let snap_path = self
-            .vm_snapshots_dir(vm_name)
-            .join(format!("{snap_name}.img"));
-        if !snap_path.exists() {
-            return Err(Error::Image(format!(
-                "snapshot '{snap_name}' not found for VM '{vm_name}'"
-            )));
-        }
-
-        let rootfs = self.vm_rootfs(vm_name);
-
-        // Clone to a temporary file first, then atomically rename.
-        // This prevents data loss if the clone fails — the original rootfs
-        // is only replaced once the new clone is fully written.
-        let tmp_rootfs = rootfs.with_extension("img.restoring");
-        if tmp_rootfs.exists() {
-            fs::remove_file(&tmp_rootfs).map_err(|e| Error::Io {
-                path: tmp_rootfs.clone(),
-                source: e,
-            })?;
-        }
-
-        apfs_clone(&snap_path, &tmp_rootfs)?;
-
-        // Atomic rename replaces the old rootfs in one operation.
-        fs::rename(&tmp_rootfs, &rootfs).map_err(|e| Error::Io {
-            path: rootfs.clone(),
-            source: e,
-        })?;
-        Ok(VolumeHandle::from_path(rootfs))
-    }
-
-    /// Delete a snapshot by removing its image file.
-    ///
-    /// APFS reference-counts the underlying blocks — deleting a snapshot only
-    /// frees blocks that are not shared with other clones (rootfs or other
-    /// snapshots).
-    fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()> {
-        let vm_name = vm.name.as_str();
-        let snap_path = self
-            .vm_snapshots_dir(vm_name)
-            .join(format!("{snap_name}.img"));
-        if !snap_path.exists() {
-            return Err(Error::Image(format!(
-                "snapshot '{snap_name}' not found for VM '{vm_name}'"
-            )));
-        }
-
-        fs::remove_file(&snap_path).map_err(|e| Error::Io {
-            path: snap_path,
-            source: e,
-        })?;
-        Ok(())
-    }
-
-    /// List all snapshots for a VM by reading the `snapshots/` directory.
-    ///
-    /// Each `.img` file in the directory is a snapshot. Metadata (creation
-    /// time, size) comes from `fs::metadata` on each file.
-    fn list_snapshots(&self, vm: &VmMetadata) -> Result<Vec<SnapshotInfo>> {
-        let snap_dir = self.vm_snapshots_dir(&vm.name);
-        if !snap_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        let mut snapshots = Vec::new();
-        let entries = fs::read_dir(&snap_dir).map_err(|e| Error::Io {
-            path: snap_dir.clone(),
-            source: e,
-        })?;
-
-        for entry in entries {
-            let entry = entry.map_err(|e| Error::Io {
-                path: snap_dir.clone(),
-                source: e,
-            })?;
-            let path = entry.path();
-
-            // Only consider .img files as snapshots.
-            if path.extension().and_then(|e| e.to_str()) != Some("img") {
-                continue;
-            }
-
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-
-            let meta = fs::metadata(&path).map_err(|e| Error::Io {
-                path: path.clone(),
-                source: e,
-            })?;
-
-            // Use file modification time as creation timestamp. On macOS,
-            // the birth time (created) would be more accurate, but mtime
-            // is portable and close enough — the file is created once and
-            // never modified.
-            let created_at = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
-            snapshots.push(SnapshotInfo {
-                name,
-                created_at,
-                size: meta.len(),
-            });
-        }
-
-        // Sort by creation time (oldest first) for consistent output.
-        snapshots.sort_by_key(|s| s.created_at);
-        Ok(snapshots)
     }
 
     /// Resize a VM's rootfs image.
@@ -411,7 +239,7 @@ impl StorageBackend for MacosStorage {
         Ok(())
     }
 
-    /// Destroy all storage for a VM: rootfs image, snapshots, and VM directory.
+    /// Destroy all storage for a VM: rootfs image and VM directory.
     ///
     /// Silently succeeds if the directory doesn't exist (idempotent delete).
     fn destroy_vm_storage(&self, vm: &VmMetadata) -> Result<()> {
@@ -449,8 +277,8 @@ impl StorageBackend for MacosStorage {
     /// Clone a source VM's disk for forking via APFS copy-on-write.
     ///
     /// Directly clones the source VM's rootfs into the target VM's rootfs
-    /// using `cp -c`. No intermediate snapshot is created — APFS clones
-    /// are fully independent, so no cleanup or dependency tracking is needed.
+    /// using `cp -c`. APFS clones are fully independent, so no cleanup
+    /// or dependency tracking is needed.
     fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle> {
         let source_rootfs = self.vm_rootfs(&source.name);
         if !source_rootfs.exists() {
@@ -460,15 +288,9 @@ impl StorageBackend for MacosStorage {
             )));
         }
 
-        // Create target VM directory and snapshots subdirectory.
         let target_dir = self.vm_dir(target_vm);
         fs::create_dir_all(&target_dir).map_err(|e| Error::Io {
             path: target_dir.clone(),
-            source: e,
-        })?;
-        let snap_dir = self.vm_snapshots_dir(target_vm);
-        fs::create_dir_all(&snap_dir).map_err(|e| Error::Io {
-            path: snap_dir,
             source: e,
         })?;
 

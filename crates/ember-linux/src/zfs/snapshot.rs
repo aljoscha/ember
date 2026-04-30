@@ -3,7 +3,7 @@
 //! Snapshots are point-in-time copies of datasets or zvols. Ember
 //! uses them for:
 //!   - `@base` snapshots on image zvols (clone source for VMs)
-//!   - User-created snapshots on VM zvols (Phase 6)
+//!   - `fork-<name>` snapshots on VM zvols (clone source for forks)
 
 use std::process::Command;
 

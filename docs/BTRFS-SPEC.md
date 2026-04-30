@@ -21,9 +21,7 @@ This document specifies how ember will support btrfs as an alternative to ZFS fo
 | `zfs create -V 10G pool/images/x` (zvol) | `cp image.img images/x.img` | Regular file replaces block device |
 | `zfs snapshot pool/images/x@base` | Not needed | The `.img` file itself is the base; no snapshot layer |
 | `zfs clone pool/images/x@base pool/vms/y` | `cp --reflink=always images/x.img vms/y/rootfs.img` | Instant CoW clone |
-| `zfs snapshot pool/vms/y@snap` | `cp --reflink=always rootfs.img snapshots/snap.img` | Snapshot is a reflink copy |
-| `zfs rollback pool/vms/y@snap` | `cp --reflink=always snap.img rootfs.img` | Replace rootfs with snapshot clone |
-| `zfs destroy pool/vms/y@snap` | `rm snapshots/snap.img` | Just delete the file |
+| `zfs clone pool/vms/a@fork-b pool/vms/b` | `cp --reflink=always vms/a/rootfs.img vms/b/rootfs.img` | Fork is an independent reflink clone |
 | `zfs set volsize=20G pool/vms/y` | `truncate -s 20G rootfs.img` | Grow the sparse file |
 | `zfs destroy -r pool/vms/y` | `rm -rf vms/y/` | Delete directory tree |
 | `/dev/zvol/pool/vms/y` | `/var/lib/ember/btrfs/vms/y/rootfs.img` | File path replaces block device path |
@@ -328,31 +326,6 @@ ember vm resize myvm --disk-size 8G
 4. `resize2fs /var/lib/ember/btrfs/vms/myvm/rootfs.img` — expand ext4
 
 Both `e2fsck` and `resize2fs` operate directly on image files (no loop mount needed for resize). Shrinking is not supported. The approach is the same as `MacosStorage::resize` (truncate + e2fsck + resize2fs), though `e2fsck` uses `-f -p` to match the existing Linux convention.
-
-## User Snapshots
-
-```bash
-# Create: reflink clone current state
-ember snapshot create myvm snap1
-→  cp --reflink=always vms/myvm/rootfs.img vms/myvm/snapshots/snap1.img
-
-# Restore: replace rootfs with snapshot clone (VM must be stopped)
-ember snapshot restore myvm snap1
-→  cp --reflink=always vms/myvm/snapshots/snap1.img vms/myvm/rootfs.img.restoring
-→  mv vms/myvm/rootfs.img.restoring vms/myvm/rootfs.img
-
-# List: read snapshot directory
-ember snapshot list myvm
-→  ls vms/myvm/snapshots/*.img  (stat each for size and mtime)
-
-# Delete: remove snapshot file
-ember snapshot delete myvm snap1
-→  rm vms/myvm/snapshots/snap1.img
-```
-
-### Atomic Restore
-
-Snapshot restore uses a two-step process for atomicity: reflink clone to a `.restoring` file, then `mv` (rename) to the final path. `mv` within the same filesystem is atomic — if interrupted, either the old or new file is present, never a partial copy. The macOS backend uses the same approach.
 
 ## VM Fork (Instant Clone)
 

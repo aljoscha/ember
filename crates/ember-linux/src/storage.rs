@@ -1,4 +1,4 @@
-//! Linux storage backend: ZFS zvols, snapshots, and clones.
+//! Linux storage backend: ZFS zvols and clones.
 //!
 //! Wraps the `zfs::pool`, `zfs::dataset`, `zfs::volume`, and `zfs::snapshot`
 //! modules behind the [`StorageBackend`] trait. On Linux, each VM's rootfs
@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::zfs;
-use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend, VolumeHandle};
+use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
 use ember_core::config::GlobalConfig;
 use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
-use ember_core::state::vm::{SnapshotEntry, VmMetadata};
+use ember_core::state::vm::VmMetadata;
 
 /// Linux storage backend using ZFS zvols.
 #[derive(Clone)]
@@ -133,41 +133,6 @@ impl StorageBackend for LinuxStorage {
         Ok(VolumeHandle::from_path(vm_zvol))
     }
 
-    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
-        let zvol = self.vm_zvol(&vm.name);
-        zfs::snapshot::create(&zvol, snap_name)?;
-        // ZFS records snapshots in the kernel; nothing to add to vm.json.
-        Ok(None)
-    }
-
-    fn restore_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<VolumeHandle> {
-        let zvol = self.vm_zvol(&vm.name);
-        zfs::snapshot::rollback(&zvol, snap_name)?;
-        // Rollback mutates the volume in place; identity unchanged.
-        Ok(VolumeHandle::from_path(zvol))
-    }
-
-    fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()> {
-        let zvol = self.vm_zvol(&vm.name);
-        zfs::snapshot::destroy(&zvol, snap_name)
-    }
-
-    /// List snapshots, filtering out the reserved `@base` snapshot.
-    fn list_snapshots(&self, vm: &VmMetadata) -> Result<Vec<SnapshotInfo>> {
-        let zvol = self.vm_zvol(&vm.name);
-        let zfs_snaps = zfs::snapshot::list(&zvol)?;
-
-        Ok(zfs_snaps
-            .into_iter()
-            .filter(|s| s.short_name != zfs::BASE_SNAPSHOT_NAME)
-            .map(|s| SnapshotInfo {
-                name: s.short_name,
-                created_at: s.creation,
-                size: s.referenced,
-            })
-            .collect())
-    }
-
     /// Grow the zvol and expand the ext4 filesystem.
     fn resize(&self, vm: &VmMetadata, new_size: ByteSize) -> Result<()> {
         let zvol = self.vm_zvol(&vm.name);
@@ -186,7 +151,7 @@ impl StorageBackend for LinuxStorage {
         Ok(())
     }
 
-    /// Destroy the VM's zvol and all its snapshots.
+    /// Destroy the VM's zvol (and any internal fork snapshots beneath it).
     fn destroy_vm_storage(&self, vm: &VmMetadata) -> Result<()> {
         let zvol = self.vm_zvol(&vm.name);
         // Ignore errors — the zvol may already be gone.
