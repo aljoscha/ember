@@ -7,7 +7,6 @@ pub mod image;
 pub mod info;
 pub mod init;
 pub mod kernel;
-pub mod snapshot;
 pub mod ssh;
 pub mod storage;
 pub mod vm;
@@ -58,10 +57,6 @@ pub enum Command {
     /// Build and manage kernels
     #[command(subcommand)]
     Kernel(kernel::KernelCommand),
-
-    /// Manage VM snapshots
-    #[command(subcommand)]
-    Snapshot(snapshot::SnapshotCommand),
 
     /// SSH into a VM
     Ssh(ssh::SshArgs),

@@ -7,7 +7,7 @@ A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only �
 ## Design Principles
 
 - **CLI-first**: All operations via command line. No background daemon.
-- **ZFS-native**: ZFS zvols as block devices for VMs. Instant cloning from snapshots. User-facing snapshot operations.
+- **ZFS-native**: ZFS zvols as block devices for VMs. Instant cloning from snapshots. Forks via CoW clone of a VM's disk.
 - **Minimal moving parts**: Shell out to `zfs`/`zpool`/`iptables` CLI tools rather than fragile library bindings. Thin custom Firecracker API client over Unix socket.
 - **Root required**: TAP devices, iptables, ZFS, loop mounting, and Firecracker all need root. Like Docker — run as root.
 
@@ -38,12 +38,6 @@ ember
 │   ├── list [--format table|json]
 │   ├── delete <name> [--force]
 │   └── inspect <name> [--format table|json]
-│
-├── snapshot
-│   ├── create <vm-name> <snapshot-name>
-│   ├── restore <vm-name> <snapshot-name>
-│   ├── list <vm-name> [--format table|json]
-│   └── delete <vm-name> <snapshot-name>
 │
 ├── ssh <name> [-- <command>...]
 │
@@ -91,7 +85,6 @@ src/
 │   ├── init.rs          # ember init
 │   ├── vm.rs            # ember vm *
 │   ├── image.rs         # ember image *
-│   ├── snapshot.rs      # ember snapshot *
 │   ├── ssh.rs           # ember ssh
 │   ├── exec.rs          # ember exec
 │   └── cp.rs            # ember cp
@@ -170,8 +163,7 @@ src/
 │       └── @base             # snapshot, cloned per VM
 └── vms/
     └── <vm-name>             # zvol, cloned from image snapshot
-        ├── @snap1            # user snapshots
-        └── @snap2
+        └── @fork-<child>     # snapshot, cloned per fork (one per child)
 ```
 
 ### Image Pull Workflow
@@ -255,15 +247,6 @@ ember vm resize myvm --disk-size 8G
 4. Update `disk_size_gib` in VM metadata
 
 Shrinking is not supported — only growing. The command errors if the new size is smaller than or equal to the current size.
-
-### User Snapshots
-
-```
-ember snapshot create myvm snap1   →  zfs snapshot <pool>/vms/myvm@snap1
-ember snapshot restore myvm snap1  →  zfs rollback <pool>/vms/myvm@snap1  (VM must be stopped)
-ember snapshot list myvm           →  zfs list -t snapshot -r <pool>/vms/myvm
-ember snapshot delete myvm snap1   →  zfs destroy <pool>/vms/myvm@snap1
-```
 
 ### VM Fork (Instant Clone)
 
@@ -488,7 +471,7 @@ For example, during `vm start`:
 2. Remove iptables rules
 3. Delete TAP device
 4. Release IP allocation
-5. `zfs destroy` zvol (and snapshots under it)
+5. `zfs destroy` zvol (and any internal fork snapshots beneath it)
 6. Remove state directory
 
 Each step is idempotent — continues if resource already gone.

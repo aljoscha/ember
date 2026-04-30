@@ -36,8 +36,6 @@ fn storage_efficiency(state_dir: &Path) -> anyhow::Result<()> {
     // Count VM rootfs files and their logical sizes.
     let mut vm_count: u64 = 0;
     let mut vm_bytes: u64 = 0;
-    let mut snap_count: u64 = 0;
-    let mut snap_bytes: u64 = 0;
 
     if vms_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&vms_dir) {
@@ -53,19 +51,11 @@ fn storage_efficiency(state_dir: &Path) -> anyhow::Result<()> {
                     vm_count += 1;
                     vm_bytes += meta.len();
                 }
-
-                // Count snapshot .img files.
-                let snap_dir = vm_dir.join("snapshots");
-                if snap_dir.exists() {
-                    let (sc, sb) = count_img_files(&snap_dir);
-                    snap_count += sc;
-                    snap_bytes += sb;
-                }
             }
         }
     }
 
-    let total_logical = image_bytes + vm_bytes + snap_bytes;
+    let total_logical = image_bytes + vm_bytes;
 
     // Get actual disk usage by summing allocated blocks for all .img files.
     // On APFS, cloned files only report their unique (non-shared) blocks,
@@ -84,11 +74,6 @@ fn storage_efficiency(state_dir: &Path) -> anyhow::Result<()> {
         "VMs:           {:>3} ({} logical)",
         vm_count,
         format_bytes(vm_bytes)
-    );
-    println!(
-        "Snapshots:     {:>3} ({} logical)",
-        snap_count,
-        format_bytes(snap_bytes)
     );
     println!("                   {}", "─".repeat(22));
     println!("Total logical:     {}", format_bytes(total_logical));

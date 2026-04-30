@@ -12,12 +12,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use ember_core::backend::{InitConfig, SnapshotInfo, StorageBackend, VolumeHandle};
+use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
 use ember_core::config::{DmThinMode, GlobalConfig};
 use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
-use ember_core::state::vm::{SnapshotEntry, VmMetadata};
+use ember_core::state::vm::VmMetadata;
 
 use crate::dm_thin::{dm_device_exists, loop_device, pool, thin, tools, SECTOR_SIZE};
 use crate::zvol;
@@ -42,9 +42,9 @@ const MAX_METADATA_SIZE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// dm-thin storage backend.
 ///
 /// Holds the configured backing path and pool block size; thin id state
-/// lives on `VmMetadata`/`ImageEntry`/`SnapshotEntry`. Concurrent
-/// invocations are race-free thanks to the kernel's atomic id rejection
-/// in `create_thin`/`create_snap`.
+/// lives on `VmMetadata`/`ImageEntry`. Concurrent invocations are
+/// race-free thanks to the kernel's atomic id rejection in
+/// `create_thin`/`create_snap`.
 #[derive(Clone)]
 pub struct DmThinStorage {
     /// Backing path. Either a directory holding `metadata.img` and
@@ -429,109 +429,6 @@ impl StorageBackend for DmThinStorage {
         }
     }
 
-    fn snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<Option<SnapshotEntry>> {
-        self.ensure_pool_active()?;
-        self.assert_pool_healthy()?;
-        let vm_id = Self::require_vm_thin_id(vm)?;
-        let dm_name = thin::vm_dm_name(&vm.name);
-        let size_sectors = Self::vm_size_sectors(vm);
-
-        // Suspend so create_snap sees a metadata-coherent volume.
-        // Some operations (e.g. snapshotting a never-activated volume)
-        // can run without an active device, but suspending an inactive
-        // device errors. Activate first if needed.
-        self.ensure_thin_active(&dm_name, vm_id, size_sectors)?;
-
-        thin::suspend(&dm_name)?;
-        let snap_result = thin::allocate_snap(pool::POOL_NAME, vm_id);
-        let _ = thin::resume(&dm_name);
-        let snap_id = snap_result?;
-
-        Ok(Some(SnapshotEntry {
-            name: snap_name.to_string(),
-            thin_id: snap_id,
-            created_at: ember_core::state::vm::now_epoch_secs(),
-            size_sectors,
-        }))
-    }
-
-    fn restore_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<VolumeHandle> {
-        self.ensure_pool_active()?;
-        self.assert_pool_healthy()?;
-        let vm_id = Self::require_vm_thin_id(vm)?;
-        let snap = vm
-            .snapshots
-            .iter()
-            .find(|s| s.name == snap_name)
-            .ok_or_else(|| {
-                Error::Vm(format!(
-                    "snapshot '{snap_name}' not found on vm '{}'",
-                    vm.name
-                ))
-            })?;
-        let snap_id = snap.thin_id;
-
-        let dm_name = thin::vm_dm_name(&vm.name);
-        let size_sectors = Self::vm_size_sectors(vm);
-
-        // Allocate the replacement thin id from the snapshot up-front so
-        // a failure here leaves `vm.thin_id` and the kernel pool
-        // unchanged. The old order (deactivate -> delete -> allocate)
-        // would orphan `vm.thin_id` on any allocate hiccup.
-        let new_id = thin::allocate_snap(pool::POOL_NAME, snap_id)?;
-
-        // Once new_id exists, swap the dm-mapper slot over to it. Any
-        // failure from here on must release new_id so we don't leak
-        // kernel state.
-        let result = (|| -> Result<PathBuf> {
-            if dm_device_exists(&dm_name)? {
-                thin::deactivate(&dm_name)?;
-            }
-            thin::delete(pool::POOL_NAME, vm_id)?;
-            thin::activate(&dm_name, pool::POOL_NAME, new_id, size_sectors)
-        })();
-
-        match result {
-            Ok(disk_path) => Ok(VolumeHandle {
-                disk_path,
-                thin_id: Some(new_id),
-            }),
-            Err(e) => {
-                let _ = thin::delete(pool::POOL_NAME, new_id);
-                Err(e)
-            }
-        }
-    }
-
-    fn delete_snapshot(&self, vm: &VmMetadata, snap_name: &str) -> Result<()> {
-        self.ensure_pool_active()?;
-        let snap = vm
-            .snapshots
-            .iter()
-            .find(|s| s.name == snap_name)
-            .ok_or_else(|| {
-                Error::Vm(format!(
-                    "snapshot '{snap_name}' not found on vm '{}'",
-                    vm.name
-                ))
-            })?;
-        thin::delete(pool::POOL_NAME, snap.thin_id)
-    }
-
-    fn list_snapshots(&self, vm: &VmMetadata) -> Result<Vec<SnapshotInfo>> {
-        // dm-thin tracks snapshots via the persisted `vm.snapshots`
-        // list; the kernel knows nothing about names.
-        Ok(vm
-            .snapshots
-            .iter()
-            .map(|s| SnapshotInfo {
-                name: s.name.clone(),
-                created_at: s.created_at,
-                size: s.size_sectors * SECTOR_SIZE,
-            })
-            .collect())
-    }
-
     fn resize(&self, vm: &VmMetadata, new_size: ByteSize) -> Result<()> {
         self.ensure_pool_active()?;
         self.assert_pool_healthy()?;
@@ -557,13 +454,6 @@ impl StorageBackend for DmThinStorage {
         let dm_name = thin::vm_dm_name(&vm.name);
         if let Ok(true) = dm_device_exists(&dm_name) {
             let _ = thin::deactivate(&dm_name);
-        }
-        // Snapshots only live in the kernel pool; the user-level
-        // handle is `vm.json`, which is about to disappear. Free their
-        // thin ids before the VM's own id, otherwise they'd remain
-        // pinned in pool metadata with no way for ember to reach them.
-        for snap in &vm.snapshots {
-            let _ = thin::delete(pool::POOL_NAME, snap.thin_id);
         }
         if let Some(id) = vm.thin_id {
             let _ = thin::delete(pool::POOL_NAME, id);

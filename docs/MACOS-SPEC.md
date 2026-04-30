@@ -4,7 +4,7 @@ This document specifies how ember provides the same CLI experience on macOS by s
 
 ## Design Principles
 
-- **Same CLI, different backends**: All `ember` commands (`init`, `vm create/start/stop`, `ssh`, `snapshot`, etc.) work identically on macOS. The platform difference is invisible to users.
+- **Same CLI, different backends**: All `ember` commands (`init`, `vm create/start/stop`, `ssh`, `vm fork`, etc.) work identically on macOS. The platform difference is invisible to users.
 - **No root required**: Unlike Linux (where TAP devices, iptables, and ZFS all require root), the macOS backend runs entirely without `sudo`.
 - **Native tools**: Use Apple's own frameworks (Virtualization.framework, vmnet, APFS) rather than porting Linux tools. This matches ember's philosophy of shelling out to platform tools.
 - **Minimal external dependencies**: Only Homebrew packages that aren't avoidable (`e2fsprogs` for ext4, `skopeo` for OCI pulls).
@@ -14,7 +14,7 @@ This document specifies how ember provides the same CLI experience on macOS by s
 | Linux | macOS | Notes |
 |-------|-------|-------|
 | Firecracker (KVM) | Apple Virtualization Framework (AVF) | Native hypervisor, macOS 13+ |
-| ZFS zvols + snapshots | APFS clones (`cp -c`) + raw disk images | Zero-cost CoW clones |
+| ZFS zvols + clones | APFS clones (`cp -c`) + raw disk images | Zero-cost CoW clones |
 | TAP devices (ioctl) | vmnet framework (shared mode) | Built-in NAT, static IP allocation |
 | iptables (NAT/masquerade) | vmnet (handles NAT internally) | No manual firewall rules |
 | `ip` command | Not needed | vmnet manages devices |
@@ -131,10 +131,7 @@ AVF provides a virtio console device. `ember-vz` captures serial output to a log
 │   └── <vm-name>/
 │       ├── vm.json                    # VM metadata (includes PID when running)
 │       ├── rootfs.img                 # APFS clone of base image
-│       ├── console.log               # Serial console output
-│       └── snapshots/
-│           ├── snap1.img             # APFS clone at snapshot time
-│           └── snap2.img
+│       └── console.log               # Serial console output
 └── network/
     └── allocations.json              # Not needed for vmnet shared mode, but kept for consistency
 ```
@@ -174,29 +171,14 @@ After cloning, per-VM SSH keys are injected using `debugfs -w` from Homebrew e2f
 1. `debugfs -R 'stat /home/<user>'` — detect SSH user and uid/gid
 2. `debugfs -w -f <commands>` — create `.ssh/` directory, write `authorized_keys`, fix permissions/ownership via `set_inode_field`
 
-### Snapshots
-
-```bash
-# Create: clone current state
-cp -c vms/<vm-name>/rootfs.img vms/<vm-name>/snapshots/<snap-name>.img
-
-# Restore: replace current with snapshot clone
-cp -c vms/<vm-name>/snapshots/<snap-name>.img vms/<vm-name>/rootfs.img
-
-# Delete: just remove the file
-rm vms/<vm-name>/snapshots/<snap-name>.img
-```
-
-APFS handles the CoW reference counting internally. Deleting a snapshot only frees blocks not referenced by other clones.
-
 ### VM Fork
 
 ```bash
-# Snapshot source, then clone
+# Clone source disk into a new VM
 cp -c vms/<source>/rootfs.img vms/<new-name>/rootfs.img
 ```
 
-Same instant CoW semantics as ZFS clone.
+Same instant CoW semantics as ZFS clone. APFS reference-counts blocks internally, so source and fork share storage until they diverge.
 
 ### VM Resize
 
@@ -217,9 +199,6 @@ resize2fs vms/<vm-name>/rootfs.img
 |-----------|-------------|--------------|
 | Base image | zvol + `@base` snapshot | Raw `.img` file |
 | VM clone | `zfs clone pool/images/x@base pool/vms/y` | `cp -c images/x.img vms/y/rootfs.img` |
-| Snapshot | `zfs snapshot pool/vms/y@snap` | `cp -c vms/y/rootfs.img vms/y/snapshots/snap.img` |
-| Restore | `zfs rollback pool/vms/y@snap` | `cp -c vms/y/snapshots/snap.img vms/y/rootfs.img` |
-| Delete snap | `zfs destroy pool/vms/y@snap` | `rm vms/y/snapshots/snap.img` |
 | Resize | `zfs set volsize=XG` + `resize2fs` | `truncate -s XG` + `resize2fs` |
 | Fork | `zfs clone pool/vms/a@fork-b pool/vms/b` | `cp -c vms/a/rootfs.img vms/b/rootfs.img` |
 
@@ -240,11 +219,10 @@ Storage Efficiency Report
 ─────────────────────────
 Images:        2 (3.2 GB logical)
 VMs:           8 (25.6 GB logical)
-Snapshots:    12 (38.4 GB logical)
                   ──────────────────
-Total logical:    67.2 GB
+Total logical:    28.8 GB
 Actual disk used:  4.1 GB  (via df)
-CoW efficiency:   16.4x space savings
+CoW efficiency:    7.0x space savings
 ```
 
 **How it works:**
@@ -355,11 +333,7 @@ pub trait StorageBackend {
     fn init(config: &InitConfig) -> Result<()>;
     fn create_image_volume(name: &str, image_path: &Path) -> Result<PathBuf>;
     fn clone_for_vm(image_name: &str, vm_name: &str) -> Result<PathBuf>;
-    fn clone_from_snapshot(src_vm: &str, snap: &str, dst_vm: &str) -> Result<PathBuf>;  // For vm fork
-    fn snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
-    fn restore_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
-    fn delete_snapshot(vm_name: &str, snap_name: &str) -> Result<()>;
-    fn list_snapshots(vm_name: &str) -> Result<Vec<SnapshotInfo>>;
+    fn clone_vm_storage(src_vm: &str, dst_vm: &str) -> Result<PathBuf>;  // For vm fork
     fn resize(vm_name: &str, new_size: ByteSize) -> Result<()>;
     fn destroy_vm_storage(vm_name: &str) -> Result<()>;
     fn destroy_image_storage(name: &str) -> Result<()>;
@@ -382,7 +356,7 @@ src/
 │   ├── linux/
 │   │   ├── mod.rs
 │   │   ├── vm.rs           # Firecracker process management + API
-│   │   ├── storage.rs      # ZFS zvol/snapshot/clone operations
+│   │   ├── storage.rs      # ZFS zvol/clone operations
 │   │   ├── network.rs      # TAP + iptables + IP allocation
 │   │   └── image.rs        # ext4 creation with loop mount
 │   └── macos/
