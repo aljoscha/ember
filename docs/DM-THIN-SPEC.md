@@ -314,6 +314,11 @@ The first command after a reboot triggers `ensure_pool_active`:
    c. Run `thin_check /dev/loopN` (or the metadata loop). Fail loudly on metadata corruption — operator must run `thin_repair` manually.
    d. `dmsetup create ember-pool --table "0 <data_sectors> thin-pool ... 128 <low_water>"` using the values from `config.json`.
 
+Step (c) walks the entire metadata B-tree, so the *first* command after a reboot pays a one-time cost proportional to pool occupancy.
+For pools with millions of mapped blocks this can take several seconds; subsequent commands hit the cached `pool::exists` early-return and are free.
+This is intentional — silently activating a corrupt pool would damage every snapshot derived from it.
+Operators who prefer to skip the check (e.g. on read-only inspection of a known-good pool) can `dmsetup create` the pool manually before invoking ember.
+
 Per-VM and per-image volumes are activated **lazily** by methods that need them (e.g. `disk_device_path`, `mount`, `start`).
 Each method calls `ensure_thin_active(name, thin_id, size_sectors)`:
 

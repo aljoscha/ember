@@ -16,6 +16,10 @@
 
 #![cfg(target_os = "linux")]
 
+// Each integration-test crate compiles `tests/common/` as its own
+// top-level module; only `common::ember` is used here, so without this
+// attribute clippy reports every other shared helper as dead code.
+#[allow(dead_code)]
 mod common;
 
 use std::path::Path;

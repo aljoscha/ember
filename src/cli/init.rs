@@ -19,6 +19,25 @@ const DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS: u32 =
 #[cfg(not(target_os = "linux"))]
 const DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS: u32 = 128;
 
+/// Convert a CLI `--block-size` byte value into the 512-byte sector
+/// count the kernel expects, validating dm-thin's constraints: the
+/// block size must be a multiple of 64 KiB and fit in `u32` sectors.
+fn resolve_dm_thin_block_size_sectors(user: Option<ByteSize>) -> anyhow::Result<u32> {
+    let Some(size) = user else {
+        return Ok(DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS);
+    };
+    let bytes = size.bytes();
+    const MIN_BYTES: u64 = 64 * 1024;
+    if bytes < MIN_BYTES || bytes % MIN_BYTES != 0 {
+        anyhow::bail!(
+            "--block-size must be at least 64K and a multiple of 64K (got {bytes} bytes)"
+        );
+    }
+    let sectors = bytes / 512;
+    u32::try_from(sectors)
+        .map_err(|_| anyhow::anyhow!("--block-size {bytes} bytes overflows u32 sectors"))
+}
+
 #[derive(Args)]
 pub struct InitArgs {
     /// Storage backend: zfs (default) or dm-thin (Linux only)
@@ -58,10 +77,10 @@ pub struct InitArgs {
     #[arg(long)]
     pub metadata_size: Option<ByteSize>,
 
-    /// dm-thin pool block size in 512-byte sectors. Permanent at pool
-    /// creation. Defaults to 128 (= 64 KiB).
+    /// dm-thin pool block size (e.g. `64K`, `1M`). Must be a multiple
+    /// of 64 KiB; permanent at pool creation. Defaults to 64 KiB.
     #[arg(long)]
-    pub block_size: Option<u32>,
+    pub block_size: Option<ByteSize>,
 
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
@@ -101,13 +120,12 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Resolve block size up-front for dm-thin so the persisted config
     // pins the value the pool was actually created with, even when the
-    // user omits `--block-size`.
+    // user omits `--block-size`. Internally the kernel addresses pool
+    // blocks in 512-byte sectors; the CLI accepts a `ByteSize` so the
+    // UX matches `--size` / `--metadata-size`.
     let resolved_block_size = match args.storage {
-        StorageKind::DmThin => Some(
-            args.block_size
-                .unwrap_or(DM_THIN_DEFAULT_BLOCK_SIZE_SECTORS),
-        ),
-        _ => args.block_size,
+        StorageKind::DmThin => Some(resolve_dm_thin_block_size_sectors(args.block_size)?),
+        _ => None,
     };
 
     // Resolve file-vs-raw-device layout once and persist it. Doing this

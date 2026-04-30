@@ -22,6 +22,20 @@ pub fn bytes_to_sectors(bytes: u64) -> u64 {
     bytes.div_ceil(SECTOR_SIZE)
 }
 
+/// Whether a device-mapper device with the given name is currently
+/// active. Used to probe pools, thin volumes, and staging devices —
+/// `dmsetup info` doesn't care which kind it is.
+pub fn dm_device_exists(name: &str) -> ember_core::error::Result<bool> {
+    let output = std::process::Command::new("dmsetup")
+        .args(["info", "--noheadings", name])
+        .output()
+        .map_err(|e| ember_core::error::Error::CommandExec {
+            command: "dmsetup info".to_string(),
+            source: e,
+        })?;
+    Ok(output.status.success())
+}
+
 /// Whether an [`Error`](ember_core::error::Error) reports a kernel `EEXIST`
 /// from a `dmsetup message` operation. Used by the `create_thin` /
 /// `create_snap` retry loops to detect thin id collisions.

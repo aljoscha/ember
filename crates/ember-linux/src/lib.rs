@@ -26,13 +26,19 @@ use ember_core::error::{Error, Result};
 /// Construct the active storage backend.
 ///
 /// Returns the implementation indicated by [`GlobalConfig::storage_backend`].
-/// btrfs is not yet implemented and falls back to ZFS so existing
-/// configs keep working until Phase 7.
+/// btrfs is not yet implemented; rather than silently routing through
+/// the ZFS path with garbage inputs, the call panics so a hand-edited
+/// `config.json` fails loudly. `init_storage` returns the same shape
+/// of error from the init side.
 pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
     match config.storage_backend {
         StorageKind::Zfs => Arc::new(LinuxStorage::new(config)),
         StorageKind::DmThin => Arc::new(DmThinStorage::new(config)),
-        StorageKind::Btrfs => Arc::new(LinuxStorage::new(config)),
+        StorageKind::Btrfs => panic!(
+            "btrfs storage backend is not yet implemented; \
+             config.json has storage_backend = btrfs but no \
+             implementation exists yet"
+        ),
     }
 }
 
