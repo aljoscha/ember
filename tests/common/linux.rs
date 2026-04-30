@@ -81,6 +81,24 @@ impl Drop for PoolCleanup {
     }
 }
 
+/// RAII guard: runs `ember deinit --purge` on drop so dm-thin tests
+/// always tear down the pool, loop devices, and backing files even when
+/// an assertion panics partway through.
+pub struct DmThinCleanup {
+    pub state_dir: PathBuf,
+}
+
+impl Drop for DmThinCleanup {
+    fn drop(&mut self) {
+        let _ = super::ember(&[
+            "--state-dir",
+            self.state_dir.to_str().unwrap(),
+            "deinit",
+            "--purge",
+        ]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ZFS assertions
 // ---------------------------------------------------------------------------

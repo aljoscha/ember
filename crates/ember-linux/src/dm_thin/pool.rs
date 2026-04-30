@@ -50,6 +50,42 @@ pub struct PoolStatus {
     pub mode: PoolMode,
 }
 
+/// Ensure the kernel has the `thin-pool` device-mapper target available.
+///
+/// On most distributions `dm-thin-pool` is a loadable module that
+/// `dmsetup` does not auto-load. We `modprobe` it best-effort (built-in
+/// kernels report "Module not found" but the target is already
+/// registered) and then verify it appears in `dmsetup targets`. Without
+/// this check, a missing target produces an opaque `Invalid argument`
+/// from `dmsetup create`.
+pub fn ensure_target_loaded() -> Result<()> {
+    let _ = Command::new("modprobe").arg("dm-thin-pool").output();
+
+    let output = Command::new("dmsetup")
+        .arg("targets")
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "dmsetup targets".to_string(),
+            source: e,
+        })?;
+    let output = Error::check_command("dmsetup targets", output)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let has_thin_pool = stdout
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some("thin-pool"));
+    if has_thin_pool {
+        return Ok(());
+    }
+    Err(Error::Command {
+        command: "dmsetup targets".to_string(),
+        exit_code: 0,
+        stderr: "kernel does not provide the 'thin-pool' device-mapper target. \
+                 Install or enable a kernel with CONFIG_DM_THIN_PROVISIONING and \
+                 load it with 'modprobe dm-thin-pool'."
+            .to_string(),
+    })
+}
+
 /// List active device-mapper device names whose name starts with
 /// `prefix`. Useful for finding all `ember-vm-*` and `ember-img-*`
 /// volumes during teardown.

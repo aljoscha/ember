@@ -30,6 +30,11 @@ fn dm_thin_init_and_deinit_round_trip() {
     let storage_path = tmp.path().join("dm-thin");
     let state_dir = tmp.path().join("state");
 
+    // Always tear down on the way out, even if assertions below panic.
+    let _cleanup = common::linux::DmThinCleanup {
+        state_dir: state_dir.clone(),
+    };
+
     // Init.
     let output = common::ember(&[
         "--state-dir",
@@ -86,6 +91,10 @@ fn dm_thin_init_refuses_backend_switch() {
     let storage_path = tmp.path().join("dm-thin");
     let state_dir = tmp.path().join("state");
 
+    let _cleanup = common::linux::DmThinCleanup {
+        state_dir: state_dir.clone(),
+    };
+
     // First init with dm-thin.
     let output = common::ember(&[
         "--state-dir",
@@ -119,14 +128,6 @@ fn dm_thin_init_refuses_backend_switch() {
         stderr.contains("already initialized"),
         "expected 'already initialized' message: {stderr}"
     );
-
-    // Cleanup.
-    let _ = common::ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "deinit",
-        "--purge",
-    ]);
 }
 
 /// `ember storage grow --size <larger>` should grow the data device.
@@ -136,6 +137,10 @@ fn dm_thin_storage_grow() {
     let tmp = tempfile::tempdir().unwrap();
     let storage_path = tmp.path().join("dm-thin");
     let state_dir = tmp.path().join("state");
+
+    let _cleanup = common::linux::DmThinCleanup {
+        state_dir: state_dir.clone(),
+    };
 
     let output = common::ember(&[
         "--state-dir",
@@ -174,11 +179,4 @@ fn dm_thin_storage_grow() {
         .unwrap()
         .len();
     assert_eq!(grown, 400 * 1024 * 1024);
-
-    let _ = common::ember(&[
-        "--state-dir",
-        state_dir.to_str().unwrap(),
-        "deinit",
-        "--purge",
-    ]);
 }
