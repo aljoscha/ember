@@ -122,6 +122,8 @@ impl DmThinStorage {
             return Ok(());
         }
 
+        pool::ensure_target_loaded()?;
+
         let metadata_path = self.metadata_file();
         let data_path = self.data_file();
 
@@ -199,6 +201,8 @@ impl StorageBackend for DmThinStorage {
             Error::Config("dm-thin requires --storage-path (directory or block device)".to_string())
         })?;
 
+        pool::ensure_target_loaded()?;
+
         let block_size_sectors = config
             .dm_thin_block_size
             .unwrap_or(pool::DEFAULT_BLOCK_SIZE_SECTORS);
@@ -255,19 +259,42 @@ impl StorageBackend for DmThinStorage {
         // an all-zero superblock as the signal to format a fresh pool.
         zero_head(&metadata_path)?;
 
-        // Attach loops, then assemble the pool.
+        // Attach loops, then assemble the pool. If anything past this
+        // point fails, detach the loops we attached so we don't leak
+        // them pointing at backing files that may get cleaned up.
         let metadata_loop = ensure_loop(&metadata_path)?;
-        let data_loop = ensure_loop_or_block(&data_path)?;
+        let data_loop = match ensure_loop_or_block(&data_path) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = loop_device::detach(&metadata_loop);
+                return Err(e);
+            }
+        };
 
-        let data_sectors = device_sectors(&data_loop)?;
-        pool::create(
+        let data_sectors = match device_sectors(&data_loop) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = loop_device::detach(&metadata_loop);
+                if data_path.is_file() {
+                    let _ = loop_device::detach(&data_loop);
+                }
+                return Err(e);
+            }
+        };
+        if let Err(e) = pool::create(
             pool::POOL_NAME,
             &metadata_loop,
             &data_loop,
             data_sectors,
             block_size_sectors,
             pool::DEFAULT_LOW_WATER_BLOCKS,
-        )?;
+        ) {
+            let _ = loop_device::detach(&metadata_loop);
+            if data_path.is_file() {
+                let _ = loop_device::detach(&data_loop);
+            }
+            return Err(e);
+        }
 
         println!(
             "dm-thin pool '{}' active ({} data, {} block size).",
