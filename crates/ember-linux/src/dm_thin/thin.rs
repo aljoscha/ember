@@ -99,7 +99,7 @@ pub fn device_path(name: &str) -> PathBuf {
 /// Whether a thin volume is currently activated as a `/dev/mapper`
 /// device.
 pub fn is_active(name: &str) -> Result<bool> {
-    pool::exists(name)
+    super::dm_device_exists(name)
 }
 
 /// Activate a thin volume as a `/dev/mapper/<name>` block device.

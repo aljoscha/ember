@@ -112,21 +112,6 @@ pub fn list_with_prefix(prefix: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Whether a device-mapper device with the given name is currently active.
-///
-/// Uses `dmsetup info` which exits 0 when the device exists, non-zero
-/// otherwise.
-pub fn exists(name: &str) -> Result<bool> {
-    let output = Command::new("dmsetup")
-        .args(["info", "--noheadings", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup info".to_string(),
-            source: e,
-        })?;
-    Ok(output.status.success())
-}
-
 /// Build a `thin-pool` table line.
 ///
 /// The format is documented in

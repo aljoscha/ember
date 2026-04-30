@@ -49,6 +49,11 @@ pub enum Error {
     #[error("state: {0}")]
     State(String),
 
+    /// Storage pool error (dm-thin / btrfs / ZFS pool-level state, as
+    /// distinct from individual volume / dataset errors).
+    #[error("storage pool: {0}")]
+    Pool(String),
+
     /// Config parsing or validation error.
     #[error("config: {0}")]
     Config(String),

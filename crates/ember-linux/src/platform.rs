@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ember_core::backend::{ImageToolConfig, Platform, ResolvConfMode};
-use ember_core::config::GlobalConfig;
+use ember_core::config::{GlobalConfig, StorageKind};
 use ember_core::error::Result;
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::VmMetadata;
@@ -45,10 +45,18 @@ impl Platform for LinuxPlatform {
     }
 
     fn inspect_vm_extra(metadata: &VmMetadata) -> Vec<(&'static str, String)> {
-        let mut extra = vec![
-            ("ZFS zvol", metadata.disk_path.clone()),
-            ("API socket", metadata.api_socket.display().to_string()),
-        ];
+        // dm-thin records a numeric `thin_id` on the VM metadata; ZFS
+        // does not. Branch on its presence rather than threading a
+        // `GlobalConfig` reference through the trait — the metadata
+        // already carries enough to label the disk row correctly.
+        let mut extra = match metadata.thin_id {
+            Some(thin_id) => vec![
+                ("Thin device", metadata.disk_path.clone()),
+                ("Thin id", thin_id.to_string()),
+            ],
+            None => vec![("ZFS zvol", metadata.disk_path.clone())],
+        };
+        extra.push(("API socket", metadata.api_socket.display().to_string()));
         if let Some(ref net) = metadata.network {
             extra.push(("TAP device", net.tap_device.clone()));
         }
@@ -56,14 +64,45 @@ impl Platform for LinuxPlatform {
     }
 
     fn inspect_image_extra(entry: &ImageEntry) -> Vec<(&'static str, String)> {
-        vec![("ZFS zvol", entry.disk_path.clone())]
+        match entry.thin_id {
+            Some(thin_id) => vec![
+                ("Thin device", entry.disk_path.clone()),
+                ("Thin id", thin_id.to_string()),
+            ],
+            None => vec![("ZFS zvol", entry.disk_path.clone())],
+        }
     }
 
     fn info_extra(config: &GlobalConfig) -> Vec<(&'static str, String)> {
-        let mut extra = vec![
-            ("ZFS pool", config.pool.clone()),
-            ("Dataset", format!("{}/{}", config.pool, config.dataset)),
-        ];
+        let mut extra = match config.storage_backend {
+            StorageKind::Zfs => vec![
+                ("ZFS pool", config.pool.clone()),
+                ("Dataset", format!("{}/{}", config.pool, config.dataset)),
+            ],
+            StorageKind::DmThin => {
+                let mut rows = vec![("dm-thin pool", "ember-pool".to_string())];
+                if let Some(ref path) = config.storage_path {
+                    rows.push(("Storage path", path.display().to_string()));
+                }
+                if let Some(block_size) = config.dm_thin_block_size {
+                    rows.push((
+                        "Block size",
+                        format!("{} sectors ({} KiB)", block_size, (block_size * 512) / 1024),
+                    ));
+                }
+                if let Some(mode) = config.dm_thin_mode {
+                    rows.push((
+                        "Layout",
+                        match mode {
+                            ember_core::config::DmThinMode::File => "file-backed".to_string(),
+                            ember_core::config::DmThinMode::RawDevice => "raw device".to_string(),
+                        },
+                    ));
+                }
+                rows
+            }
+            StorageKind::Btrfs => vec![("btrfs", "(unimplemented)".to_string())],
+        };
         if let Some(ref wan_iface) = config.wan_iface {
             extra.push(("WAN iface", wan_iface.clone()));
         }
