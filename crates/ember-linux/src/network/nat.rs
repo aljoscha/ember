@@ -19,71 +19,57 @@ use ember_core::error::{Error, Result};
 /// through the host's WAN interface via masquerading (SNAT):
 ///
 /// ```text
-/// -t nat -A POSTROUTING -s <guest_ip>/32 -o <wan_iface> -m comment --comment <comment> -j MASQUERADE
-/// -A FORWARD -i <tap_device> -o <wan_iface> -m comment --comment <comment> -j ACCEPT
-/// -A FORWARD -i <wan_iface> -o <tap_device> -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment <comment> -j ACCEPT
+/// -t nat -A POSTROUTING -s <guest_ip>/32 -o <wan_iface> [-m comment --comment <c>] -j MASQUERADE
+/// -A FORWARD -i <tap_device> -o <wan_iface> [-m comment --comment <c>] -j ACCEPT
+/// -A FORWARD -i <wan_iface> -o <tap_device> -m conntrack --ctstate RELATED,ESTABLISHED [-m comment --comment <c>] -j ACCEPT
 /// ```
 ///
 /// `comment` is a per-installation tag (e.g. `ember:a3f4`) embedded in
 /// every rule via the `comment` match. It lets cleanup scope deletions
 /// to this installation's rules and lets users grep `iptables-save` for
-/// "rules ember put here".
+/// "rules ember put here". An empty `comment` skips the match entirely
+/// so rules added by older ember binaries (which never tagged anything)
+/// stay byte-for-byte identical and remain matchable by `remove_rules`.
 pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str, comment: &str) -> Result<()> {
     let guest_cidr = format!("{guest_ip}/32");
 
-    // 1. NAT masquerade for outbound guest traffic.
-    iptables(&[
-        "-t",
-        "nat",
-        "-A",
-        "POSTROUTING",
-        "-s",
-        &guest_cidr,
-        "-o",
-        wan_iface,
-        "-m",
-        "comment",
-        "--comment",
+    iptables(&with_comment(
+        &[
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            &guest_cidr,
+            "-o",
+            wan_iface,
+        ],
         comment,
-        "-j",
-        "MASQUERADE",
-    ])?;
+        &["-j", "MASQUERADE"],
+    ))?;
 
-    // 2. Allow forwarding from TAP to WAN.
-    iptables(&[
-        "-A",
-        "FORWARD",
-        "-i",
-        tap_device,
-        "-o",
-        wan_iface,
-        "-m",
-        "comment",
-        "--comment",
+    iptables(&with_comment(
+        &["-A", "FORWARD", "-i", tap_device, "-o", wan_iface],
         comment,
-        "-j",
-        "ACCEPT",
-    ])?;
+        &["-j", "ACCEPT"],
+    ))?;
 
-    // 3. Allow established/related return traffic from WAN to TAP.
-    iptables(&[
-        "-A",
-        "FORWARD",
-        "-i",
-        wan_iface,
-        "-o",
-        tap_device,
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "RELATED,ESTABLISHED",
-        "-m",
-        "comment",
-        "--comment",
+    iptables(&with_comment(
+        &[
+            "-A",
+            "FORWARD",
+            "-i",
+            wan_iface,
+            "-o",
+            tap_device,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+        ],
         comment,
-        "-j",
-        "ACCEPT",
-    ])?;
+        &["-j", "ACCEPT"],
+    ))?;
 
     Ok(())
 }
@@ -92,10 +78,10 @@ pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str, comment: &st
 ///
 /// Mirrors [`add_rules`] but uses `-D` (delete) instead of `-A` (append).
 /// Idempotent — silently ignores errors when rules don't exist. The
-/// `comment` argument must match the value passed to
-/// [`add_rules`]; iptables compares the full rule including the comment
-/// match, so a wrong tag turns the delete into a no-op rather than
-/// removing another install's rule.
+/// `comment` argument must match the value passed to [`add_rules`];
+/// iptables compares the full rule including the comment match, so a
+/// wrong tag turns the delete into a no-op rather than removing
+/// another install's rule.
 pub fn remove_rules(
     tap_device: &str,
     guest_ip: &str,
@@ -104,60 +90,97 @@ pub fn remove_rules(
 ) -> Result<()> {
     let guest_cidr = format!("{guest_ip}/32");
 
-    // Same rules as add_rules, but with -D to delete.
-    // Ignore "does not exist" errors for idempotency.
-    let _ = iptables_delete(&[
-        "-t",
-        "nat",
-        "-D",
-        "POSTROUTING",
-        "-s",
-        &guest_cidr,
-        "-o",
-        wan_iface,
-        "-m",
-        "comment",
-        "--comment",
+    let _ = iptables_delete(&with_comment(
+        &[
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            &guest_cidr,
+            "-o",
+            wan_iface,
+        ],
         comment,
-        "-j",
-        "MASQUERADE",
-    ]);
+        &["-j", "MASQUERADE"],
+    ));
 
-    let _ = iptables_delete(&[
-        "-D",
-        "FORWARD",
-        "-i",
-        tap_device,
-        "-o",
-        wan_iface,
-        "-m",
-        "comment",
-        "--comment",
+    let _ = iptables_delete(&with_comment(
+        &["-D", "FORWARD", "-i", tap_device, "-o", wan_iface],
         comment,
-        "-j",
-        "ACCEPT",
-    ]);
+        &["-j", "ACCEPT"],
+    ));
 
-    let _ = iptables_delete(&[
-        "-D",
-        "FORWARD",
-        "-i",
-        wan_iface,
-        "-o",
-        tap_device,
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "RELATED,ESTABLISHED",
-        "-m",
-        "comment",
-        "--comment",
+    let _ = iptables_delete(&with_comment(
+        &[
+            "-D",
+            "FORWARD",
+            "-i",
+            wan_iface,
+            "-o",
+            tap_device,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+        ],
         comment,
-        "-j",
-        "ACCEPT",
-    ]);
+        &["-j", "ACCEPT"],
+    ));
 
     Ok(())
+}
+
+/// Splice `-m comment --comment <comment>` between rule head and tail
+/// when `comment` is non-empty. Empty comment yields the unwrapped
+/// rule, matching what older ember binaries emitted byte-for-byte —
+/// crucial because iptables compares full rules during `-D`.
+fn with_comment<'a>(head: &[&'a str], comment: &'a str, tail: &[&'a str]) -> Vec<&'a str> {
+    let mut out = Vec::with_capacity(head.len() + tail.len() + 4);
+    out.extend_from_slice(head);
+    if !comment.is_empty() {
+        out.extend_from_slice(&["-m", "comment", "--comment", comment]);
+    }
+    out.extend_from_slice(tail);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_comment_skips_match_when_empty() {
+        // Legacy mode (empty comment) must produce byte-for-byte the
+        // same rule the old binary added, otherwise `iptables -D`
+        // won't match existing rules on upgraded hosts.
+        let args = with_comment(&["-A", "FORWARD", "-i", "tap0"], "", &["-j", "ACCEPT"]);
+        assert_eq!(args, vec!["-A", "FORWARD", "-i", "tap0", "-j", "ACCEPT"]);
+    }
+
+    #[test]
+    fn with_comment_inserts_comment_match_when_non_empty() {
+        let args = with_comment(
+            &["-A", "FORWARD", "-i", "tap0"],
+            "ember:a3f4",
+            &["-j", "ACCEPT"],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "-A",
+                "FORWARD",
+                "-i",
+                "tap0",
+                "-m",
+                "comment",
+                "--comment",
+                "ember:a3f4",
+                "-j",
+                "ACCEPT"
+            ]
+        );
+    }
 }
 
 /// Enable IPv4 forwarding via sysctl.

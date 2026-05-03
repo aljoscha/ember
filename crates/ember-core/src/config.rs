@@ -168,33 +168,59 @@ impl GlobalConfig {
         format!("{}/{}/vms", self.pool, self.dataset)
     }
 
-    /// dm-thin pool name, e.g. `ember-a3f4-pool`. Embedded in every
-    /// `dmsetup` invocation against the pool.
+    /// dm-thin pool name. New installs get `ember-{instance_id}-pool`;
+    /// configs that predate `instance_id` (empty value) keep the
+    /// legacy unprefixed `ember-pool` so existing kernel state on
+    /// upgraded hosts is still reachable.
     pub fn dm_thin_pool_name(&self) -> String {
-        format!("ember-{}-pool", self.instance_id)
+        if self.instance_id.is_empty() {
+            "ember-pool".to_string()
+        } else {
+            format!("ember-{}-pool", self.instance_id)
+        }
     }
 
-    /// Device-mapper name prefix for image base volumes, e.g.
-    /// `ember-a3f4-img-`.
+    /// Device-mapper name prefix for image base volumes
+    /// (`ember-{id}-img-`, or legacy `ember-img-`).
     pub fn dm_thin_image_prefix(&self) -> String {
-        format!("ember-{}-img-", self.instance_id)
+        if self.instance_id.is_empty() {
+            "ember-img-".to_string()
+        } else {
+            format!("ember-{}-img-", self.instance_id)
+        }
     }
 
-    /// Device-mapper name prefix for VM disks, e.g. `ember-a3f4-vm-`.
+    /// Device-mapper name prefix for VM disks (`ember-{id}-vm-`, or
+    /// legacy `ember-vm-`).
     pub fn dm_thin_vm_prefix(&self) -> String {
-        format!("ember-{}-vm-", self.instance_id)
+        if self.instance_id.is_empty() {
+            "ember-vm-".to_string()
+        } else {
+            format!("ember-{}-vm-", self.instance_id)
+        }
     }
 
-    /// TAP device name prefix, e.g. `ema3f4-`. Bounded so `prefix +
-    /// 7-hex VM id` fits in Linux's 15-char `IFNAMSIZ - 1` budget.
+    /// TAP device name prefix (`em{id}-`, or legacy `em-`). Bounded so
+    /// `prefix + 7-hex VM id` fits in Linux's 15-char `IFNAMSIZ - 1`
+    /// budget (14 chars with the 4-hex id, 10 chars in legacy mode).
     pub fn tap_prefix(&self) -> String {
-        format!("em{}-", self.instance_id)
+        if self.instance_id.is_empty() {
+            "em-".to_string()
+        } else {
+            format!("em{}-", self.instance_id)
+        }
     }
 
-    /// Comment string embedded in iptables rules, used to filter this
-    /// install's rules from any other ember install on the host.
+    /// Comment string embedded in iptables rules to scope cleanup to
+    /// this installation. Returns `""` for legacy configs — the old
+    /// binary added rules without a comment match, so the rules
+    /// already on the host don't carry one to match against.
     pub fn iptables_comment(&self) -> String {
-        format!("ember:{}", self.instance_id)
+        if self.instance_id.is_empty() {
+            String::new()
+        } else {
+            format!("ember:{}", self.instance_id)
+        }
     }
 }
 
@@ -269,5 +295,23 @@ mod tests {
     fn iptables_comment_tags_install() {
         let cfg = config_with_id("a3f4");
         assert_eq!(cfg.iptables_comment(), "ember:a3f4");
+    }
+
+    /// Configs written by older ember binaries don't have `instance_id`.
+    /// Serde fills the field with the empty-string default; the
+    /// accessors then have to return the legacy unprefixed names, or
+    /// we'd lose track of kernel state on every upgrade.
+    #[test]
+    fn legacy_config_without_instance_id_uses_unprefixed_names() {
+        let json = r#"{"pool":"tank","dataset":"ember","kernel_path":null}"#;
+        let cfg: GlobalConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.instance_id, "");
+        assert_eq!(cfg.dm_thin_pool_name(), "ember-pool");
+        assert_eq!(cfg.dm_thin_image_prefix(), "ember-img-");
+        assert_eq!(cfg.dm_thin_vm_prefix(), "ember-vm-");
+        assert_eq!(cfg.tap_prefix(), "em-");
+        assert_eq!(cfg.iptables_comment(), "");
+        // ip_subnet falls back to the historical default subnet.
+        assert_eq!(cfg.ip_subnet, "10.100.0.0/16");
     }
 }
