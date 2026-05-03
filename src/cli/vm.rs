@@ -761,13 +761,14 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
         let net = Network::new(StateStore::new(state_dir.to_path_buf()));
         let meta_name = metadata.name.clone();
         let net_info_clone = net_info.clone();
+        let config_clone = config.clone();
         rollback.push("network", move || {
             let teardown_meta = VmMetadata {
                 name: meta_name,
                 network: Some(net_info_clone),
                 ..VmMetadata::default_for_teardown()
             };
-            let _ = net.teardown(&teardown_meta);
+            let _ = net.teardown(&teardown_meta, &config_clone);
         });
     }
 
@@ -847,7 +848,8 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Clean up networking via the backend.
     let net_backend = Network::new(store.clone());
-    let _ = net_backend.teardown(&metadata);
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let _ = net_backend.teardown(&metadata, &config);
 
     // Update metadata.
     metadata.status = VmStatus::Stopped;
@@ -1128,15 +1130,19 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         }
     }
 
+    // Read the persisted config once and reuse it for both network
+    // teardown (needs the per-installation iptables comment) and
+    // storage teardown.
+    let config: GlobalConfig = store.read(&store.config_path())?;
+
     // Clean up networking via the backend.
     let net_backend = Network::new(store.clone());
-    let _ = net_backend.teardown(metadata);
+    let _ = net_backend.teardown(metadata, &config);
 
     // Platform-specific post-delete cleanup (e.g. udevadm settle on Linux).
     CurrentPlatform::post_delete_cleanup();
 
     // Destroy storage via the backend.
-    let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
 
     println!("Destroying storage for VM '{}'...", metadata.name);

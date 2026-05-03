@@ -109,7 +109,7 @@ pub struct VmMetadata {
     #[serde(default)]
     pub boot_args: Option<String>,
     /// Network subnet for IP allocation (e.g., "10.100.0.0/16").
-    /// Defaults to [`network::ip::DEFAULT_SUBNET`] when not set.
+    /// Defaults to [`crate::config::GlobalConfig::ip_subnet`] when not set.
     #[serde(default)]
     pub subnet: Option<String>,
     /// Network configuration, if networking is set up.

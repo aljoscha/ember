@@ -19,11 +19,16 @@ use ember_core::error::{Error, Result};
 /// through the host's WAN interface via masquerading (SNAT):
 ///
 /// ```text
-/// -t nat -A POSTROUTING -s <guest_ip>/32 -o <wan_iface> -j MASQUERADE
-/// -A FORWARD -i <tap_device> -o <wan_iface> -j ACCEPT
-/// -A FORWARD -i <wan_iface> -o <tap_device> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+/// -t nat -A POSTROUTING -s <guest_ip>/32 -o <wan_iface> -m comment --comment <comment> -j MASQUERADE
+/// -A FORWARD -i <tap_device> -o <wan_iface> -m comment --comment <comment> -j ACCEPT
+/// -A FORWARD -i <wan_iface> -o <tap_device> -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment <comment> -j ACCEPT
 /// ```
-pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result<()> {
+///
+/// `comment` is a per-installation tag (e.g. `ember:a3f4`) embedded in
+/// every rule via the `comment` match. It lets cleanup scope deletions
+/// to this installation's rules and lets users grep `iptables-save` for
+/// "rules ember put here".
+pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str, comment: &str) -> Result<()> {
     let guest_cidr = format!("{guest_ip}/32");
 
     // 1. NAT masquerade for outbound guest traffic.
@@ -36,13 +41,28 @@ pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result<()
         &guest_cidr,
         "-o",
         wan_iface,
+        "-m",
+        "comment",
+        "--comment",
+        comment,
         "-j",
         "MASQUERADE",
     ])?;
 
     // 2. Allow forwarding from TAP to WAN.
     iptables(&[
-        "-A", "FORWARD", "-i", tap_device, "-o", wan_iface, "-j", "ACCEPT",
+        "-A",
+        "FORWARD",
+        "-i",
+        tap_device,
+        "-o",
+        wan_iface,
+        "-m",
+        "comment",
+        "--comment",
+        comment,
+        "-j",
+        "ACCEPT",
     ])?;
 
     // 3. Allow established/related return traffic from WAN to TAP.
@@ -57,6 +77,10 @@ pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result<()
         "conntrack",
         "--ctstate",
         "RELATED,ESTABLISHED",
+        "-m",
+        "comment",
+        "--comment",
+        comment,
         "-j",
         "ACCEPT",
     ])?;
@@ -67,8 +91,17 @@ pub fn add_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result<()
 /// Remove iptables NAT and forwarding rules for a VM.
 ///
 /// Mirrors [`add_rules`] but uses `-D` (delete) instead of `-A` (append).
-/// Idempotent — silently ignores errors when rules don't exist.
-pub fn remove_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result<()> {
+/// Idempotent — silently ignores errors when rules don't exist. The
+/// `comment` argument must match the value passed to
+/// [`add_rules`]; iptables compares the full rule including the comment
+/// match, so a wrong tag turns the delete into a no-op rather than
+/// removing another install's rule.
+pub fn remove_rules(
+    tap_device: &str,
+    guest_ip: &str,
+    wan_iface: &str,
+    comment: &str,
+) -> Result<()> {
     let guest_cidr = format!("{guest_ip}/32");
 
     // Same rules as add_rules, but with -D to delete.
@@ -82,12 +115,27 @@ pub fn remove_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result
         &guest_cidr,
         "-o",
         wan_iface,
+        "-m",
+        "comment",
+        "--comment",
+        comment,
         "-j",
         "MASQUERADE",
     ]);
 
     let _ = iptables_delete(&[
-        "-D", "FORWARD", "-i", tap_device, "-o", wan_iface, "-j", "ACCEPT",
+        "-D",
+        "FORWARD",
+        "-i",
+        tap_device,
+        "-o",
+        wan_iface,
+        "-m",
+        "comment",
+        "--comment",
+        comment,
+        "-j",
+        "ACCEPT",
     ]);
 
     let _ = iptables_delete(&[
@@ -101,6 +149,10 @@ pub fn remove_rules(tap_device: &str, guest_ip: &str, wan_iface: &str) -> Result
         "conntrack",
         "--ctstate",
         "RELATED,ESTABLISHED",
+        "-m",
+        "comment",
+        "--comment",
+        comment,
         "-j",
         "ACCEPT",
     ]);

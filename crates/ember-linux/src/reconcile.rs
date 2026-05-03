@@ -6,8 +6,10 @@
 //!    is still alive. If dead, mark the VM as Stopped and clean up its
 //!    network resources (TAP device, iptables rules, IP allocation).
 //!
-//! 2. Find orphaned `em-*` TAP devices (present on the system but not
-//!    associated with any running VM) and delete them.
+//! 2. Find orphaned TAP devices belonging to *this* installation
+//!    (matched against `GlobalConfig::tap_prefix()`) and delete them.
+//!    Other ember installs use distinct prefixes, so reconciliation
+//!    here never touches their devices.
 //!
 //! All operations are best-effort: errors are logged but never propagated,
 //! since reconciliation should not block normal CLI operation.
@@ -17,6 +19,7 @@ use std::path::Path;
 
 use crate::firecracker;
 use crate::network;
+use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 use ember_core::state::vm::{self, VmStatus};
 
@@ -29,6 +32,12 @@ pub fn run(state_dir: &Path) {
         Some(s) => s,
         None => return, // State dir doesn't exist yet (pre-init), nothing to reconcile.
     };
+
+    // Need the global config for the per-installation TAP prefix and
+    // iptables comment. If it's missing or unreadable, reconcile
+    // per-VM state but skip the prefix-based TAP sweep — without a
+    // prefix we'd risk deleting another install's devices.
+    let config: Option<GlobalConfig> = store.read_optional(&store.config_path()).ok().flatten();
 
     let vms = match vm::list(&store) {
         Ok(vms) => vms,
@@ -76,14 +85,22 @@ pub fn run(state_dir: &Path) {
                 metadata.name
             );
             if let Some(ref net_info) = metadata.network {
-                cleanup_network(&store, &metadata.name, net_info);
+                if let Some(ref cfg) = config {
+                    cleanup_network(&store, cfg, &metadata.name, net_info);
+                }
             }
             mark_stopped(&store, &mut metadata);
         }
     }
 
-    // Phase 2: Clean up orphaned TAP devices.
-    let system_devices = match network::tap::list_ember_devices() {
+    // Phase 2: Clean up orphaned TAP devices belonging to this install.
+    // Without a config we have no way to scope the listing safely, so
+    // skip — leaving an orphan is preferable to deleting a foreign one.
+    let Some(cfg) = config else {
+        return;
+    };
+    let prefix = cfg.tap_prefix();
+    let system_devices = match network::tap::list_devices_with_prefix(&prefix) {
         Ok(devs) => devs,
         Err(e) => {
             eprintln!("Warning: failed to list TAP devices: {e}");
@@ -113,6 +130,11 @@ fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
 }
 
 /// Best-effort network cleanup for a dead VM.
-fn cleanup_network(store: &StateStore, vm_name: &str, net_info: &vm::NetworkInfo) {
-    network::cleanup(store, vm_name, net_info);
+fn cleanup_network(
+    store: &StateStore,
+    config: &GlobalConfig,
+    vm_name: &str,
+    net_info: &vm::NetworkInfo,
+) {
+    network::cleanup(store, config, vm_name, net_info);
 }

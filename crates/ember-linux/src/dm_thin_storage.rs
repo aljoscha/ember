@@ -64,6 +64,16 @@ pub struct DmThinStorage {
     /// Pool block size in 512-byte sectors. Permanent at pool creation;
     /// the value here must match what the running pool was created with.
     block_size_sectors: u32,
+    /// Per-installation device-mapper pool name, e.g.
+    /// `ember-a3f4-pool`. Pinned from `GlobalConfig` at construction
+    /// rather than recomputed at every call site so the backend acts on
+    /// exactly the pool the persisted config refers to.
+    pool_name: String,
+    /// Per-installation prefix for image base volumes
+    /// (`ember-a3f4-img-`).
+    image_prefix: String,
+    /// Per-installation prefix for VM disks (`ember-a3f4-vm-`).
+    vm_prefix: String,
 }
 
 impl DmThinStorage {
@@ -92,6 +102,9 @@ impl DmThinStorage {
             block_size_sectors: config
                 .dm_thin_block_size
                 .unwrap_or(pool::DEFAULT_BLOCK_SIZE_SECTORS),
+            pool_name: config.dm_thin_pool_name(),
+            image_prefix: config.dm_thin_image_prefix(),
+            vm_prefix: config.dm_thin_vm_prefix(),
         }
     }
 
@@ -118,7 +131,7 @@ impl DmThinStorage {
     /// devices and re-runs `dmsetup create` if the kernel state is gone
     /// (e.g., after a reboot).
     fn ensure_pool_active(&self) -> Result<()> {
-        if dm_device_exists(pool::POOL_NAME)? {
+        if dm_device_exists(&self.pool_name)? {
             return Ok(());
         }
 
@@ -145,7 +158,7 @@ impl DmThinStorage {
 
         let data_sectors = device_sectors(&data_loop)?;
         pool::create(
-            pool::POOL_NAME,
+            &self.pool_name,
             &metadata_loop,
             &data_loop,
             data_sectors,
@@ -165,7 +178,7 @@ impl DmThinStorage {
         if dm_device_exists(dm_name)? {
             return Ok(thin::device_path(dm_name));
         }
-        thin::activate(dm_name, pool::POOL_NAME, thin_id, size_sectors)
+        thin::activate(dm_name, &self.pool_name, thin_id, size_sectors)
     }
 
     /// Read a VM's required size in sectors from its metadata.
@@ -203,22 +216,22 @@ impl DmThinStorage {
     /// path for [`PoolMode::OutOfDataSpace`]; destroy paths are also
     /// not gated since freeing thin ids must work even on a sick pool.
     fn assert_pool_healthy(&self) -> Result<()> {
-        let status = pool::status(pool::POOL_NAME)?;
+        let status = pool::status(&self.pool_name)?;
         match status.mode {
             pool::PoolMode::ReadWrite => Ok(()),
             pool::PoolMode::ReadOnly => Err(Error::Pool(format!(
                 "dm-thin pool '{}' is read-only — run `thin_check` and `thin_repair` to recover",
-                pool::POOL_NAME
+                &self.pool_name
             ))),
             pool::PoolMode::OutOfDataSpace => Err(Error::Pool(format!(
                 "dm-thin pool '{}' is out of data space ({}/{} blocks used) — run `ember storage grow --size <bigger>` to extend it",
-                pool::POOL_NAME,
+                &self.pool_name,
                 status.used_data_blocks,
                 status.total_data_blocks,
             ))),
             pool::PoolMode::Failed => Err(Error::Pool(format!(
                 "dm-thin pool '{}' has failed — inspect dmesg and `thin_check` the metadata device",
-                pool::POOL_NAME
+                &self.pool_name
             ))),
         }
     }
@@ -231,6 +244,10 @@ impl StorageBackend for DmThinStorage {
         })?;
 
         pool::ensure_target_loaded()?;
+
+        // Pool is named per-installation so two installs on one host
+        // don't share kernel state.
+        let pool_name = format!("ember-{}-pool", config.instance_id);
 
         let block_size_sectors = config
             .dm_thin_block_size
@@ -311,7 +328,7 @@ impl StorageBackend for DmThinStorage {
             }
         };
         if let Err(e) = pool::create(
-            pool::POOL_NAME,
+            &pool_name,
             &metadata_loop,
             &data_loop,
             data_sectors,
@@ -326,8 +343,7 @@ impl StorageBackend for DmThinStorage {
         }
 
         println!(
-            "dm-thin pool '{}' active ({} data, {} block size).",
-            pool::POOL_NAME,
+            "dm-thin pool '{pool_name}' active ({} data, {} block size).",
             format_bytes(pool_size_bytes),
             format_bytes((block_size_sectors as u64) * SECTOR_SIZE),
         );
@@ -344,8 +360,8 @@ impl StorageBackend for DmThinStorage {
         self.ensure_pool_active()?;
         self.assert_pool_healthy()?;
 
-        let staging_dm = thin::image_staging_dm_name(name);
-        let final_dm = thin::image_dm_name(name);
+        let staging_dm = thin::image_staging_dm_name(&self.image_prefix, name);
+        let final_dm = thin::image_dm_name(&self.image_prefix, name);
         let size_sectors = (size_mib * 1024 * 1024) / SECTOR_SIZE;
 
         // A previous failed run may have left the staging device
@@ -358,12 +374,12 @@ impl StorageBackend for DmThinStorage {
         }
 
         // 1. Allocate a fresh staging thin and write the ext4 image.
-        let staging_id = thin::allocate(pool::POOL_NAME)?;
+        let staging_id = thin::allocate(&self.pool_name)?;
         let staging_dev =
-            match thin::activate(&staging_dm, pool::POOL_NAME, staging_id, size_sectors) {
+            match thin::activate(&staging_dm, &self.pool_name, staging_id, size_sectors) {
                 Ok(p) => p,
                 Err(e) => {
-                    let _ = thin::delete(pool::POOL_NAME, staging_id);
+                    let _ = thin::delete(&self.pool_name, staging_id);
                     return Err(e);
                 }
             };
@@ -371,7 +387,7 @@ impl StorageBackend for DmThinStorage {
         // 2. dd the ext4 image onto the staging device.
         if let Err(e) = dd_image(image_path, &staging_dev) {
             let _ = thin::deactivate(&staging_dm);
-            let _ = thin::delete(pool::POOL_NAME, staging_id);
+            let _ = thin::delete(&self.pool_name, staging_id);
             return Err(e);
         }
 
@@ -379,7 +395,7 @@ impl StorageBackend for DmThinStorage {
         //    the staging device first so the snapshot sees a coherent
         //    metadata commit; resume it on the way out either way.
         let base_id_result = thin::suspend(&staging_dm).and_then(|()| {
-            let id = thin::allocate_snap(pool::POOL_NAME, staging_id);
+            let id = thin::allocate_snap(&self.pool_name, staging_id);
             let _ = thin::resume(&staging_dm);
             id
         });
@@ -387,7 +403,7 @@ impl StorageBackend for DmThinStorage {
             Ok(id) => id,
             Err(e) => {
                 let _ = thin::deactivate(&staging_dm);
-                let _ = thin::delete(pool::POOL_NAME, staging_id);
+                let _ = thin::delete(&self.pool_name, staging_id);
                 return Err(e);
             }
         };
@@ -395,7 +411,7 @@ impl StorageBackend for DmThinStorage {
         // 4. Drop the staging device + thin id; the base id retains all
         //    of its blocks.
         let _ = thin::deactivate(&staging_dm);
-        let _ = thin::delete(pool::POOL_NAME, staging_id);
+        let _ = thin::delete(&self.pool_name, staging_id);
 
         // The base thin is left inactive. Lazy activation creates the
         // device on first use. Record the would-be path so it can be
@@ -411,19 +427,19 @@ impl StorageBackend for DmThinStorage {
         self.assert_pool_healthy()?;
         let base_id = Self::require_image_thin_id(image)?;
 
-        let dm_name = thin::vm_dm_name(vm_name);
+        let dm_name = thin::vm_dm_name(&self.vm_prefix, vm_name);
         // The VM's virtual size matches the image's size at clone time;
         // resize to a larger disk happens in a subsequent `resize` call.
         let size_sectors = (image.size_mib * 1024 * 1024) / SECTOR_SIZE;
 
-        let vm_id = thin::allocate_snap(pool::POOL_NAME, base_id)?;
-        match thin::activate(&dm_name, pool::POOL_NAME, vm_id, size_sectors) {
+        let vm_id = thin::allocate_snap(&self.pool_name, base_id)?;
+        match thin::activate(&dm_name, &self.pool_name, vm_id, size_sectors) {
             Ok(disk_path) => Ok(VolumeHandle {
                 disk_path,
                 thin_id: Some(vm_id),
             }),
             Err(e) => {
-                let _ = thin::delete(pool::POOL_NAME, vm_id);
+                let _ = thin::delete(&self.pool_name, vm_id);
                 Err(e)
             }
         }
@@ -433,14 +449,14 @@ impl StorageBackend for DmThinStorage {
         self.ensure_pool_active()?;
         self.assert_pool_healthy()?;
         let vm_id = Self::require_vm_thin_id(vm)?;
-        let dm_name = thin::vm_dm_name(&vm.name);
+        let dm_name = thin::vm_dm_name(&self.vm_prefix, &vm.name);
         let new_sectors = new_size.bytes() / SECTOR_SIZE;
 
         // Activate (lazy) so we have a device to reload.
         let current_sectors = Self::vm_size_sectors(vm);
         let dev_path = self.ensure_thin_active(&dm_name, vm_id, current_sectors)?;
 
-        thin::reload_size(&dm_name, pool::POOL_NAME, vm_id, new_sectors)?;
+        thin::reload_size(&dm_name, &self.pool_name, vm_id, new_sectors)?;
         zvol::wait_for_device(&dev_path)?;
         e2fsck(&dev_path)?;
         resize2fs(&dev_path)?;
@@ -451,12 +467,12 @@ impl StorageBackend for DmThinStorage {
         // Best-effort: deactivate first, then free the thin id. Either
         // step may already be done by an earlier failure path.
         let _ = self.ensure_pool_active();
-        let dm_name = thin::vm_dm_name(&vm.name);
+        let dm_name = thin::vm_dm_name(&self.vm_prefix, &vm.name);
         if let Ok(true) = dm_device_exists(&dm_name) {
             let _ = thin::deactivate(&dm_name);
         }
         if let Some(id) = vm.thin_id {
-            let _ = thin::delete(pool::POOL_NAME, id);
+            let _ = thin::delete(&self.pool_name, id);
         }
         Ok(())
     }
@@ -466,12 +482,12 @@ impl StorageBackend for DmThinStorage {
         // safe even when VMs still have clones — they keep their own
         // thin ids and stay readable. `force` doesn't change behavior.
         let _ = self.ensure_pool_active();
-        let dm_name = thin::image_dm_name(&image.local_name);
+        let dm_name = thin::image_dm_name(&self.image_prefix, &image.local_name);
         if let Ok(true) = dm_device_exists(&dm_name) {
             let _ = thin::deactivate(&dm_name);
         }
         if let Some(id) = image.thin_id {
-            let _ = thin::delete(pool::POOL_NAME, id);
+            let _ = thin::delete(&self.pool_name, id);
         }
         Ok(())
     }
@@ -483,7 +499,7 @@ impl StorageBackend for DmThinStorage {
         // path that resolves to ENOENT.
         self.ensure_pool_active()?;
         let thin_id = Self::require_vm_thin_id(vm)?;
-        let dm_name = thin::vm_dm_name(&vm.name);
+        let dm_name = thin::vm_dm_name(&self.vm_prefix, &vm.name);
         let size_sectors = Self::vm_size_sectors(vm);
         self.ensure_thin_active(&dm_name, thin_id, size_sectors)
     }
@@ -492,17 +508,17 @@ impl StorageBackend for DmThinStorage {
         self.ensure_pool_active()?;
         self.assert_pool_healthy()?;
         let source_id = Self::require_vm_thin_id(source)?;
-        let dm_name = thin::vm_dm_name(target_vm);
+        let dm_name = thin::vm_dm_name(&self.vm_prefix, target_vm);
         let size_sectors = Self::vm_size_sectors(source);
 
-        let fork_id = thin::allocate_snap(pool::POOL_NAME, source_id)?;
-        match thin::activate(&dm_name, pool::POOL_NAME, fork_id, size_sectors) {
+        let fork_id = thin::allocate_snap(&self.pool_name, source_id)?;
+        match thin::activate(&dm_name, &self.pool_name, fork_id, size_sectors) {
             Ok(disk_path) => Ok(VolumeHandle {
                 disk_path,
                 thin_id: Some(fork_id),
             }),
             Err(e) => {
-                let _ = thin::delete(pool::POOL_NAME, fork_id);
+                let _ = thin::delete(&self.pool_name, fork_id);
                 Err(e)
             }
         }
@@ -520,16 +536,17 @@ impl StorageBackend for DmThinStorage {
     }
 
     fn deinit(&self, purge: bool) -> Result<()> {
-        // 1. Deactivate every ember-managed thin volume so the pool
-        //    can be removed cleanly.
-        for prefix in [thin::IMAGE_PREFIX, thin::VM_PREFIX] {
+        // 1. Deactivate every thin volume that belongs to *this*
+        //    installation so the pool can be removed cleanly. Other
+        //    ember installs use distinct prefixes and stay untouched.
+        for prefix in [&self.image_prefix, &self.vm_prefix] {
             for name in pool::list_with_prefix(prefix)? {
                 let _ = thin::deactivate(&name);
             }
         }
         // 2. Drop the pool itself (if active).
-        if dm_device_exists(pool::POOL_NAME)? {
-            pool::remove(pool::POOL_NAME)?;
+        if dm_device_exists(&self.pool_name)? {
+            pool::remove(&self.pool_name)?;
         }
         // 3. Detach the loop devices, if any.
         let metadata_path = self.metadata_file();
@@ -553,7 +570,7 @@ impl StorageBackend for DmThinStorage {
                 let _ = fs::remove_dir(&self.storage_path);
             }
         }
-        println!("dm-thin pool '{}' torn down.", pool::POOL_NAME);
+        println!("dm-thin pool '{}' torn down.", &self.pool_name);
         Ok(())
     }
 
@@ -597,7 +614,7 @@ impl StorageBackend for DmThinStorage {
 
         let data_sectors = device_sectors(&data_loop)?;
         pool::reload(
-            pool::POOL_NAME,
+            &self.pool_name,
             &metadata_loop,
             &data_loop,
             data_sectors,

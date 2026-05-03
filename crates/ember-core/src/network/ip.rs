@@ -4,8 +4,10 @@
 //! Allocations are tracked in `allocations.json` via the state store
 //! with flock-based locking for concurrent safety.
 //!
-//! With the default /16 subnet (10.100.0.0/16), this supports ~16,384
-//! concurrent VMs.
+//! The base subnet is set per-installation in `GlobalConfig::ip_subnet`
+//! (derived at `ember init` from the instance id, overridable via
+//! `--ip-subnet`). With a /16, each install supports ~16,384 concurrent
+//! VMs.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -36,9 +38,6 @@ pub struct IpAllocation {
     /// Netmask for the /30 link ("255.255.255.252").
     pub netmask: String,
 }
-
-/// Default base subnet when none is configured.
-pub const DEFAULT_SUBNET: &str = "10.100.0.0/16";
 
 /// Netmask for a /30 subnet.
 const NETMASK_30: &str = "255.255.255.252";

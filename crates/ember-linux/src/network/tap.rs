@@ -1,8 +1,11 @@
 //! TAP device creation and cleanup via ioctl.
 //!
-//! Each Firecracker VM gets a dedicated TAP device (`em-<short-id>`) for
-//! its point-to-point network link to the host. This module handles
-//! creating and deleting those devices using the Linux TUN/TAP driver.
+//! Each Firecracker VM gets a dedicated TAP device named
+//! `em<instance_id>-<short-vm-id>` for its point-to-point network link
+//! to the host. The `<instance_id>` segment scopes devices to one ember
+//! installation so two installs on the same host don't see (or delete)
+//! each other's TAPs. This module handles creating and deleting those
+//! devices using the Linux TUN/TAP driver.
 
 use std::ffi::CString;
 use std::fs::OpenOptions;
@@ -149,11 +152,13 @@ pub fn delete(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// List all ember TAP devices (names starting with `em-`) on the system.
+/// List TAP devices on the system whose name starts with `prefix`.
 ///
-/// Parses the output of `ip -o link show type tun` to find persistent
-/// TAP devices created by ember. Returns just the device names.
-pub fn list_ember_devices() -> Result<Vec<String>> {
+/// Parses the output of `ip -o link show type tun`. Pass the
+/// per-installation TAP prefix from
+/// [`GlobalConfig::tap_prefix`](ember_core::config::GlobalConfig::tap_prefix)
+/// so reconciliation only sees devices belonging to *this* install.
+pub fn list_devices_with_prefix(prefix: &str) -> Result<Vec<String>> {
     let output = Command::new("ip")
         .args(["-o", "link", "show", "type", "tun"])
         .output()
@@ -170,12 +175,12 @@ pub fn list_ember_devices() -> Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut devices = Vec::new();
     for line in stdout.lines() {
-        // Format: "3: em-abc1234: <...>"
+        // Format: "3: ema3f4-abc1234: <...>"
         // Split on ':' and take the second field (device name), trimmed.
         let parts: Vec<&str> = line.splitn(3, ':').collect();
         if parts.len() >= 2 {
             let name = parts[1].trim();
-            if name.starts_with("em-") {
+            if name.starts_with(prefix) {
                 devices.push(name.to_string());
             }
         }
@@ -186,11 +191,13 @@ pub fn list_ember_devices() -> Result<Vec<String>> {
 
 /// Generate the TAP device name for a VM from its UUID.
 ///
-/// Format: `em-<first 7 hex chars of UUID>`. This fits within the
-/// Linux `IFNAMSIZ` limit of 15 characters (3 prefix + 7 hex = 10).
-pub fn device_name(vm_id: &uuid::Uuid) -> String {
+/// Format: `<tap_prefix><first 7 hex chars of UUID>`. With the default
+/// 4-char `instance_id`, the prefix is `em<id4>-` (7 chars) and the
+/// full name is 14 chars — within Linux's `IFNAMSIZ - 1 = 15` budget
+/// with one char to spare.
+pub fn device_name(tap_prefix: &str, vm_id: &uuid::Uuid) -> String {
     let hex = vm_id.as_simple().to_string();
-    format!("em-{}", &hex[..7])
+    format!("{tap_prefix}{}", &hex[..7])
 }
 
 #[cfg(test)]
@@ -201,16 +208,17 @@ mod tests {
     #[test]
     fn device_name_format() {
         let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let name = device_name(&id);
-        assert_eq!(name, "em-550e840");
+        let name = device_name("ema3f4-", &id);
+        assert_eq!(name, "ema3f4-550e840");
         assert!(name.len() < libc::IFNAMSIZ);
     }
 
     #[test]
     fn device_name_fits_ifnamsiz() {
-        // Any UUID should produce a name < IFNAMSIZ (16).
+        // 4-char instance id + 7-hex VM id + dashes/`em` = 14 chars,
+        // one byte under IFNAMSIZ - 1.
         let id = Uuid::new_v4();
-        let name = device_name(&id);
+        let name = device_name("emffff-", &id);
         assert!(name.len() < libc::IFNAMSIZ);
     }
 

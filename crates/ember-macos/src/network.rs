@@ -57,7 +57,7 @@ impl NetworkBackend for MacosNetwork {
         })
     }
 
-    fn teardown(&self, vm: &VmMetadata) -> Result<()> {
+    fn teardown(&self, vm: &VmMetadata, _config: &GlobalConfig) -> Result<()> {
         let _ = network::ip::release(&self.store, &vm.name);
         Ok(())
     }

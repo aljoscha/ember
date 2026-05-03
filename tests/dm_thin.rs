@@ -39,7 +39,8 @@ fn dm_thin_init_and_deinit_round_trip() {
         state_dir: state_dir.clone(),
     };
 
-    // Init.
+    // Init. Pin the instance id so the pool name we assert on
+    // matches what `ember init` actually creates.
     let output = common::ember(&[
         "--state-dir",
         state_dir.to_str().unwrap(),
@@ -50,6 +51,8 @@ fn dm_thin_init_and_deinit_round_trip() {
         storage_path.to_str().unwrap(),
         "--size",
         "200M",
+        "--instance-id",
+        "dead",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -58,8 +61,8 @@ fn dm_thin_init_and_deinit_round_trip() {
         "init failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        Path::new("/dev/mapper/ember-pool").exists(),
-        "ember-pool should be active after init"
+        Path::new("/dev/mapper/ember-dead-pool").exists(),
+        "ember-dead-pool should be active after init"
     );
     assert!(storage_path.join("metadata.img").exists());
     assert!(storage_path.join("data.img").exists());
@@ -78,8 +81,8 @@ fn dm_thin_init_and_deinit_round_trip() {
         "deinit failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        !Path::new("/dev/mapper/ember-pool").exists(),
-        "ember-pool should be torn down after deinit"
+        !Path::new("/dev/mapper/ember-dead-pool").exists(),
+        "ember-dead-pool should be torn down after deinit"
     );
     assert!(!storage_path.join("metadata.img").exists());
     assert!(!storage_path.join("data.img").exists());

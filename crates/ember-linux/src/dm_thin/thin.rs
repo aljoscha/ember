@@ -15,11 +15,6 @@ use ember_core::error::{Error, Result};
 
 use super::{is_already_exists, pool};
 
-/// Device-mapper name prefix for image base volumes.
-pub const IMAGE_PREFIX: &str = "ember-img-";
-/// Device-mapper name prefix for VM disks.
-pub const VM_PREFIX: &str = "ember-vm-";
-
 /// Maximum thin device id accepted by the kernel.
 ///
 /// `drivers/md/dm-thin.c` enforces `dev_id <= (1 << 24) - 1`:
@@ -187,26 +182,23 @@ pub fn sanitize_dm_name(name: &str) -> String {
         .collect()
 }
 
-/// Device-mapper name for a VM volume.
-pub fn vm_dm_name(vm_name: &str) -> String {
-    format!("{VM_PREFIX}{}", sanitize_dm_name(vm_name))
+/// Device-mapper name for a VM volume. `vm_prefix` comes from
+/// [`GlobalConfig::dm_thin_vm_prefix`].
+pub fn vm_dm_name(vm_prefix: &str, vm_name: &str) -> String {
+    format!("{vm_prefix}{}", sanitize_dm_name(vm_name))
 }
 
-/// Device-mapper name for an image base volume.
-pub fn image_dm_name(image_name: &str) -> String {
-    format!("{IMAGE_PREFIX}{}", sanitize_dm_name(image_name))
+/// Device-mapper name for an image base volume. `image_prefix` comes
+/// from [`GlobalConfig::dm_thin_image_prefix`].
+pub fn image_dm_name(image_prefix: &str, image_name: &str) -> String {
+    format!("{image_prefix}{}", sanitize_dm_name(image_name))
 }
 
 /// Device-mapper name for the temporary staging volume used while
 /// writing a fresh image into the pool. Held only between
 /// `create_thin` and the post-`dd` snapshot.
-pub fn image_staging_dm_name(image_name: &str) -> String {
-    format!("{IMAGE_PREFIX}{}-staging", sanitize_dm_name(image_name))
-}
-
-/// Path that should be passed to Firecracker as `path_on_host`.
-pub fn vm_device_path(vm_name: &str) -> PathBuf {
-    device_path(&vm_dm_name(vm_name))
+pub fn image_staging_dm_name(image_prefix: &str, image_name: &str) -> String {
+    format!("{image_prefix}{}-staging", sanitize_dm_name(image_name))
 }
 
 #[cfg(test)]
@@ -232,18 +224,21 @@ mod tests {
 
     #[test]
     fn thin_table_shape() {
-        let t = thin_table("ember-pool", 42, 16_777_216);
-        assert_eq!(t, "0 16777216 thin /dev/mapper/ember-pool 42");
+        let t = thin_table("ember-a3f4-pool", 42, 16_777_216);
+        assert_eq!(t, "0 16777216 thin /dev/mapper/ember-a3f4-pool 42");
     }
 
     #[test]
     fn dm_names() {
-        assert_eq!(vm_dm_name("myvm"), "ember-vm-myvm");
+        assert_eq!(vm_dm_name("ember-a3f4-vm-", "myvm"), "ember-a3f4-vm-myvm");
         assert_eq!(
-            image_dm_name("library-alpine-latest"),
-            "ember-img-library-alpine-latest"
+            image_dm_name("ember-a3f4-img-", "library-alpine-latest"),
+            "ember-a3f4-img-library-alpine-latest"
         );
-        assert_eq!(image_staging_dm_name("foo"), "ember-img-foo-staging");
+        assert_eq!(
+            image_staging_dm_name("ember-a3f4-img-", "foo"),
+            "ember-a3f4-img-foo-staging"
+        );
     }
 
     #[test]

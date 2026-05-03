@@ -62,6 +62,10 @@ pub struct InitConfig {
     pub storage_backend: crate::config::StorageKind,
     /// Path to the state directory (e.g., `/var/lib/ember` or `~/Library/Application Support/ember`).
     pub state_dir: PathBuf,
+    /// Per-installation namespace embedded in dm-thin pool / device
+    /// names so `ember init` against a fresh state-dir doesn't trample
+    /// another install's pool. Mirrors `GlobalConfig::instance_id`.
+    pub instance_id: String,
     /// ZFS pool name. Used on Linux for `zfs create`; ignored on macOS.
     pub pool: String,
     /// Dataset name within the ZFS pool. Used on Linux; ignored on macOS.
@@ -208,7 +212,7 @@ pub trait StorageBackend {
     /// Mountable device path for a VM's root disk.
     ///
     /// Linux/ZFS: `/dev/zvol/pool/dataset/vms/vm_name`.
-    /// Linux/dm-thin: `/dev/mapper/ember-vm-<vm_name>`.
+    /// Linux/dm-thin: `/dev/mapper/ember-<instance_id>-vm-<vm_name>`.
     /// macOS/APFS: `<state_dir>/vms/<vm_name>/rootfs.img`.
     ///
     /// Backends that lazily activate kernel state (notably dm-thin: pool
@@ -314,9 +318,10 @@ pub trait NetworkBackend {
 
     /// Tear down networking for a VM.
     ///
-    /// Linux: removes iptables rules, deletes TAP device, releases IP.
+    /// Linux: removes iptables rules (matched by per-installation
+    /// comment), deletes TAP device, releases IP.
     /// macOS: no-op (vmnet cleans up automatically).
-    fn teardown(&self, vm: &VmMetadata) -> Result<()>;
+    fn teardown(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<()>;
 
     /// Discover the guest's IP address from its MAC address.
     ///

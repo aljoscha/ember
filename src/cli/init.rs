@@ -4,7 +4,9 @@ use clap::Args;
 
 use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
 use ember_core::config::size::ByteSize;
-use ember_core::config::{DmThinMode, GlobalConfig, StorageKind};
+use ember_core::config::{
+    derive_instance_id, derive_ip_subnet, DmThinMode, GlobalConfig, StorageKind,
+};
 use ember_core::state::store::StateStore;
 
 /// dm-thin pool block size (in 512-byte sectors) used when the user does
@@ -89,6 +91,31 @@ pub struct InitArgs {
     /// WAN interface for NAT (auto-detected if not specified)
     #[arg(long)]
     pub wan_iface: Option<String>,
+
+    /// Per-installation namespace, embedded in dm-thin pool name, TAP
+    /// devices, and iptables rules so two ember installations on the
+    /// same host don't clash. 4 hex chars; auto-derived from a hash of
+    /// the state directory when omitted.
+    #[arg(long, value_parser = parse_instance_id)]
+    pub instance_id: Option<String>,
+
+    /// IPv4 base subnet handed out as /30 links to VMs (e.g.
+    /// `10.42.0.0/16`). Defaults to a `/16` slot inside `10.0.0.0/8`
+    /// derived from the instance id, so two installs get
+    /// non-overlapping ranges automatically.
+    #[arg(long)]
+    pub ip_subnet: Option<String>,
+}
+
+/// Validate `--instance-id`: 4 lowercase hex chars (uppercase is folded).
+fn parse_instance_id(s: &str) -> Result<String, String> {
+    let lower = s.to_ascii_lowercase();
+    if lower.len() != 4 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "--instance-id must be exactly 4 hex chars (got {s:?})"
+        ));
+    }
+    Ok(lower)
 }
 
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
@@ -143,9 +170,22 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         _ => None,
     };
 
+    // Resolve instance_id and ip_subnet up-front so InitConfig and the
+    // persisted GlobalConfig agree. dm-thin in particular needs the
+    // instance id during init to name the kernel pool.
+    let instance_id = args
+        .instance_id
+        .clone()
+        .unwrap_or_else(|| derive_instance_id(state_dir));
+    let ip_subnet = args
+        .ip_subnet
+        .clone()
+        .unwrap_or_else(|| derive_ip_subnet(&instance_id));
+
     let init_config = InitConfig {
         storage_backend: args.storage,
         state_dir: state_dir.to_path_buf(),
+        instance_id: instance_id.clone(),
         pool: args.pool.clone(),
         dataset: args.dataset.clone(),
         device: args.device.clone(),
@@ -184,12 +224,16 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         kernel_path,
         wan_iface,
         state_dir: state_dir.to_path_buf(),
+        instance_id: instance_id.clone(),
+        ip_subnet: ip_subnet.clone(),
         storage_path,
         dm_thin_block_size: resolved_block_size,
         dm_thin_mode: resolved_dm_thin_mode,
     };
     store.write(&store.config_path(), &config)?;
     println!("Configuration written to {}", store.config_path().display());
+    println!("Instance id: {instance_id}");
+    println!("VM IP subnet: {ip_subnet}");
 
     println!("\nember initialized successfully.");
     Ok(())
@@ -209,6 +253,8 @@ mod tests {
             kernel_path: None,
             wan_iface: None,
             state_dir: PathBuf::default(),
+            instance_id: "abcd".to_string(),
+            ip_subnet: "10.100.0.0/16".to_string(),
             storage_path: None,
             dm_thin_block_size: None,
             dm_thin_mode: None,

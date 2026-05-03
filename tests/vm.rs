@@ -750,8 +750,8 @@ fn networking_ssh_and_internet() {
         .expect("expected host_ip string");
 
     assert!(
-        tap_device.starts_with("em-"),
-        "TAP device should start with 'em-', got: {tap_device}"
+        tap_device.starts_with("em") && tap_device.contains('-'),
+        "TAP device should match em<id>-<vmid>, got: {tap_device}"
     );
     assert!(!guest_ip.is_empty(), "guest_ip should not be empty");
     assert!(!host_ip.is_empty(), "host_ip should not be empty");

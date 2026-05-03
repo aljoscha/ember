@@ -1,11 +1,12 @@
 //! Linux device-mapper thin provisioning backend.
 //!
 //! Thin pools provide block-level copy-on-write storage. A single
-//! [`pool::POOL_NAME`] pool aggregates two backing devices (metadata and
-//! data) and exposes any number of independent thin volumes addressed by
-//! 64-bit numeric IDs. Snapshots and clones are the same primitive
-//! ([`thin::create_snap`]) — snapshotting a thin volume produces another
-//! thin volume that shares blocks until divergence.
+//! per-installation pool aggregates two backing devices (metadata and
+//! data) and exposes any number of independent thin volumes addressed
+//! by 64-bit numeric IDs. The pool name comes from
+//! `GlobalConfig::dm_thin_pool_name()`. Snapshots and clones are the
+//! same primitive ([`thin::create_snap`]) — snapshotting a thin volume
+//! produces another thin volume that shares blocks until divergence.
 //!
 //! See `docs/DM-THIN-SPEC.md` for the full design.
 

@@ -2,15 +2,14 @@
 //!
 //! A thin pool is the kernel-side container holding metadata + data
 //! devices and exposing thin volumes as snapshot-capable block devices.
-//! Ember runs a single named pool ([`POOL_NAME`]) per installation.
+//! Ember runs one named pool per installation; the pool name is
+//! derived from `GlobalConfig::dm_thin_pool_name()` so two installs on
+//! the same host don't share a pool.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ember_core::error::{Error, Result};
-
-/// Device-mapper name of the singleton thin pool used by ember.
-pub const POOL_NAME: &str = "ember-pool";
 
 /// Default pool block size in 512-byte sectors (= 64 KiB).
 ///

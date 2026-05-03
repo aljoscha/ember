@@ -6,8 +6,6 @@ use ember_core::error::Result;
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::VmMetadata;
 
-use crate::dm_thin::pool;
-
 pub struct LinuxPlatform;
 
 fn linux_install_hint(name: &str) -> String {
@@ -82,7 +80,7 @@ impl Platform for LinuxPlatform {
                 ("Dataset", format!("{}/{}", config.pool, config.dataset)),
             ],
             StorageKind::DmThin => {
-                let mut rows = vec![("dm-thin pool", pool::POOL_NAME.to_string())];
+                let mut rows = vec![("dm-thin pool", config.dm_thin_pool_name())];
                 if let Some(ref path) = config.storage_path {
                     rows.push(("Storage path", path.display().to_string()));
                 }
