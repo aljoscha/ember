@@ -1,13 +1,21 @@
-//! IP allocation from a configurable /N subnet in /30 blocks.
+//! IP allocation for VM networking.
 //!
-//! Each VM gets a point-to-point /30 link: host gets .1, guest gets .2.
-//! Allocations are tracked in `allocations.json` via the state store
-//! with flock-based locking for concurrent safety.
+//! Two allocation strategies, picked per backend:
 //!
-//! The base subnet is set per-installation in `GlobalConfig::ip_subnet`
-//! (derived at `ember init` from the instance id, overridable via
-//! `--ip-subnet`). With a /16, each install supports ~16,384 concurrent
-//! VMs.
+//! * [`allocate`] — Linux: hand out `/30` blocks for point-to-point
+//!   TAP routing. Each VM gets its own host (.1) and guest (.2) IPs
+//!   on a dedicated /30. With a `/16` base, ~16,384 VMs fit.
+//! * [`allocate_single`] — macOS: hand out single `/32` addresses on
+//!   a shared subnet (vmnet's `192.168.64.0/24`). All VMs sit on the
+//!   same L2 segment behind one shared gateway, so a /30 link per VM
+//!   is overkill and would waste 75% of the address space.
+//!
+//! Both share the same `allocations.json` persistence layer with
+//! flock-based locking; the `block_index` field's unit (4 addresses
+//! for `allocate`, 1 for `allocate_single`) is implicit in which
+//! function reads the file. An installation must use exactly one
+//! strategy across its lifetime — the persisted `base_subnet` is
+//! verified on every read.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -20,22 +28,27 @@ use crate::state::store::StateStore;
 /// Persisted IP allocation state, stored as `allocations.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpAllocations {
-    /// Base subnet in CIDR notation (e.g., "10.100.0.0/16").
+    /// Base subnet in CIDR notation (e.g., "10.100.0.0/16" or
+    /// "192.168.64.0/27").
     pub base_subnet: String,
-    /// Map from /30 block index to VM name.
+    /// Map from block index to VM name. Block size depends on which
+    /// allocator wrote the file: 4 addresses for [`allocate`], 1 for
+    /// [`allocate_single`].
     pub allocations: HashMap<u32, String>,
 }
 
 /// A single IP allocation for one VM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IpAllocation {
-    /// Index of the /30 block within the base subnet.
+    /// Index within the base subnet. Unit is allocator-dependent.
     pub block_index: u32,
-    /// Host-side IP — first usable address in the /30 (e.g., "10.100.0.1").
+    /// Host-side IP. For [`allocate`] (Linux): first usable address
+    /// in the /30 (e.g., "10.100.0.1"). For [`allocate_single`]
+    /// (macOS): the shared gateway passed by the caller.
     pub host_ip: String,
-    /// Guest-side IP — second usable address in the /30 (e.g., "10.100.0.2").
+    /// Guest-side IP.
     pub guest_ip: String,
-    /// Netmask for the /30 link ("255.255.255.252").
+    /// Netmask for the link.
     pub netmask: String,
 }
 
@@ -43,6 +56,8 @@ pub struct IpAllocation {
 const NETMASK_30: &str = "255.255.255.252";
 
 /// Parse a CIDR subnet string into (base address, prefix length).
+/// Accepts any prefix `/0`..`/32`; per-allocator constraints (e.g.
+/// `/30` minimum for [`allocate`]) are enforced at the call site.
 fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u8)> {
     let (ip_str, prefix_str) = cidr
         .split_once('/')
@@ -56,9 +71,9 @@ fn parse_cidr(cidr: &str) -> Result<(Ipv4Addr, u8)> {
         .parse()
         .map_err(|e| Error::Network(format!("invalid prefix in CIDR '{cidr}': {e}")))?;
 
-    if prefix > 30 {
+    if prefix > 32 {
         return Err(Error::Network(format!(
-            "subnet /{prefix} is too small for /30 allocations"
+            "invalid CIDR prefix /{prefix}: must be 0..=32"
         )));
     }
 
@@ -108,6 +123,11 @@ fn block_ips(base: Ipv4Addr, block_index: u32) -> IpAllocation {
 pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAllocation> {
     let path = store.network_allocations_path();
     let (base, prefix) = parse_cidr(subnet)?;
+    if prefix > 30 {
+        return Err(Error::Network(format!(
+            "subnet /{prefix} is too small for /30 allocations"
+        )));
+    }
     let max = max_blocks(prefix);
 
     let mut allocs: IpAllocations = store
@@ -139,6 +159,77 @@ pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAll
     store.write(&path, &allocs)?;
 
     Ok(allocation)
+}
+
+/// Allocate a single /32 address for a VM in a shared subnet.
+///
+/// Used by macOS where vmnet provides a shared L2 bridge — every guest
+/// sits on the same subnet behind one gateway, so a /30 P2P link per
+/// VM (the [`allocate`] strategy) would waste 75% of the address
+/// space. Block index here means "address offset from the subnet
+/// base", so a /27 holds 32 candidate slots.
+///
+/// `host_ip` is returned to the caller as-is and conventionally
+/// contains the shared gateway. `reserved` lists addresses the
+/// allocator must never hand out — typically the surrounding /24's
+/// network, broadcast, and gateway when the caller carved a /27 out
+/// of vmnet's /24.
+pub fn allocate_single(
+    store: &StateStore,
+    subnet: &str,
+    vm_name: &str,
+    host_ip: &str,
+    netmask: &str,
+    reserved: &[Ipv4Addr],
+) -> Result<IpAllocation> {
+    let path = store.network_allocations_path();
+    let (base, prefix) = parse_cidr(subnet)?;
+    let max = 1u32 << (32 - prefix);
+
+    let mut allocs: IpAllocations = store
+        .read_optional(&path)?
+        .unwrap_or_else(|| IpAllocations {
+            base_subnet: subnet.to_string(),
+            allocations: HashMap::new(),
+        });
+
+    if allocs.base_subnet != subnet {
+        return Err(Error::Network(format!(
+            "subnet mismatch: state has '{}', requested '{subnet}'",
+            allocs.base_subnet
+        )));
+    }
+
+    let base_u32 = u32::from(base);
+
+    // Walk the subnet looking for an unallocated, non-reserved slot.
+    // Skipping reserved addresses keeps the gateway (and the wider
+    // /24's network/broadcast when carved into /27s) un-handout-able
+    // without the caller having to seed allocations.json.
+    let block_index = (0..max)
+        .find(|i| {
+            if allocs.allocations.contains_key(i) {
+                return false;
+            }
+            let addr = Ipv4Addr::from(base_u32 + i);
+            !reserved.contains(&addr)
+        })
+        .ok_or_else(|| {
+            Error::Network(format!(
+                "no free addresses in {subnet} (all {max} candidates allocated or reserved)"
+            ))
+        })?;
+
+    let guest_ip = Ipv4Addr::from(base_u32 + block_index);
+    allocs.allocations.insert(block_index, vm_name.to_string());
+    store.write(&path, &allocs)?;
+
+    Ok(IpAllocation {
+        block_index,
+        host_ip: host_ip.to_string(),
+        guest_ip: guest_ip.to_string(),
+        netmask: netmask.to_string(),
+    })
 }
 
 /// Release a VM's IP allocation.
@@ -185,8 +276,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_cidr_rejects_slash_31() {
-        assert!(parse_cidr("10.0.0.0/31").is_err());
+    fn parse_cidr_accepts_up_to_slash_32() {
+        // The /30-minimum constraint moved into `allocate` so the
+        // shared parser can also serve `allocate_single`, which
+        // accepts narrow prefixes (a /27 or even /32).
+        assert!(parse_cidr("10.0.0.0/31").is_ok());
+        assert!(parse_cidr("192.168.64.0/27").is_ok());
+        assert!(parse_cidr("10.0.0.5/32").is_ok());
+    }
+
+    #[test]
+    fn parse_cidr_rejects_slash_above_32() {
+        assert!(parse_cidr("10.0.0.0/33").is_err());
     }
 
     #[test]
@@ -346,5 +447,189 @@ mod tests {
         let allocs: IpAllocations = store.read(&path).unwrap();
         assert_eq!(allocs.base_subnet, "10.100.0.0/16");
         assert_eq!(allocs.allocations.len(), 2);
+    }
+
+    #[test]
+    fn allocate_rejects_too_narrow_subnet() {
+        // /31 is too small for /30 P2P allocation; the constraint
+        // lives on `allocate` (not `parse_cidr`) since the shared
+        // parser also serves `allocate_single`.
+        let (_dir, store) = test_store();
+        let err = allocate(&store, "10.0.0.0/31", "vm1").unwrap_err();
+        assert!(matches!(err, Error::Network(_)));
+    }
+
+    // --- allocate_single (macOS shared-subnet path) ---
+
+    /// Helper: vmnet's host-global reservations carved out of the /24.
+    fn vmnet_reserved() -> [Ipv4Addr; 3] {
+        [
+            Ipv4Addr::new(192, 168, 64, 0),   // /24 network
+            Ipv4Addr::new(192, 168, 64, 1),   // vmnet gateway
+            Ipv4Addr::new(192, 168, 64, 255), // /24 broadcast
+        ]
+    }
+
+    #[test]
+    fn allocate_single_skips_network_and_gateway_in_slot_zero() {
+        // Slot 0 (192.168.64.0/27) contains both the /24 network
+        // (.0) and the vmnet gateway (.1). The first guest allocated
+        // must land on .2, not .0 or .1.
+        let (_dir, store) = test_store();
+        let reserved = vmnet_reserved();
+        let alloc = allocate_single(
+            &store,
+            "192.168.64.0/27",
+            "vm1",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        assert_eq!(alloc.guest_ip, "192.168.64.2");
+        assert_eq!(alloc.host_ip, "192.168.64.1");
+        assert_eq!(alloc.netmask, "255.255.255.0");
+        // block_index reflects the address offset, not a /30 index.
+        assert_eq!(alloc.block_index, 2);
+    }
+
+    #[test]
+    fn allocate_single_packs_addresses_one_per_vm() {
+        // /27 with 2 reserved addresses (.0, .1) yields 30 usable
+        // single-IP slots — 4× what /30 allocation gets.
+        let (_dir, store) = test_store();
+        let reserved = vmnet_reserved();
+        let mut last_octet = None;
+        for i in 0..30 {
+            let alloc = allocate_single(
+                &store,
+                "192.168.64.0/27",
+                &format!("vm{i}"),
+                "192.168.64.1",
+                "255.255.255.0",
+                &reserved,
+            )
+            .unwrap();
+            let octet: u8 = alloc.guest_ip.split('.').nth(3).unwrap().parse().unwrap();
+            // Strictly monotonic, never .0 or .1.
+            assert!(octet >= 2);
+            if let Some(prev) = last_octet {
+                assert!(octet > prev, "expected strictly monotonic guest IPs");
+            }
+            last_octet = Some(octet);
+        }
+    }
+
+    #[test]
+    fn allocate_single_skips_broadcast_in_top_slot() {
+        // Slot 7 (192.168.64.224/27) ends at .255, which is the
+        // surrounding /24's broadcast. The allocator must not hand
+        // it out, so the slot holds 31 (not 32) usable addresses.
+        let (_dir, store) = test_store();
+        let reserved = vmnet_reserved();
+        for i in 0..31 {
+            allocate_single(
+                &store,
+                "192.168.64.224/27",
+                &format!("vm{i}"),
+                "192.168.64.1",
+                "255.255.255.0",
+                &reserved,
+            )
+            .unwrap();
+        }
+        // 32nd allocation hits .255 → reserved → no free slot.
+        let err = allocate_single(
+            &store,
+            "192.168.64.224/27",
+            "overflow",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Network(_)));
+    }
+
+    #[test]
+    fn allocate_single_reuses_released_addresses() {
+        // Drop vm2, allocate vm4 → vm4 should land on vm2's freed
+        // slot (lowest unused index).
+        let (_dir, store) = test_store();
+        let reserved = vmnet_reserved();
+        let a1 = allocate_single(
+            &store,
+            "192.168.64.32/27",
+            "vm1",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        let a2 = allocate_single(
+            &store,
+            "192.168.64.32/27",
+            "vm2",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        let a3 = allocate_single(
+            &store,
+            "192.168.64.32/27",
+            "vm3",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        assert_ne!(a1.guest_ip, a2.guest_ip);
+        assert_ne!(a2.guest_ip, a3.guest_ip);
+
+        release(&store, "vm2").unwrap();
+
+        let a4 = allocate_single(
+            &store,
+            "192.168.64.32/27",
+            "vm4",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        assert_eq!(
+            a4.guest_ip, a2.guest_ip,
+            "freed slot should be reused before allocating beyond the high-water mark"
+        );
+    }
+
+    #[test]
+    fn allocate_single_rejects_subnet_mismatch_on_reread() {
+        // allocations.json pins the base subnet so an install can't
+        // accidentally re-interpret block indices in a different
+        // layout (e.g. switching between /30 and /32 strategies
+        // would re-stamp every existing entry).
+        let (_dir, store) = test_store();
+        let reserved = vmnet_reserved();
+        allocate_single(
+            &store,
+            "192.168.64.32/27",
+            "vm1",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap();
+        let err = allocate_single(
+            &store,
+            "192.168.64.64/27",
+            "vm2",
+            "192.168.64.1",
+            "255.255.255.0",
+            &reserved,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Network(msg) if msg.contains("subnet mismatch")));
     }
 }

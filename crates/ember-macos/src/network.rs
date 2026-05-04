@@ -34,14 +34,16 @@ pub const VMNET_SUBNET: &str = "192.168.64.0/24";
 ///
 /// vmnet's shared subnet is fixed by the framework, so isolation has
 /// to come from carving up the /24 rather than picking a different
-/// one. We split it into 8 /27 slots (32 addresses, 8 /30 VM blocks
-/// each) and pick by the low 3 bits of the instance id parsed as
-/// hex. The collision probability between two installs is 1/8 per
-/// pair — acceptable for personal use, with `--ip-subnet` as the
-/// escape hatch when it bites.
+/// one. We split it into 8 /27 slots (32 addresses each) and pick by
+/// the low 3 bits of the instance id parsed as hex. The collision
+/// probability between two installs is 1/8 per pair — acceptable for
+/// personal use, with `--ip-subnet` as the escape hatch when it
+/// bites.
 ///
-/// 8 VMs per install caps the install at 8 concurrent guests on
-/// macOS, well above any realistic personal workflow.
+/// Pairs with [`network::ip::allocate_single`](ember_core::network::ip::allocate_single):
+/// each /27 slot holds 30–32 single-IP allocations after subtracting
+/// vmnet's reserved network/gateway/broadcast addresses, well above
+/// any realistic personal workflow.
 pub fn derive_vmnet_subnet(instance_id: &str) -> String {
     let id_int = u16::from_str_radix(instance_id, 16).unwrap_or(0);
     let slot = (id_int & 0b111) as u8;
@@ -67,21 +69,47 @@ impl NetworkBackend for MacosNetwork {
     /// Allocate a static guest IP from the vmnet subnet.
     ///
     /// The IP is passed to the kernel via boot args (`ip=<guest>::...`)
-    /// so the guest has connectivity immediately at boot — no DHCP needed.
+    /// so the guest has connectivity immediately at boot — no DHCP
+    /// needed.
+    ///
+    /// Two allocation strategies, picked by whether the config has
+    /// an `instance_id`:
+    ///
+    /// * Legacy (no instance id): `network::ip::allocate` against the
+    ///   full /24, matching what pre-instance-id binaries wrote so an
+    ///   upgrade doesn't reinterpret existing `allocations.json`
+    ///   block indices. Caps at ~64 VMs (one /30 per VM).
+    /// * New install: `network::ip::allocate_single` against the
+    ///   per-installation /27 slice. Single-IP allocation gives ~30
+    ///   VMs per slot — vmnet's shared L2 bridge means the /30 P2P
+    ///   link Linux needs is overkill here and would waste 75% of
+    ///   the address space.
     fn setup(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo> {
-        // Legacy configs (no instance_id) keep using vmnet's full /24
-        // exactly the way pre-instance-id binaries did — same
-        // allocator state, same IP layout, no migration. New
-        // configs honor `config.ip_subnet`, which `ember init`
-        // populates with a per-installation /27 slice via
-        // `MacosPlatform::default_ip_subnet`.
-        let default_subnet = if config.instance_id.is_empty() {
-            VMNET_SUBNET
+        let allocation = if config.instance_id.is_empty() {
+            // Per-VM `vm.subnet` overrides the install default; keeps
+            // parity with pre-instance-id behavior.
+            let subnet = vm.subnet.as_deref().unwrap_or(VMNET_SUBNET);
+            network::ip::allocate(&self.store, subnet, &vm.name)?
         } else {
-            config.ip_subnet.as_str()
+            let subnet = vm.subnet.as_deref().unwrap_or(config.ip_subnet.as_str());
+            // Reserve vmnet's host-global addresses so the allocator
+            // never hands them out, regardless of which /27 slot the
+            // install landed in. .0/.255 are the surrounding /24's
+            // network/broadcast; .1 is vmnet's built-in router.
+            let reserved = [
+                std::net::Ipv4Addr::new(192, 168, 64, 0),
+                std::net::Ipv4Addr::new(192, 168, 64, 1),
+                std::net::Ipv4Addr::new(192, 168, 64, 255),
+            ];
+            network::ip::allocate_single(
+                &self.store,
+                subnet,
+                &vm.name,
+                VMNET_GATEWAY,
+                VMNET_NETMASK,
+                &reserved,
+            )?
         };
-        let subnet = vm.subnet.as_deref().unwrap_or(default_subnet);
-        let allocation = network::ip::allocate(&self.store, subnet, &vm.name)?;
 
         Ok(NetworkInfo {
             tap_device: String::new(),
