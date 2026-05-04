@@ -174,6 +174,10 @@ impl GlobalConfig {
     /// upgraded hosts is still reachable.
     pub fn dm_thin_pool_name(&self) -> String {
         if self.instance_id.is_empty() {
+            // Older binaries created `dmsetup create ember-pool`. Any
+            // other string here would point at a non-existent pool
+            // (or, worse, a `ember--pool` typo that init would race
+            // to create), orphaning the data on disk.
             "ember-pool".to_string()
         } else {
             format!("ember-{}-pool", self.instance_id)
@@ -184,6 +188,10 @@ impl GlobalConfig {
     /// (`ember-{id}-img-`, or legacy `ember-img-`).
     pub fn dm_thin_image_prefix(&self) -> String {
         if self.instance_id.is_empty() {
+            // Existing image volumes on the host are named
+            // `ember-img-<image>`; teardown's prefix sweep and
+            // per-image lookups must match that exact prefix or the
+            // pool will accumulate orphaned thin ids.
             "ember-img-".to_string()
         } else {
             format!("ember-{}-img-", self.instance_id)
@@ -194,6 +202,9 @@ impl GlobalConfig {
     /// legacy `ember-vm-`).
     pub fn dm_thin_vm_prefix(&self) -> String {
         if self.instance_id.is_empty() {
+            // Same reasoning as `dm_thin_image_prefix`: existing VM
+            // disks are `ember-vm-<vm>`, and `vm.json` records the
+            // device path with that prefix.
             "ember-vm-".to_string()
         } else {
             format!("ember-{}-vm-", self.instance_id)
@@ -205,6 +216,10 @@ impl GlobalConfig {
     /// budget (14 chars with the 4-hex id, 10 chars in legacy mode).
     pub fn tap_prefix(&self) -> String {
         if self.instance_id.is_empty() {
+            // Older binaries persisted TAP names like `em-<vmid7>` on
+            // every running VM's `vm.json`; reconcile's orphan sweep
+            // and teardown's `ip link delete` both reference that
+            // exact name, so the prefix has to stay 3 chars.
             "em-".to_string()
         } else {
             format!("em{}-", self.instance_id)
@@ -217,6 +232,13 @@ impl GlobalConfig {
     /// already on the host don't carry one to match against.
     pub fn iptables_comment(&self) -> String {
         if self.instance_id.is_empty() {
+            // `iptables -D` requires a byte-for-byte rule match. If
+            // we returned a non-empty comment here, the upgraded
+            // binary would emit `... -m comment --comment ember ...`
+            // on add and try to delete the same shape on remove —
+            // but the rule already on the host has no comment match,
+            // so the delete silently no-ops and rules accumulate
+            // forever. Empty preserves the original rule shape.
             String::new()
         } else {
             format!("ember:{}", self.instance_id)
