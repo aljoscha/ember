@@ -4,9 +4,7 @@ use clap::Args;
 
 use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
 use ember_core::config::size::ByteSize;
-use ember_core::config::{
-    derive_instance_id, derive_ip_subnet, DmThinMode, GlobalConfig, StorageKind,
-};
+use ember_core::config::{derive_instance_id, DmThinMode, GlobalConfig, StorageKind};
 use ember_core::state::store::StateStore;
 
 /// dm-thin pool block size (in 512-byte sectors) used when the user does
@@ -177,10 +175,12 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         .instance_id
         .clone()
         .unwrap_or_else(|| derive_instance_id(state_dir));
+    // Default subnet is platform-derived: Linux carves up 10.0.0.0/8,
+    // macOS sub-allocates inside vmnet's host-wide 192.168.64.0/24.
     let ip_subnet = args
         .ip_subnet
         .clone()
-        .unwrap_or_else(|| derive_ip_subnet(&instance_id));
+        .unwrap_or_else(|| CurrentPlatform::default_ip_subnet(&instance_id));
 
     let init_config = InitConfig {
         storage_backend: args.storage,

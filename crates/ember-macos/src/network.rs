@@ -19,11 +19,35 @@ pub const VMNET_GATEWAY: &str = "192.168.64.1";
 /// Default netmask for vmnet shared mode (/24).
 pub const VMNET_NETMASK: &str = "255.255.255.0";
 
-/// vmnet shared mode subnet for IP allocation.
+/// Host-wide vmnet shared-mode subnet. Apple's `VZNATNetworkDevice`
+/// owns this /24 and there's no public API to ask for a different
+/// one, so per-installation isolation can only sub-allocate inside
+/// it; see [`derive_vmnet_subnet`].
 ///
-/// Uses /30 blocks via the shared `network::ip` allocator, giving 64
-/// concurrent VMs. The gateway (.1) is always vmnet's built-in router.
-const VMNET_SUBNET: &str = "192.168.64.0/24";
+/// Used directly only as the legacy fallback for configs that
+/// predate `instance_id` — new installs read
+/// [`GlobalConfig::ip_subnet`](ember_core::config::GlobalConfig::ip_subnet)
+/// (a /27 slice) instead.
+pub const VMNET_SUBNET: &str = "192.168.64.0/24";
+
+/// Derive a per-installation /27 sub-range inside [`VMNET_SUBNET`].
+///
+/// vmnet's shared subnet is fixed by the framework, so isolation has
+/// to come from carving up the /24 rather than picking a different
+/// one. We split it into 8 /27 slots (32 addresses, 8 /30 VM blocks
+/// each) and pick by the low 3 bits of the instance id parsed as
+/// hex. The collision probability between two installs is 1/8 per
+/// pair — acceptable for personal use, with `--ip-subnet` as the
+/// escape hatch when it bites.
+///
+/// 8 VMs per install caps the install at 8 concurrent guests on
+/// macOS, well above any realistic personal workflow.
+pub fn derive_vmnet_subnet(instance_id: &str) -> String {
+    let id_int = u16::from_str_radix(instance_id, 16).unwrap_or(0);
+    let slot = (id_int & 0b111) as u8;
+    let base = slot * 32;
+    format!("192.168.64.{base}/27")
+}
 
 /// macOS network backend using vmnet (shared mode).
 ///
@@ -44,8 +68,20 @@ impl NetworkBackend for MacosNetwork {
     ///
     /// The IP is passed to the kernel via boot args (`ip=<guest>::...`)
     /// so the guest has connectivity immediately at boot — no DHCP needed.
-    fn setup(&self, vm: &VmMetadata, _config: &GlobalConfig) -> Result<NetworkInfo> {
-        let allocation = network::ip::allocate(&self.store, VMNET_SUBNET, &vm.name)?;
+    fn setup(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo> {
+        // Legacy configs (no instance_id) keep using vmnet's full /24
+        // exactly the way pre-instance-id binaries did — same
+        // allocator state, same IP layout, no migration. New
+        // configs honor `config.ip_subnet`, which `ember init`
+        // populates with a per-installation /27 slice via
+        // `MacosPlatform::default_ip_subnet`.
+        let default_subnet = if config.instance_id.is_empty() {
+            VMNET_SUBNET
+        } else {
+            config.ip_subnet.as_str()
+        };
+        let subnet = vm.subnet.as_deref().unwrap_or(default_subnet);
+        let allocation = network::ip::allocate(&self.store, subnet, &vm.name)?;
 
         Ok(NetworkInfo {
             tap_device: String::new(),
@@ -149,5 +185,52 @@ destination: default
     #[test]
     fn parse_route_empty() {
         assert_eq!(parse_interface_from_route(""), None);
+    }
+
+    // ── vmnet sub-range derivation ───────────────────────────────
+
+    #[test]
+    fn vmnet_subnet_lands_in_192_168_64_slash_24() {
+        for id in ["0000", "a3f4", "ffff", "dead", "beef"] {
+            let subnet = derive_vmnet_subnet(id);
+            assert!(
+                subnet.starts_with("192.168.64."),
+                "instance id {id} produced subnet outside vmnet's /24: {subnet}"
+            );
+            assert!(
+                subnet.ends_with("/27"),
+                "instance id {id} produced non-/27 subnet: {subnet}"
+            );
+        }
+    }
+
+    #[test]
+    fn vmnet_subnet_uses_low_three_bits_of_id() {
+        // Same low 3 bits → same slot; bits 3-15 don't move it.
+        // 0x0007 and 0xffff both end in 0b111 → slot 7 → base 224.
+        assert_eq!(derive_vmnet_subnet("0007"), "192.168.64.224/27");
+        assert_eq!(derive_vmnet_subnet("ffff"), "192.168.64.224/27");
+        // 0x0000 → slot 0 → base 0.
+        assert_eq!(derive_vmnet_subnet("0000"), "192.168.64.0/27");
+        // 0x0008 → slot 0 → base 0 (only low 3 bits matter).
+        assert_eq!(derive_vmnet_subnet("0008"), "192.168.64.0/27");
+    }
+
+    #[test]
+    fn vmnet_subnet_is_stable() {
+        // Reactivation must land on the same /27 the install was
+        // initialized with, otherwise allocations.json's pinned
+        // `base_subnet` mismatches and `network::ip::allocate`
+        // refuses to hand out IPs.
+        assert_eq!(derive_vmnet_subnet("a3f4"), derive_vmnet_subnet("a3f4"));
+    }
+
+    #[test]
+    fn vmnet_subnet_falls_back_to_slot_zero_on_garbage_id() {
+        // Defensive: parse failure shouldn't panic, just land on
+        // the legacy-equivalent base. The user can then pick
+        // `--ip-subnet` explicitly.
+        assert_eq!(derive_vmnet_subnet("zzzz"), "192.168.64.0/27");
+        assert_eq!(derive_vmnet_subnet(""), "192.168.64.0/27");
     }
 }

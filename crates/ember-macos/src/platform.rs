@@ -38,6 +38,10 @@ impl Platform for MacosPlatform {
         }
     }
 
+    fn default_ip_subnet(instance_id: &str) -> String {
+        crate::network::derive_vmnet_subnet(instance_id)
+    }
+
     fn console_device() -> &'static str {
         "hvc0"
     }

@@ -388,6 +388,19 @@ pub trait Platform {
     /// Linux: `/var/lib/ember`. macOS: `~/Library/Application Support/ember`.
     fn default_state_dir() -> PathBuf;
 
+    /// Default IP subnet handed to `GlobalConfig.ip_subnet` at
+    /// `ember init` when the user doesn't pass `--ip-subnet`.
+    ///
+    /// Linux carves a `/16` slot inside `10.0.0.0/8` because the
+    /// host has full control of routing — installations can scale to
+    /// 16k VMs each. macOS sub-allocates a `/27` inside vmnet's
+    /// host-wide `192.168.64.0/24` because Apple's vmnet shared mode
+    /// owns that /24 and there's no way to ask for a different one.
+    /// Each macOS install gets 8 VMs; a `/8` collision between two
+    /// installs is unlikely (1/8 per pair) and resolvable via the
+    /// `--ip-subnet` override.
+    fn default_ip_subnet(instance_id: &str) -> String;
+
     /// Console device name for inittab injection.
     ///
     /// Linux/Firecracker: `"ttyS0"`. macOS/AVF: `"hvc0"`.
