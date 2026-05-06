@@ -92,6 +92,10 @@ pub enum Error {
     /// YAML parsing error.
     #[error("yaml: {0}")]
     Yaml(#[from] serde_yaml::Error),
+
+    /// SQLite error from the embedded allocator state DB.
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 /// Convenience alias used throughout ember.

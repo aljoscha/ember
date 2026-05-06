@@ -43,6 +43,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Temporary directories
 tempfile = "3"
 
+# Embedded database (relational allocator state — see SEC-459)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 [package]
 name = "ember"
 version = "0.1.0"

@@ -69,7 +69,8 @@ impl StateStore {
             self.root.join("images"),
             self.root.join("vms"),
             self.root.join("vsock"),
-            self.root.join("network"),
+            // Note: network/allocations.json is replaced by state.db; the
+            // `network/` directory is no longer created (SEC-459).
         ];
         for dir in &dirs {
             fs::create_dir_all(dir).map_err(|e| Error::Io {
@@ -100,12 +101,11 @@ impl StateStore {
         self.root.join("images").join("registry.json")
     }
 
-    /// Path to network IP allocation tracking.
-    pub fn network_allocations_path(&self) -> PathBuf {
-        self.root.join("network").join("allocations.json")
-    }
-
     /// Path to vsock CID allocation tracking.
+    ///
+    /// Note: the IP allocator no longer uses a JSON file — see
+    /// `crate::state::db` for the SQLite-backed replacement (SEC-459).
+    /// Vsock CIDs still live in JSON pending a follow-up migration.
     pub fn vsock_allocations_path(&self) -> PathBuf {
         self.root.join("vsock").join("cids.json")
     }
@@ -364,7 +364,8 @@ mod tests {
         assert!(root.join("images").is_dir());
         assert!(root.join("vms").is_dir());
         assert!(root.join("vsock").is_dir());
-        assert!(root.join("network").is_dir());
+        // network/ is no longer created — allocator state lives in state.db (SEC-459).
+        assert!(!root.join("network").exists());
     }
 
     #[test]
@@ -427,10 +428,6 @@ mod tests {
         assert_eq!(
             store.image_registry_path(),
             PathBuf::from("/var/lib/ember/images/registry.json")
-        );
-        assert_eq!(
-            store.network_allocations_path(),
-            PathBuf::from("/var/lib/ember/network/allocations.json")
         );
         assert_eq!(
             store.vsock_allocations_path(),

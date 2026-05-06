@@ -1,28 +1,29 @@
 //! IP allocation from a configurable /N subnet in /30 blocks.
 //!
 //! Each VM gets a point-to-point /30 link: host gets .1, guest gets .2.
-//! Allocations are tracked in `allocations.json` via the state store
-//! with flock-based locking for concurrent safety.
+//! Allocations are tracked in `state.db` (SQLite, see [`crate::state::db`]).
+//! The schema's `(subnet, block_index) PRIMARY KEY` plus `vm_name UNIQUE`
+//! makes double-allocation structurally impossible — the second `INSERT`
+//! for the same slot fails with a constraint violation.
 //!
 //! With the default /16 subnet (10.100.0.0/16), this supports ~16,384
 //! concurrent VMs.
+//!
+//! Concurrency model: each call opens a fresh SQLite connection and runs
+//! the allocation under `BEGIN IMMEDIATE`, which acquires the write lock
+//! at transaction start (not lazily on first write). This eliminates the
+//! SELECT/INSERT TOCTOU window that the prior JSON-with-flock store had,
+//! which could hand the same /30 block to multiple parallel `vm start`
+//! invocations after a crash recovery (SEC-459).
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 
-use serde::{Deserialize, Serialize};
+use rusqlite::params;
 
 use crate::error::{Error, Result};
+use crate::state::db;
 use crate::state::store::StateStore;
-
-/// Persisted IP allocation state, stored as `allocations.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpAllocations {
-    /// Base subnet in CIDR notation (e.g., "10.100.0.0/16").
-    pub base_subnet: String,
-    /// Map from /30 block index to VM name.
-    pub allocations: HashMap<u32, String>,
-}
 
 /// A single IP allocation for one VM.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,65 +105,116 @@ fn block_ips(base: Ipv4Addr, block_index: u32) -> IpAllocation {
 /// Allocate a /30 block for a VM.
 ///
 /// Finds the lowest-numbered available block in the subnet, records the
-/// allocation, and persists it to the state store. The state store's
-/// flock ensures safe concurrent access.
+/// allocation in `state.db`, and returns the IP addresses for that block.
+///
+/// The full read-modify-write runs under a single `BEGIN IMMEDIATE`
+/// transaction, so parallel allocators serialize at the database layer
+/// rather than racing on a JSON file. The `(subnet, block_index)` primary
+/// key plus the `vm_name UNIQUE` constraint make double-allocation
+/// structurally impossible: even if the `find` logic regressed, a duplicate
+/// `INSERT` would fail with `SQLITE_CONSTRAINT_PRIMARYKEY`.
 pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAllocation> {
-    let path = store.network_allocations_path();
     let (base, prefix) = parse_cidr(subnet)?;
     let max = max_blocks(prefix);
 
-    let mut allocs: IpAllocations = store
-        .read_optional(&path)?
-        .unwrap_or_else(|| IpAllocations {
-            base_subnet: subnet.to_string(),
-            allocations: HashMap::new(),
-        });
+    let mut conn = db::open(store.root())?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     // Verify the subnet hasn't changed since allocations started.
-    if allocs.base_subnet != subnet {
-        return Err(Error::Network(format!(
-            "subnet mismatch: state has '{}', requested '{subnet}'",
-            allocs.base_subnet
-        )));
+    let existing_subnet: Option<String> = tx
+        .query_row("SELECT subnet FROM network_allocations LIMIT 1", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok();
+    if let Some(existing) = existing_subnet {
+        if existing != subnet {
+            return Err(Error::Network(format!(
+                "subnet mismatch: state has '{existing}', requested '{subnet}'"
+            )));
+        }
     }
 
-    // Find the first free block.
-    let block_index = (0..max)
-        .find(|i| !allocs.allocations.contains_key(i))
-        .ok_or_else(|| {
-            Error::Network(format!(
-                "no free /30 blocks in {subnet} (all {max} blocks allocated)"
-            ))
-        })?;
+    let used: HashSet<u32> = tx
+        .prepare("SELECT block_index FROM network_allocations WHERE subnet = ?1")?
+        .query_map(params![subnet], |r| r.get::<_, u32>(0))?
+        .collect::<std::result::Result<_, _>>()?;
 
-    let allocation = block_ips(base, block_index);
-    allocs.allocations.insert(block_index, vm_name.to_string());
-    store.write(&path, &allocs)?;
+    let block_index = (0..max).find(|i| !used.contains(i)).ok_or_else(|| {
+        Error::Network(format!(
+            "no free /30 blocks in {subnet} (all {max} blocks allocated)"
+        ))
+    })?;
 
-    Ok(allocation)
+    tx.execute(
+        "INSERT INTO network_allocations (block_index, subnet, vm_name) VALUES (?1, ?2, ?3)",
+        params![block_index, subnet, vm_name],
+    )?;
+    tx.commit()?;
+
+    Ok(block_ips(base, block_index))
 }
 
 /// Release a VM's IP allocation.
 ///
 /// Removes all allocation entries for the given VM name, making the /30
-/// block(s) available for reuse. Idempotent — does nothing if the VM
-/// has no allocation or the allocations file doesn't exist.
+/// block available for reuse. Idempotent — does nothing if the VM has no
+/// allocation.
 pub fn release(store: &StateStore, vm_name: &str) -> Result<()> {
-    let path = store.network_allocations_path();
-    let mut allocs: IpAllocations = match store.read_optional(&path)? {
-        Some(a) => a,
-        None => return Ok(()),
-    };
+    let conn = db::open(store.root())?;
+    conn.execute(
+        "DELETE FROM network_allocations WHERE vm_name = ?1",
+        params![vm_name],
+    )?;
+    Ok(())
+}
 
-    let before = allocs.allocations.len();
-    allocs.allocations.retain(|_, name| name != vm_name);
+/// Check that the allocator state is internally consistent.
+///
+/// Returns the list of detected anomalies (empty list = healthy). Used by
+/// `ember vm list` to flag corrupted state — see SEC-459 for the failure
+/// mode this catches (allocator-state-vs-running-VM divergence after a
+/// crash that bypassed the proper allocator path).
+///
+/// Today's checks:
+///   - No two VMs share a `(subnet, block_index)` — the schema already
+///     enforces this; a violation here means the constraint was bypassed.
+///   - No `vm_name` appears more than once across rows.
+///
+/// Both are belt-and-suspenders against a hypothetical schema drift; under
+/// normal operation the SQL constraints catch them at insert time.
+pub fn check_invariants(store: &StateStore) -> Result<Vec<String>> {
+    let conn = db::open(store.root())?;
+    let mut anomalies = Vec::new();
 
-    // Only write back if something changed.
-    if allocs.allocations.len() != before {
-        store.write(&path, &allocs)?;
+    let dup_slots: Vec<(String, u32, i64)> = conn
+        .prepare(
+            "SELECT subnet, block_index, COUNT(*) AS n
+             FROM network_allocations
+             GROUP BY subnet, block_index
+             HAVING n > 1",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    for (subnet, idx, n) in dup_slots {
+        anomalies.push(format!(
+            "duplicate slot: subnet={subnet} block_index={idx} count={n}"
+        ));
     }
 
-    Ok(())
+    let dup_names: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT vm_name, COUNT(*) AS n
+             FROM network_allocations
+             GROUP BY vm_name
+             HAVING n > 1",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    for (name, n) in dup_names {
+        anomalies.push(format!("duplicate vm_name: {name} count={n}"));
+    }
+
+    Ok(anomalies)
 }
 
 #[cfg(test)]
@@ -234,7 +286,6 @@ mod tests {
 
     #[test]
     fn block_ips_wraps_octet() {
-        // Block 64 in a 10.100.0.0 base: 64 * 4 = 256 → rolls into second octet.
         let alloc = block_ips(Ipv4Addr::new(10, 100, 0, 0), 64);
         assert_eq!(alloc.host_ip, "10.100.1.1");
         assert_eq!(alloc.guest_ip, "10.100.1.2");
@@ -293,7 +344,6 @@ mod tests {
     #[test]
     fn allocate_exhausts_small_subnet() {
         let (_dir, store) = test_store();
-        // A /30 has only 1 block.
         allocate(&store, "192.168.1.0/30", "vm1").unwrap();
         let err = allocate(&store, "192.168.1.0/30", "vm2").unwrap_err();
         assert!(err.to_string().contains("no free /30 blocks"));
@@ -308,12 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn allocate_rejects_duplicate_vm_name() {
+        // The schema's UNIQUE(vm_name) makes double-allocation impossible.
+        // The allocator function shouldn't be called twice for the same VM,
+        // but if it is, surface a clear error rather than silently succeeding.
+        let (_dir, store) = test_store();
+        allocate(&store, "10.100.0.0/16", "vm1").unwrap();
+        let err = allocate(&store, "10.100.0.0/16", "vm1").unwrap_err();
+        assert!(err.to_string().contains("UNIQUE") || err.to_string().contains("sqlite"));
+    }
+
+    #[test]
     fn release_idempotent() {
         let (_dir, store) = test_store();
-        // Release with no allocations file at all.
         release(&store, "nonexistent").unwrap();
 
-        // Allocate then release twice.
         allocate(&store, "10.100.0.0/16", "vm1").unwrap();
         release(&store, "vm1").unwrap();
         release(&store, "vm1").unwrap();
@@ -328,24 +387,86 @@ mod tests {
 
         release(&store, "vm2").unwrap();
 
-        // vm1 and vm3 should still be allocated.
-        let path = store.network_allocations_path();
-        let allocs: IpAllocations = store.read(&path).unwrap();
-        assert_eq!(allocs.allocations.len(), 2);
-        assert_eq!(allocs.allocations[&0], "vm1");
-        assert_eq!(allocs.allocations[&2], "vm3");
+        let conn = db::open(store.root()).unwrap();
+        let rows: Vec<(u32, String)> = conn
+            .prepare("SELECT block_index, vm_name FROM network_allocations ORDER BY block_index")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(0, "vm1".to_string()), (2, "vm3".to_string())]);
     }
 
+    // --- Concurrency stress test (SEC-459 regression) ---
+
+    /// Spawn N OS threads, each calling `allocate()` against a shared store
+    /// with a distinct VM name. A `Barrier` makes all threads enter
+    /// `BEGIN IMMEDIATE` near-simultaneously — without it, the threads can
+    /// serialize on scheduler luck and never actually exercise the race
+    /// window. After all threads finish, assert:
+    ///
+    ///   - every call returned `Ok`
+    ///   - every returned `block_index` is unique
+    ///   - the database has exactly N rows
+    ///
+    /// This is the regression test for SEC-459. Before the SQLite migration,
+    /// six parallel `ember vm start` invocations could each see the same
+    /// "free" slot and each return the same block_index — silently — because
+    /// the JSON store's flock was only held for the duration of a single
+    /// read or write call, not the read-modify-write transaction.
     #[test]
-    fn allocations_persist_across_reads() {
+    fn parallel_allocate_produces_unique_slots() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const N: usize = 50;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        store.init().unwrap();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(N));
+
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                // Wait until every thread has reached this point, then race
+                // into `allocate()` together. This forces actual contention
+                // on `BEGIN IMMEDIATE` instead of relying on scheduler luck.
+                barrier.wait();
+                allocate(&store, "10.100.0.0/16", &format!("vm{i}")).unwrap()
+            }));
+        }
+
+        let results: Vec<IpAllocation> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Every block_index is distinct.
+        let unique_slots: HashSet<u32> = results.iter().map(|a| a.block_index).collect();
+        assert_eq!(
+            unique_slots.len(),
+            N,
+            "parallel allocate produced duplicate slots: {results:?}"
+        );
+
+        // DB has exactly N rows.
+        let conn = db::open(store.root()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM network_allocations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, N as i64);
+    }
+
+    // --- Invariant checker ---
+
+    #[test]
+    fn check_invariants_clean_store() {
         let (_dir, store) = test_store();
         allocate(&store, "10.100.0.0/16", "vm1").unwrap();
         allocate(&store, "10.100.0.0/16", "vm2").unwrap();
-
-        // Read the file directly and verify structure.
-        let path = store.network_allocations_path();
-        let allocs: IpAllocations = store.read(&path).unwrap();
-        assert_eq!(allocs.base_subnet, "10.100.0.0/16");
-        assert_eq!(allocs.allocations.len(), 2);
+        let anomalies = check_invariants(&store).unwrap();
+        assert!(anomalies.is_empty(), "unexpected anomalies: {anomalies:?}");
     }
 }

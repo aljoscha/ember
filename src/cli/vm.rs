@@ -1357,9 +1357,52 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let vms = vm::list(&store)?;
 
+    // SEC-459: surface allocator-state divergence so a corrupted state.db
+    // (e.g. from a pre-fix crash) doesn't go unnoticed. Detect VMs whose
+    // recorded `guest_ip` collides with another VM's, and flag duplicate
+    // allocator rows as well. Both should be impossible under the SQLite
+    // schema's UNIQUE constraints, but if state was migrated from the old
+    // JSON store or hand-edited, the divergence shows up here.
+    let mut anomalies: Vec<String> =
+        ember_core::network::ip::check_invariants(&store).unwrap_or_default();
+    let mut seen_ips: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for vm in &vms {
+        if let Some(net) = &vm.network {
+            if !net.guest_ip.is_empty() {
+                if let Some(other) = seen_ips.get(&net.guest_ip) {
+                    anomalies.push(format!(
+                        "duplicate guest_ip {}: {} and {}",
+                        net.guest_ip, other, vm.name
+                    ));
+                } else {
+                    seen_ips.insert(net.guest_ip.clone(), vm.name.clone());
+                }
+            }
+        }
+    }
+    let corrupt_vms: std::collections::HashSet<String> = anomalies
+        .iter()
+        .filter_map(|a| {
+            // Best-effort extraction of vm names from the anomaly message;
+            // err on the side of flagging when uncertain.
+            a.split_whitespace()
+                .find(|tok| vms.iter().any(|v| v.name == *tok))
+                .map(String::from)
+        })
+        .collect();
+
     match args.format {
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&vms)?);
+            if !anomalies.is_empty() {
+                eprintln!(
+                    "warning: allocator state divergence detected ({} anomaly/anomalies):",
+                    anomalies.len()
+                );
+                for a in &anomalies {
+                    eprintln!("  {a}");
+                }
+            }
         }
         OutputFormat::Table => {
             if vms.is_empty() {
@@ -1377,9 +1420,14 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                     .as_ref()
                     .map(|n| n.guest_ip.as_str())
                     .unwrap_or("-");
-                let vsock = if vm.vsock.is_some() { "✓" } else { "-" };
+                let vsock = if vm.vsock.is_some() { "v" } else { "-" };
+                let suffix = if corrupt_vms.contains(&vm.name) {
+                    " [CORRUPTED]"
+                } else {
+                    ""
+                };
                 println!(
-                    "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}",
+                    "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}{}",
                     vm.name,
                     vm.status,
                     ip,
@@ -1387,6 +1435,21 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                     vm.cpus,
                     format_bytes_binary(vm.memory_mib as u64 * MIB),
                     format_bytes_binary(vm.disk_size_gib as u64 * GIB),
+                    suffix,
+                );
+            }
+            if !anomalies.is_empty() {
+                eprintln!();
+                eprintln!(
+                    "warning: allocator state divergence detected ({} anomaly/anomalies):",
+                    anomalies.len()
+                );
+                for a in &anomalies {
+                    eprintln!("  {a}");
+                }
+                eprintln!(
+                    "to recover: stop affected VMs, remove their entries from \
+                     network_allocations, then restart serially."
                 );
             }
         }
