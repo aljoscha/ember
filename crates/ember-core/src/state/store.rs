@@ -65,7 +65,8 @@ impl StateStore {
             self.kernel_dir(),
             self.root.join("images"),
             self.root.join("vms"),
-            self.root.join("network"),
+            // Note: network/allocations.json is replaced by state.db; the
+            // `network/` directory is no longer created (SEC-459).
         ];
         for dir in &dirs {
             fs::create_dir_all(dir).map_err(|e| Error::Io {
@@ -94,11 +95,6 @@ impl StateStore {
     /// Path to the local image registry file.
     pub fn image_registry_path(&self) -> PathBuf {
         self.root.join("images").join("registry.json")
-    }
-
-    /// Path to network IP allocation tracking.
-    pub fn network_allocations_path(&self) -> PathBuf {
-        self.root.join("network").join("allocations.json")
     }
 
     /// Path to the global config file.
@@ -354,7 +350,8 @@ mod tests {
         assert!(root.join("kernels").is_dir());
         assert!(root.join("images").is_dir());
         assert!(root.join("vms").is_dir());
-        assert!(root.join("network").is_dir());
+        // network/ is no longer created — allocator state lives in state.db (SEC-459).
+        assert!(!root.join("network").exists());
     }
 
     #[test]
@@ -417,10 +414,6 @@ mod tests {
         assert_eq!(
             store.image_registry_path(),
             PathBuf::from("/var/lib/ember/images/registry.json")
-        );
-        assert_eq!(
-            store.network_allocations_path(),
-            PathBuf::from("/var/lib/ember/network/allocations.json")
         );
         assert_eq!(
             store.config_path(),
