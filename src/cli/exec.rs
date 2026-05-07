@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use clap::Args;
 
@@ -15,6 +16,10 @@ pub struct ExecArgs {
     #[arg(long)]
     pub user: Option<String>,
 
+    /// Wait up to N seconds for SSH to become available (default: 30)
+    #[arg(long, default_value = "30")]
+    pub wait: u64,
+
     /// Command to execute (everything after --)
     #[arg(last = true, required = true)]
     pub command: Vec<String>,
@@ -27,13 +32,15 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
     let guest_ip = &network.guest_ip;
     let key_path = &metadata.ssh.key;
     let user = args.user.as_deref().unwrap_or(&metadata.ssh.user);
+    let timeout = Duration::from_secs(args.wait);
 
     // Build the remote command string from the argument vector.
     let command = shell_escape_join(&args.command);
 
     let rt = tokio::runtime::Runtime::new()?;
     let exit_code = rt.block_on(async {
-        let mut client = ssh::client::connect(guest_ip, user, key_path).await?;
+        let mut client =
+            ssh::client::connect_with_timeout(guest_ip, user, key_path, timeout).await?;
         let code = ssh::exec::exec(&mut client, &command).await?;
         let _ = client.close().await;
         Ok::<u32, anyhow::Error>(code)
@@ -48,9 +55,15 @@ pub fn run(args: &ExecArgs, state_dir: &Path) -> anyhow::Result<()> {
 
 /// Join command arguments into a single shell command string.
 ///
-/// Arguments containing spaces, quotes, or shell metacharacters are
-/// single-quoted. This matches the behavior expected by remote shells.
+/// If there's a single argument, pass it verbatim — the user composed
+/// a shell command (e.g., `ember exec vm -- "echo hi | tee /tmp/out"`).
+///
+/// If there are multiple arguments, quote any that contain shell
+/// metacharacters so they're treated as literal arguments.
 fn shell_escape_join(args: &[String]) -> String {
+    if args.len() == 1 {
+        return args[0].clone();
+    }
     args.iter()
         .map(|arg| {
             if arg.is_empty()
