@@ -633,7 +633,6 @@ dependencies = [
  "base64",
  "clap",
  "nix",
- "serde",
  "serde_json",
  "tempfile",
 ]

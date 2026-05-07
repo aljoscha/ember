@@ -179,8 +179,7 @@ impl VmBackend for MacosVm {
 
                 // Surface the ember-vz log before the caller rolls back vm_dir.
                 let ember_vz_log = vm_dir.join("ember-vz.log");
-                let preserved =
-                    preserve_ember_vz_log(&config.state_dir, &vm.name, &ember_vz_log);
+                let preserved = preserve_ember_vz_log(&config.state_dir, &vm.name, &ember_vz_log);
                 let last_lines = read_last_lines(&ember_vz_log, 10);
 
                 let mut msg = e.to_string();
