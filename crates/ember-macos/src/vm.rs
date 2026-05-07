@@ -416,7 +416,7 @@ fn read_last_lines(path: &std::path::Path, n: usize) -> Vec<String> {
     lines[start..].iter().map(|s| s.to_string()).collect()
 }
 
-/// Copy `log_path` to `<state_dir>/failed-starts/<vm_name>-<unix_ts>.log`.
+/// Copy `log_path` to `<state_dir>/failed-starts/<vm_name>-<secs>-<nanos>.log`.
 ///
 /// Creates the `failed-starts` directory if it does not exist.  Returns the
 /// destination path on success, or `None` if the copy fails (e.g. the log
@@ -429,11 +429,164 @@ fn preserve_ember_vz_log(
     let dir = state_dir.join("failed-starts");
     std::fs::create_dir_all(&dir).ok()?;
 
-    let ts = std::time::SystemTime::now()
+    // Use sub-second precision so back-to-back failures (same VM or distinct
+    // VMs failing in the same second) produce distinct dest paths instead of
+    // overwriting each other. Format: `<vm>-<secs>-<nanos>.log`.
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let dest = dir.join(format!("{vm_name}-{ts}.log"));
+        .unwrap_or_default();
+    let dest = dir.join(format!(
+        "{vm_name}-{}-{:09}.log",
+        now.as_secs(),
+        now.subsec_nanos()
+    ));
     std::fs::copy(log_path, &dest).ok()?;
     Some(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // --- read_last_lines ---
+
+    #[test]
+    fn read_last_lines_returns_empty_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.log");
+        assert_eq!(read_last_lines(&missing, 10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn read_last_lines_returns_all_when_fewer_than_n() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.log");
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        assert_eq!(read_last_lines(&path, 10), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn read_last_lines_returns_last_n_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.log");
+        let content: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, content).unwrap();
+        let last5 = read_last_lines(&path, 5);
+        assert_eq!(
+            last5,
+            vec!["line 16", "line 17", "line 18", "line 19", "line 20"]
+        );
+    }
+
+    #[test]
+    fn read_last_lines_handles_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.log");
+        std::fs::File::create(&path).unwrap();
+        assert_eq!(read_last_lines(&path, 10), Vec::<String>::new());
+    }
+
+    // --- preserve_ember_vz_log ---
+
+    #[test]
+    fn preserve_ember_vz_log_copies_existing_log() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("ember-vz.log");
+        std::fs::write(&log_path, "boot failed: panic\n").unwrap();
+
+        let dest = preserve_ember_vz_log(state_dir.path(), "vm1", &log_path).unwrap();
+
+        // Lives under <state>/failed-starts/.
+        assert!(dest.starts_with(state_dir.path().join("failed-starts")));
+        assert!(dest
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("vm1-"));
+
+        // Contents match.
+        let copied = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(copied, "boot failed: panic\n");
+    }
+
+    #[test]
+    fn preserve_ember_vz_log_returns_none_when_source_missing() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let missing = log_dir.path().join("ember-vz.log");
+        // Source never written.
+
+        let result = preserve_ember_vz_log(state_dir.path(), "vm1", &missing);
+        assert!(result.is_none());
+
+        // No destination file should have been created.
+        let failed_starts = state_dir.path().join("failed-starts");
+        if failed_starts.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&failed_starts).unwrap().collect();
+            assert!(entries.is_empty(), "expected no preserved files");
+        }
+    }
+
+    #[test]
+    fn preserve_ember_vz_log_creates_failed_starts_dir() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("ember-vz.log");
+        let mut f = std::fs::File::create(&log_path).unwrap();
+        f.write_all(b"x").unwrap();
+
+        // failed-starts does not exist before the call.
+        assert!(!state_dir.path().join("failed-starts").exists());
+
+        preserve_ember_vz_log(state_dir.path(), "vm1", &log_path).unwrap();
+
+        assert!(state_dir.path().join("failed-starts").is_dir());
+    }
+
+    #[test]
+    fn preserve_ember_vz_log_subsec_avoids_collisions() {
+        // Back-to-back calls (likely within the same epoch second) must
+        // produce different dest paths so neither preserved log is silently
+        // overwritten. Without sub-second precision in the filename, the
+        // second copy would clobber the first.
+        let state_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("ember-vz.log");
+        std::fs::write(&log_path, "tiny\n").unwrap();
+
+        let d1 = preserve_ember_vz_log(state_dir.path(), "vm1", &log_path).unwrap();
+        let d2 = preserve_ember_vz_log(state_dir.path(), "vm1", &log_path).unwrap();
+        assert_ne!(d1, d2, "consecutive calls must produce distinct dest paths");
+
+        // Both files exist.
+        assert!(d1.exists());
+        assert!(d2.exists());
+    }
+
+    #[test]
+    fn preserve_ember_vz_log_distinct_vm_names_get_distinct_paths() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        let log_path = log_dir.path().join("ember-vz.log");
+        std::fs::write(&log_path, "x").unwrap();
+
+        let a = preserve_ember_vz_log(state_dir.path(), "vm-alpha", &log_path).unwrap();
+        let b = preserve_ember_vz_log(state_dir.path(), "vm-beta", &log_path).unwrap();
+        assert!(a
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("vm-alpha-"));
+        assert!(b
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("vm-beta-"));
+        assert_ne!(a, b);
+    }
 }

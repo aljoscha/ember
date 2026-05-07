@@ -144,6 +144,79 @@ fn format_ember_vz_start_failed(
 /// Convenience alias used throughout ember.
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ember_vz_start_failed_preserves_source_variant() {
+        // The SEC-466 path used to flatten the underlying error to a String;
+        // SEC-469 keeps the variant addressable via `#[source]` so retry/
+        // categorization logic can match on the real cause.
+        let inner = Error::Vm("ready-fd timeout after 30s".to_string());
+        let err = Error::EmberVzStartFailed {
+            source: Box::new(inner),
+            stderr_tail: vec!["panic: bad MAC".to_string()],
+            preserved_log_path: Some(PathBuf::from("/var/lib/ember/failed-starts/x.log")),
+        };
+
+        // Pattern-match the wrapping variant.
+        match &err {
+            Error::EmberVzStartFailed { source, .. } => {
+                // And further pattern-match on the inner cause.
+                match source.as_ref() {
+                    Error::Vm(s) => assert!(s.contains("ready-fd timeout")),
+                    other => panic!("expected inner Error::Vm, got {other:?}"),
+                }
+            }
+            other => panic!("expected EmberVzStartFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ember_vz_start_failed_renders_multiline_diagnostic() {
+        let err = Error::EmberVzStartFailed {
+            source: Box::new(Error::Vm("ready-fd timeout".to_string())),
+            stderr_tail: vec!["line one".to_string(), "line two".to_string()],
+            preserved_log_path: Some(PathBuf::from("/tmp/preserved.log")),
+        };
+        let rendered = err.to_string();
+        // Source error first.
+        assert!(rendered.contains("ready-fd timeout"));
+        // Log-tail block.
+        assert!(rendered.contains("ember-vz.log (last 10 lines):"));
+        assert!(rendered.contains("  line one"));
+        assert!(rendered.contains("  line two"));
+        // Preserved-path footer.
+        assert!(rendered.contains("preserved at: /tmp/preserved.log"));
+    }
+
+    #[test]
+    fn ember_vz_start_failed_omits_log_tail_when_empty() {
+        let err = Error::EmberVzStartFailed {
+            source: Box::new(Error::Vm("ready-fd closed".to_string())),
+            stderr_tail: vec![],
+            preserved_log_path: None,
+        };
+        let rendered = err.to_string();
+        assert_eq!(rendered, "vm: ready-fd closed");
+    }
+
+    #[test]
+    fn ember_vz_start_failed_source_is_set() {
+        // std::error::Error::source() must be non-None so consumers walking
+        // the error chain (anyhow, log frameworks) reach the inner variant
+        // rather than seeing only the rendered string.
+        use std::error::Error as StdError;
+        let err = Error::EmberVzStartFailed {
+            source: Box::new(Error::Vm("inner".to_string())),
+            stderr_tail: vec![],
+            preserved_log_path: None,
+        };
+        assert!(err.source().is_some());
+    }
+}
+
 impl Error {
     /// Create a `Command` error from a finished `std::process::Output`.
     ///
