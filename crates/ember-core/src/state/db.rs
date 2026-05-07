@@ -5,8 +5,9 @@
 //! double-allocation structurally impossible — the second `INSERT` for the
 //! same slot fails with a constraint violation, so the allocator code can't
 //! accidentally hand out the same IP twice even if the read-modify-write
-//! logic regresses. Future allocators (e.g. vsock CID, when that lands)
-//! should add their own table to this same database.
+//! logic regresses. Both the IP allocator (see [`crate::network::ip`]) and
+//! the vsock CID allocator (see [`crate::state::vsock`]) live in this same
+//! database; future allocators should add their own table here.
 //!
 //! See SEC-459 for the original TOCTOU bug this replaces. The flock-based
 //! JSON store had per-call (not per-transaction) locking; six parallel
@@ -37,6 +38,11 @@ CREATE TABLE IF NOT EXISTS network_allocations (
     subnet      TEXT    NOT NULL,
     vm_name     TEXT    NOT NULL UNIQUE,
     PRIMARY KEY (subnet, block_index)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vsock_allocations (
+    cid     INTEGER NOT NULL PRIMARY KEY,
+    vm_name TEXT    NOT NULL UNIQUE
 ) STRICT;
 "#;
 
@@ -123,6 +129,61 @@ mod tests {
             msg.contains("UNIQUE") || msg.contains("PRIMARY KEY"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn open_creates_vsock_allocations_table() {
+        let dir = tmp_root();
+        let conn = open(dir.path()).unwrap();
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('vsock_allocations')")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"cid".to_string()));
+        assert!(cols.contains(&"vm_name".to_string()));
+    }
+
+    #[test]
+    fn vsock_primary_key_rejects_duplicate_cid() {
+        let dir = tmp_root();
+        let conn = open(dir.path()).unwrap();
+        conn.execute(
+            "INSERT INTO vsock_allocations (cid, vm_name) VALUES (?1, ?2)",
+            rusqlite::params![3u32, "vm1"],
+        )
+        .unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO vsock_allocations (cid, vm_name) VALUES (?1, ?2)",
+                rusqlite::params![3u32, "vm2"],
+            )
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UNIQUE") || msg.contains("PRIMARY KEY"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn vsock_vm_name_unique_constraint_rejects_double_allocation() {
+        let dir = tmp_root();
+        let conn = open(dir.path()).unwrap();
+        conn.execute(
+            "INSERT INTO vsock_allocations (cid, vm_name) VALUES (?1, ?2)",
+            rusqlite::params![3u32, "vm1"],
+        )
+        .unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO vsock_allocations (cid, vm_name) VALUES (?1, ?2)",
+                rusqlite::params![4u32, "vm1"],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("UNIQUE"), "got: {err}");
     }
 
     #[test]

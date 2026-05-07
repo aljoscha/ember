@@ -101,15 +101,6 @@ impl StateStore {
         self.root.join("images").join("registry.json")
     }
 
-    /// Path to vsock CID allocation tracking.
-    ///
-    /// Note: the IP allocator no longer uses a JSON file — see
-    /// `crate::state::db` for the SQLite-backed replacement (SEC-459).
-    /// Vsock CIDs still live in JSON pending a follow-up migration.
-    pub fn vsock_allocations_path(&self) -> PathBuf {
-        self.root.join("vsock").join("cids.json")
-    }
-
     /// Path to the global config file.
     pub fn config_path(&self) -> PathBuf {
         self.root.join("config.json")
@@ -428,10 +419,6 @@ mod tests {
         assert_eq!(
             store.image_registry_path(),
             PathBuf::from("/var/lib/ember/images/registry.json")
-        );
-        assert_eq!(
-            store.vsock_allocations_path(),
-            PathBuf::from("/var/lib/ember/vsock/cids.json")
         );
         assert_eq!(
             store.config_path(),
