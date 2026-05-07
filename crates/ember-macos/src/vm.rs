@@ -178,22 +178,19 @@ impl VmBackend for MacosVm {
                 );
 
                 // Surface the ember-vz log before the caller rolls back vm_dir.
+                // Wrap the original error in EmberVzStartFailed so callers can
+                // still pattern-match on its variant (e.g. retry on timeout
+                // but not on CommandExec). Display renders the same multi-line
+                // diagnostic the SEC-466 path produced. SEC-469.
                 let ember_vz_log = vm_dir.join("ember-vz.log");
                 let preserved = preserve_ember_vz_log(&config.state_dir, &vm.name, &ember_vz_log);
-                let last_lines = read_last_lines(&ember_vz_log, 10);
+                let stderr_tail = read_last_lines(&ember_vz_log, 10);
 
-                let mut msg = e.to_string();
-                if !last_lines.is_empty() {
-                    msg.push_str("\nember-vz.log (last 10 lines):\n");
-                    for line in &last_lines {
-                        msg.push_str(&format!("  {line}\n"));
-                    }
-                }
-                if let Some(ref p) = preserved {
-                    msg.push_str(&format!("preserved at: {}", p.display()));
-                }
-
-                return Err(Error::Vm(msg));
+                return Err(Error::EmberVzStartFailed {
+                    source: Box::new(e),
+                    stderr_tail,
+                    preserved_log_path: preserved,
+                });
             }
         };
 
