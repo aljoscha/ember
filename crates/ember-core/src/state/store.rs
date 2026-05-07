@@ -26,10 +26,13 @@ use crate::error::{Error, Result};
 /// ├── vms/
 /// │   └── <vm-name>/
 /// │       ├── vm.json
+/// │       ├── vsock.sock
 /// │       ├── firecracker.sock
 /// │       ├── firecracker.log
 /// │       ├── console.log
 /// │       └── firecracker.pid
+/// ├── vsock/
+/// │   └── cids.json
 /// └── network/
 ///     └── allocations.json
 /// ```
@@ -65,6 +68,7 @@ impl StateStore {
             self.kernel_dir(),
             self.root.join("images"),
             self.root.join("vms"),
+            self.root.join("vsock"),
             // Note: network/allocations.json is replaced by state.db; the
             // `network/` directory is no longer created (SEC-459).
         ];
@@ -95,6 +99,15 @@ impl StateStore {
     /// Path to the local image registry file.
     pub fn image_registry_path(&self) -> PathBuf {
         self.root.join("images").join("registry.json")
+    }
+
+    /// Path to vsock CID allocation tracking.
+    ///
+    /// Note: the IP allocator no longer uses a JSON file — see
+    /// `crate::state::db` for the SQLite-backed replacement (SEC-459).
+    /// Vsock CIDs still live in JSON pending a follow-up migration.
+    pub fn vsock_allocations_path(&self) -> PathBuf {
+        self.root.join("vsock").join("cids.json")
     }
 
     /// Path to the global config file.
@@ -350,6 +363,7 @@ mod tests {
         assert!(root.join("kernels").is_dir());
         assert!(root.join("images").is_dir());
         assert!(root.join("vms").is_dir());
+        assert!(root.join("vsock").is_dir());
         // network/ is no longer created — allocator state lives in state.db (SEC-459).
         assert!(!root.join("network").exists());
     }
@@ -414,6 +428,10 @@ mod tests {
         assert_eq!(
             store.image_registry_path(),
             PathBuf::from("/var/lib/ember/images/registry.json")
+        );
+        assert_eq!(
+            store.vsock_allocations_path(),
+            PathBuf::from("/var/lib/ember/vsock/cids.json")
         );
         assert_eq!(
             store.config_path(),

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ember-core", "crates/ember-linux", "crates/ember-macos"]
+members = ["crates/ember-core", "crates/ember-linux", "crates/ember-macos", "emberd"]
 default-members = ["."]
 
 [workspace.dependencies]

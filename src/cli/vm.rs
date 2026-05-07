@@ -106,6 +106,10 @@ pub struct CreateArgs {
     #[arg(long = "vm-config")]
     pub vm_config: Option<PathBuf>,
 
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
+
     /// Don't start the VM after creation
     #[arg(long)]
     pub no_start: bool,
@@ -127,8 +131,13 @@ pub struct StartArgs {
 
 #[derive(Args)]
 pub struct StopArgs {
-    /// VM name
-    pub name: String,
+    /// VM name (required unless --all is used)
+    #[arg(required_unless_present = "all")]
+    pub name: Option<String>,
+
+    /// Stop all running VMs
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
 
     /// Force stop (SIGKILL)
     #[arg(long)]
@@ -189,8 +198,13 @@ pub struct UpdateConfigArgs {
 
 #[derive(Args)]
 pub struct DeleteArgs {
-    /// VM name
-    pub name: String,
+    /// VM name (required unless --all is used)
+    #[arg(required_unless_present = "all")]
+    pub name: Option<String>,
+
+    /// Delete all VMs
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
 
     /// Force delete (kill if running)
     #[arg(long)]
@@ -231,6 +245,10 @@ pub struct ForkArgs {
     /// Network subnet
     #[arg(long)]
     pub network: Option<String>,
+
+    /// Enable vsock device for host-guest communication
+    #[arg(long)]
+    pub vsock: bool,
 
     /// Don't start the VM after forking
     #[arg(long)]
@@ -297,6 +315,44 @@ struct ResolvedVmCreate {
     ssh_user: Option<String>,
     /// SSH private key override from YAML config.
     ssh_key: Option<PathBuf>,
+    /// Whether vsock is enabled for this VM.
+    vsock: bool,
+}
+
+/// Maximum Unix domain socket path length.
+/// macOS: 104 bytes, Linux: 108 bytes. Use the smaller to be safe.
+const MAX_UDS_PATH_LEN: usize = 104;
+
+impl ResolvedVmCreate {
+    /// Build a `VsockInfo` if vsock is enabled, allocating a unique CID.
+    fn vsock_info(&self, store: &StateStore) -> anyhow::Result<Option<vm::VsockInfo>> {
+        if self.vsock {
+            let uds_path = store.vm_dir(&self.name).join("vsock.sock");
+            validate_uds_path(&uds_path)?;
+            let cid = ember_core::state::vsock::allocate(store, &self.name)?;
+            Ok(Some(vm::VsockInfo {
+                uds_path,
+                guest_cid: cid,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Validate that a UDS path doesn't exceed the OS limit for `sockaddr_un.sun_path`.
+fn validate_uds_path(path: &Path) -> anyhow::Result<()> {
+    let path_str = path.to_string_lossy();
+    if path_str.len() >= MAX_UDS_PATH_LEN {
+        anyhow::bail!(
+            "vsock UDS path is too long ({} bytes, max {}):\n  {}\n\
+             Hint: use a shorter --state-dir or VM name",
+            path_str.len(),
+            MAX_UDS_PATH_LEN - 1,
+            path_str,
+        );
+    }
+    Ok(())
 }
 
 /// Resolve VM creation config by merging defaults, YAML config, and CLI flags.
@@ -356,6 +412,8 @@ fn resolve_create_config(
             .and_then(|s| s.key.as_ref().map(|p| config::vm::expand_tilde(p)))
     });
 
+    let vsock = args.vsock || yaml.and_then(|c| c.vsock).unwrap_or(false);
+
     Ok(ResolvedVmCreate {
         name: args.name.clone(),
         image,
@@ -370,6 +428,7 @@ fn resolve_create_config(
         format: args.format.clone(),
         ssh_user,
         ssh_key,
+        vsock,
     })
 }
 
@@ -490,7 +549,8 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
             eprintln!("Start failed, cleaning up VM '{}'...", resolved.name);
             let _ = delete(
                 &DeleteArgs {
-                    name: resolved.name.clone(),
+                    name: Some(resolved.name.clone()),
+                    all: false,
                     force: true,
                 },
                 state_dir,
@@ -625,6 +685,7 @@ fn create_post_clone(
             key: ssh_key,
         },
         parent_vm: None,
+        vsock: resolved.vsock_info(store)?,
     };
 
     vm::save(store, &metadata)?;
@@ -744,6 +805,17 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         created_at: vm::now_iso8601(),
         ssh: source.ssh.clone(),
         parent_vm: Some(args.source.clone()),
+        vsock: if args.vsock || source.vsock.is_some() {
+            let uds_path = store.vm_dir(&args.name).join("vsock.sock");
+            validate_uds_path(&uds_path)?;
+            let cid = ember_core::state::vsock::allocate(&store, &args.name)?;
+            Some(vm::VsockInfo {
+                uds_path,
+                guest_cid: cid,
+            })
+        } else {
+            None
+        },
     };
 
     vm::save(&store, &metadata)?;
@@ -855,15 +927,20 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// if --force) → wait for exit → SIGKILL if still alive → clean up network +
 /// socket → update metadata.
 fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.all {
+        return stop_all(args.force, state_dir);
+    }
+
+    let name = args.name.as_deref().unwrap();
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Load and validate VM state.
-    let mut metadata = vm::load(&store, &args.name)?;
+    let mut metadata = vm::load(&store, name)?;
     match metadata.status {
         VmStatus::Running | VmStatus::Paused => {}
         _ => {
             return Err(Error::VmWrongState {
-                name: args.name.clone(),
+                name: name.to_string(),
                 actual: metadata.status.to_string(),
                 expected: "running or paused".to_string(),
             }
@@ -875,9 +952,9 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         anyhow::anyhow!(
             "vm '{}' is {} but has no PID — state may be corrupted\n\
              Hint: try 'ember vm delete --force {}' and recreate the VM",
-            args.name,
+            name,
             metadata.status,
-            args.name
+            name
         )
     })?;
 
@@ -888,7 +965,7 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!("Force-stopping VM (pid {pid})...");
         Vm::force_stop(&metadata)?;
     } else {
-        println!("Stopping VM '{}'...", args.name);
+        println!("Stopping VM '{}'...", name);
         Vm::stop(&metadata)?;
     }
 
@@ -902,7 +979,36 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     metadata.network = None;
     vm::save(&store, &metadata)?;
 
-    println!("VM '{}' stopped.", args.name);
+    println!("VM '{}' stopped.", name);
+    Ok(())
+}
+
+/// Stop all running/paused VMs.
+fn stop_all(force: bool, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let vms = vm::list(&store)?;
+    let targets: Vec<_> = vms
+        .iter()
+        .filter(|v| matches!(v.status, VmStatus::Running | VmStatus::Paused))
+        .collect();
+
+    if targets.is_empty() {
+        println!("No running VMs to stop.");
+        return Ok(());
+    }
+
+    println!("Stopping {} VMs...", targets.len());
+    for metadata in &targets {
+        let stop_args = StopArgs {
+            name: Some(metadata.name.clone()),
+            all: false,
+            force,
+        };
+        if let Err(e) = stop(&stop_args, state_dir) {
+            eprintln!("warning: failed to stop '{}': {}", metadata.name, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -1103,16 +1209,21 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
 ///
 /// Each cleanup step is idempotent — continues if the resource is already gone.
 fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.all {
+        return delete_all(args.force, state_dir);
+    }
+
+    let name = args.name.as_deref().unwrap();
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Load VM metadata (must exist).
-    let metadata = vm::load(&store, &args.name)?;
+    let metadata = vm::load(&store, name)?;
 
     // If the VM is running or paused, require --force.
     if matches!(metadata.status, VmStatus::Running | VmStatus::Paused) && !args.force {
         anyhow::bail!(
             "vm '{}' is {} — stop it first or use --force",
-            args.name,
+            name,
             metadata.status
         );
     }
@@ -1121,13 +1232,13 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     // On macOS/APFS this always returns empty — forks are independent.
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = Storage::new(&config);
-    let dependents = storage.storage_dependents(&args.name)?;
+    let dependents = storage.storage_dependents(name)?;
     if !dependents.is_empty() {
         if !args.force {
             anyhow::bail!(
                 "vm '{}' has dependent forks: {}\n\
                  Delete them first, or use --force to cascade-delete all dependents.",
-                args.name,
+                name,
                 dependents.join(", ")
             );
         }
@@ -1141,6 +1252,40 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     force_delete_vm(&store, &metadata)?;
+    Ok(())
+}
+
+/// Delete all VMs.
+fn delete_all(force: bool, state_dir: &Path) -> anyhow::Result<()> {
+    let store = StateStore::new(state_dir.to_path_buf());
+    let vms = vm::list(&store)?;
+
+    if vms.is_empty() {
+        println!("No VMs to delete.");
+        return Ok(());
+    }
+
+    if !force {
+        let running = vms
+            .iter()
+            .any(|v| matches!(v.status, VmStatus::Running | VmStatus::Paused));
+        if running {
+            anyhow::bail!("some VMs are still running — use --force to stop and delete them");
+        }
+    }
+
+    println!("Deleting {} VMs...", vms.len());
+    for metadata in &vms {
+        let delete_args = DeleteArgs {
+            name: Some(metadata.name.clone()),
+            all: false,
+            force,
+        };
+        if let Err(e) = delete(&delete_args, state_dir) {
+            eprintln!("warning: failed to delete '{}': {}", metadata.name, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -1173,6 +1318,11 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
         if metadata.api_socket.exists() {
             let _ = std::fs::remove_file(&metadata.api_socket);
         }
+    }
+
+    // Release vsock CID if one was allocated.
+    if metadata.vsock.is_some() {
+        let _ = ember_core::state::vsock::release(store, &metadata.name);
     }
 
     // Clean up networking via the backend.
@@ -1277,20 +1427,27 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             }
 
             println!(
-                "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
-                "NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"
+                "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}",
+                "NAME", "STATUS", "IP", "VSOCK", "CPUS", "MEM", "DISK"
             );
             for vm in &vms {
+                let ip = vm
+                    .network
+                    .as_ref()
+                    .map(|n| n.guest_ip.as_str())
+                    .unwrap_or("-");
+                let vsock = if vm.vsock.is_some() { "v" } else { "-" };
                 let suffix = if corrupt_vms.contains(&vm.name) {
                     " [CORRUPTED]"
                 } else {
                     ""
                 };
                 println!(
-                    "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}{}",
+                    "{:<20} {:<10} {:<16} {:<6} {:>4} {:>8} {:>8}{}",
                     vm.name,
                     vm.status,
-                    vm.image,
+                    ip,
+                    vsock,
                     vm.cpus,
                     format_bytes_binary(vm.memory_mib as u64 * MIB),
                     format_bytes_binary(vm.disk_size_gib as u64 * GIB),
@@ -1363,6 +1520,12 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 }
             }
 
+            if let Some(ref vsock) = metadata.vsock {
+                println!("Vsock:");
+                println!("  UDS path:    {}", vsock.uds_path.display());
+                println!("  Guest CID:   {}", vsock.guest_cid);
+            }
+
             println!("SSH:");
             println!("  User:        {}", metadata.ssh.user);
             println!("  Key:         {}", metadata.ssh.key.display());
@@ -1370,4 +1533,34 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_uds_path_short_ok() {
+        let path = Path::new("/tmp/ember/vms/myvm/vsock.sock");
+        assert!(validate_uds_path(path).is_ok());
+    }
+
+    #[test]
+    fn validate_uds_path_at_limit_fails() {
+        // Build a path exactly at the limit (104 bytes).
+        let long_name = "x".repeat(MAX_UDS_PATH_LEN);
+        let path = PathBuf::from(long_name);
+        assert!(validate_uds_path(&path).is_err());
+    }
+
+    #[test]
+    fn validate_uds_path_over_limit_fails() {
+        let long_name = "x".repeat(MAX_UDS_PATH_LEN + 50);
+        let path = PathBuf::from(long_name);
+        let err = validate_uds_path(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("too long"),
+            "error should mention 'too long': {err}"
+        );
+    }
 }

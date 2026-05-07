@@ -125,8 +125,13 @@ impl VmBackend for MacosVm {
             .arg("--ready-fd")
             .arg(write_fd_num.to_string());
 
+        // Pass vsock UDS path if vsock is enabled.
+        if let Some(ref vsock) = vm.vsock {
+            cmd.arg("--vsock-path").arg(&vsock.uds_path);
+        }
+
         // Redirect ember-vz stderr to a per-VM log file so failures are
-        // preserved for diagnostics.  Stdout goes to null (not used).
+        // preserved for diagnostics (SEC-466).  Stdout goes to null.
         let stderr_log = std::fs::File::create(vm_dir.join("ember-vz.log"))
             .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
         cmd.stdin(Stdio::null());
