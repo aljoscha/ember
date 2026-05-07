@@ -168,6 +168,46 @@ pub fn release(store: &StateStore, vm_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Structured description of a single allocator-state divergence.
+///
+/// Replaces the prior `Vec<String>` representation (SEC-460): the old free-form
+/// messages forced consumers to scrape VM names out of strings, which under-
+/// flagged multi-VM cases and missed subnet-level anomalies entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anomaly {
+    pub kind: AnomalyKind,
+    /// Human-readable rendering, suitable for `eprintln!` to operators.
+    pub message: String,
+    /// Every VM implicated by this anomaly. Consumers (e.g. `ember vm list`)
+    /// flag *all* of these, not just the first one — the prior split-the-
+    /// message-on-whitespace heuristic only ever flagged the first match.
+    /// Empty for subnet-level anomalies that don't map to a single VM set.
+    pub vm_names: Vec<String>,
+}
+
+/// What kind of divergence the [`Anomaly`] describes. Carries enough
+/// structured detail for callers to render their own messages, key into
+/// other state, or surface in machine-readable form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnomalyKind {
+    /// Two or more allocator rows share the same `(subnet, block_index)`.
+    /// Should be impossible under the schema's PRIMARY KEY constraint.
+    DuplicateSlot {
+        subnet: String,
+        block_index: u32,
+        count: u32,
+    },
+    /// The same `vm_name` appears in more than one allocator row. Should
+    /// be impossible under the schema's UNIQUE constraint on `vm_name`.
+    DuplicateVmName { vm_name: String, count: u32 },
+    /// Two VMs report the same `guest_ip` in their metadata. Detected by
+    /// `ember vm list` (cross-references `vm_metadata.network.guest_ip`,
+    /// which lives outside `network_allocations`), so this kind isn't
+    /// produced by `check_invariants` itself — it's part of the public
+    /// vocabulary so consumers and renderers can share one type.
+    DuplicateGuestIp { ip: String },
+}
+
 /// Check that the allocator state is internally consistent.
 ///
 /// Returns the list of detected anomalies (empty list = healthy). Used by
@@ -182,23 +222,47 @@ pub fn release(store: &StateStore, vm_name: &str) -> Result<()> {
 ///
 /// Both are belt-and-suspenders against a hypothetical schema drift; under
 /// normal operation the SQL constraints catch them at insert time.
-pub fn check_invariants(store: &StateStore) -> Result<Vec<String>> {
+///
+/// Returns `Err` if the underlying SQLite store can't be opened or queried.
+/// Callers MUST surface this — a swallowed error in a corruption-detection
+/// codepath is the worst possible failure mode (silent "all clear" while
+/// the very thing we're checking is broken). See SEC-460 for the bug the
+/// prior `unwrap_or_default()` callers exhibited.
+pub fn check_invariants(store: &StateStore) -> Result<Vec<Anomaly>> {
     let conn = db::open(store.root())?;
     let mut anomalies = Vec::new();
 
-    let dup_slots: Vec<(String, u32, i64)> = conn
+    // Duplicate (subnet, block_index): aggregate vm_names per offending
+    // slot via GROUP_CONCAT so we can attribute the anomaly to *every* VM
+    // that landed in that slot, not just one (which the prior split-the-
+    // message heuristic in `vm list` was forced to settle for).
+    let dup_slots: Vec<(String, u32, i64, String)> = conn
         .prepare(
-            "SELECT subnet, block_index, COUNT(*) AS n
+            "SELECT subnet, block_index, COUNT(*) AS n, GROUP_CONCAT(vm_name) AS names
              FROM network_allocations
              GROUP BY subnet, block_index
              HAVING n > 1",
         )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<std::result::Result<_, _>>()?;
-    for (subnet, idx, n) in dup_slots {
-        anomalies.push(format!(
-            "duplicate slot: subnet={subnet} block_index={idx} count={n}"
-        ));
+    for (subnet, block_index, n, names) in dup_slots {
+        let vm_names: Vec<String> = names
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        anomalies.push(Anomaly {
+            kind: AnomalyKind::DuplicateSlot {
+                subnet: subnet.clone(),
+                block_index,
+                count: n as u32,
+            },
+            message: format!(
+                "duplicate slot: subnet={subnet} block_index={block_index} count={n} vms={}",
+                vm_names.join(",")
+            ),
+            vm_names,
+        });
     }
 
     let dup_names: Vec<(String, i64)> = conn
@@ -210,8 +274,15 @@ pub fn check_invariants(store: &StateStore) -> Result<Vec<String>> {
         )?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<std::result::Result<_, _>>()?;
-    for (name, n) in dup_names {
-        anomalies.push(format!("duplicate vm_name: {name} count={n}"));
+    for (vm_name, n) in dup_names {
+        anomalies.push(Anomaly {
+            kind: AnomalyKind::DuplicateVmName {
+                vm_name: vm_name.clone(),
+                count: n as u32,
+            },
+            message: format!("duplicate vm_name: {vm_name} count={n}"),
+            vm_names: vec![vm_name],
+        });
     }
 
     Ok(anomalies)
@@ -468,5 +539,147 @@ mod tests {
         allocate(&store, "10.100.0.0/16", "vm2").unwrap();
         let anomalies = check_invariants(&store).unwrap();
         assert!(anomalies.is_empty(), "unexpected anomalies: {anomalies:?}");
+    }
+
+    /// Drop the PRIMARY KEY / UNIQUE constraints on `network_allocations`
+    /// so a test can inject otherwise-impossible duplicate rows. The
+    /// schema's PK + UNIQUE makes the duplicates we want to test for
+    /// structurally impossible — but `check_invariants` is the safety net
+    /// for corrupted state that bypassed those constraints (manual edit,
+    /// migration bug, etc.), so the test has to fake that scenario.
+    fn drop_alloc_constraints(store: &StateStore) {
+        let conn = db::open(store.root()).unwrap();
+        conn.execute_batch(
+            "
+            BEGIN;
+            CREATE TABLE network_allocations_tmp (
+                block_index INTEGER NOT NULL,
+                subnet      TEXT    NOT NULL,
+                vm_name     TEXT    NOT NULL
+            ) STRICT;
+            INSERT INTO network_allocations_tmp
+                SELECT * FROM network_allocations;
+            DROP TABLE network_allocations;
+            ALTER TABLE network_allocations_tmp RENAME TO network_allocations;
+            COMMIT;
+            ",
+        )
+        .unwrap();
+    }
+
+    fn force_duplicate_slot(store: &StateStore, subnet: &str, block_index: u32, vm_name: &str) {
+        drop_alloc_constraints(store);
+        let conn = db::open(store.root()).unwrap();
+        conn.execute(
+            "INSERT INTO network_allocations (block_index, subnet, vm_name)
+             VALUES (?1, ?2, ?3)",
+            params![block_index, subnet, vm_name],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn check_invariants_duplicate_slot_attributes_all_vms() {
+        let (_dir, store) = test_store();
+        // Allocate vm1 at slot 0 normally — this also pre-creates the
+        // network_allocations table via the migration path.
+        let alloc1 = allocate(&store, "10.100.0.0/16", "vm1").unwrap();
+        // Now bypass the PK and inject vm2 at the same slot.
+        force_duplicate_slot(&store, "10.100.0.0/16", alloc1.block_index, "vm2");
+
+        let anomalies = check_invariants(&store).unwrap();
+        let dup_slot: Vec<&Anomaly> = anomalies
+            .iter()
+            .filter(|a| matches!(a.kind, AnomalyKind::DuplicateSlot { .. }))
+            .collect();
+        assert_eq!(
+            dup_slot.len(),
+            1,
+            "expected exactly one DuplicateSlot anomaly, got: {anomalies:?}"
+        );
+        let a = dup_slot[0];
+        // BOTH vms must be flagged — the prior `Vec<String>` representation
+        // forced callers to scrape one name out of the message and miss the
+        // others. SEC-460 is about closing exactly that gap.
+        assert!(
+            a.vm_names.contains(&"vm1".to_string()),
+            "vm1 missing: {:?}",
+            a.vm_names
+        );
+        assert!(
+            a.vm_names.contains(&"vm2".to_string()),
+            "vm2 missing: {:?}",
+            a.vm_names
+        );
+        assert_eq!(a.vm_names.len(), 2);
+        match &a.kind {
+            AnomalyKind::DuplicateSlot {
+                subnet,
+                block_index,
+                count,
+            } => {
+                assert_eq!(subnet, "10.100.0.0/16");
+                assert_eq!(*block_index, alloc1.block_index);
+                assert_eq!(*count, 2);
+            }
+            other => panic!("expected DuplicateSlot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_invariants_duplicate_vm_name_lists_one_vm() {
+        let (_dir, store) = test_store();
+        allocate(&store, "10.100.0.0/16", "vm1").unwrap();
+        // Insert a second row for the same vm_name at a different slot.
+        // The UNIQUE(vm_name) constraint makes this impossible via the
+        // public API; we bypass it the same way as the slot test.
+        drop_alloc_constraints(&store);
+        let conn = db::open(store.root()).unwrap();
+        conn.execute(
+            "INSERT INTO network_allocations (block_index, subnet, vm_name)
+             VALUES (1, '10.100.0.0/16', 'vm1')",
+            [],
+        )
+        .unwrap();
+
+        let anomalies = check_invariants(&store).unwrap();
+        let dup_name: Vec<&Anomaly> = anomalies
+            .iter()
+            .filter(|a| matches!(a.kind, AnomalyKind::DuplicateVmName { .. }))
+            .collect();
+        assert_eq!(
+            dup_name.len(),
+            1,
+            "expected exactly one DuplicateVmName anomaly, got: {anomalies:?}"
+        );
+        let a = dup_name[0];
+        assert_eq!(a.vm_names, vec!["vm1".to_string()]);
+        match &a.kind {
+            AnomalyKind::DuplicateVmName { vm_name, count } => {
+                assert_eq!(vm_name, "vm1");
+                assert_eq!(*count, 2);
+            }
+            other => panic!("expected DuplicateVmName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_invariants_propagates_db_open_failure() {
+        // SEC-460: don't let DB-open errors silently report "no anomalies".
+        // Point the store at a path that can't be opened (a regular file
+        // exists where the DB directory should be) — db::open should fail.
+        let dir = tempfile::tempdir().unwrap();
+        let blocking_file = dir.path().join("state");
+        std::fs::write(&blocking_file, b"not a directory").unwrap();
+        // StateStore::new(dir.path()/"state") would expect a directory; we
+        // wrote a file there, which the underlying open path will error on.
+        let store = StateStore::new(blocking_file);
+        // init may or may not error depending on platform; we just want
+        // check_invariants itself to NOT silently return Ok([]).
+        let result = check_invariants(&store);
+        assert!(
+            result.is_err(),
+            "expected check_invariants to surface DB open failure, got: {result:?}"
+        );
     }
 }

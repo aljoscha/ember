@@ -1135,32 +1135,48 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     // allocator rows as well. Both should be impossible under the SQLite
     // schema's UNIQUE constraints, but if state was migrated from the old
     // JSON store or hand-edited, the divergence shows up here.
-    let mut anomalies: Vec<String> =
-        ember_core::network::ip::check_invariants(&store).unwrap_or_default();
+    //
+    // SEC-460: never swallow check_invariants errors. The prior
+    // `unwrap_or_default()` would report "no anomalies" if the very DB we
+    // were checking failed to open — the worst possible failure mode for a
+    // corruption-detection codepath. Surface the failure as a warning and
+    // proceed with the in-memory checks (guest_ip duplicates don't depend
+    // on the DB).
+    use ember_core::network::ip::{Anomaly, AnomalyKind};
+    let mut anomalies: Vec<Anomaly> = match ember_core::network::ip::check_invariants(&store) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!(
+                "warning: could not check allocator invariants: {e}\n\
+                 vm list output may be missing allocator-divergence flags."
+            );
+            Vec::new()
+        }
+    };
     let mut seen_ips: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for vm in &vms {
         if let Some(net) = &vm.network {
             if !net.guest_ip.is_empty() {
                 if let Some(other) = seen_ips.get(&net.guest_ip) {
-                    anomalies.push(format!(
-                        "duplicate guest_ip {}: {} and {}",
-                        net.guest_ip, other, vm.name
-                    ));
+                    let ip = net.guest_ip.clone();
+                    anomalies.push(Anomaly {
+                        kind: AnomalyKind::DuplicateGuestIp { ip: ip.clone() },
+                        message: format!("duplicate guest_ip {ip}: {other} and {}", vm.name),
+                        vm_names: vec![other.clone(), vm.name.clone()],
+                    });
                 } else {
                     seen_ips.insert(net.guest_ip.clone(), vm.name.clone());
                 }
             }
         }
     }
+    // SEC-460: flag *every* VM in *every* anomaly's vm_names — the prior
+    // implementation scraped one name per message via split_whitespace and
+    // returned at the first match, so the second VM in a multi-VM anomaly
+    // (and every VM in any subnet-level anomaly) silently escaped flagging.
     let corrupt_vms: std::collections::HashSet<String> = anomalies
         .iter()
-        .filter_map(|a| {
-            // Best-effort extraction of vm names from the anomaly message;
-            // err on the side of flagging when uncertain.
-            a.split_whitespace()
-                .find(|tok| vms.iter().any(|v| v.name == *tok))
-                .map(String::from)
-        })
+        .flat_map(|a| a.vm_names.iter().cloned())
         .collect();
 
     match args.format {
@@ -1172,7 +1188,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                     anomalies.len()
                 );
                 for a in &anomalies {
-                    eprintln!("  {a}");
+                    eprintln!("  {}", a.message);
                 }
             }
         }
@@ -1210,7 +1226,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                     anomalies.len()
                 );
                 for a in &anomalies {
-                    eprintln!("  {a}");
+                    eprintln!("  {}", a.message);
                 }
                 eprintln!(
                     "to recover: stop affected VMs, remove their entries from \
