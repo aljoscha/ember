@@ -125,11 +125,13 @@ impl VmBackend for MacosVm {
             .arg("--ready-fd")
             .arg(write_fd_num.to_string());
 
-        // Redirect stdout/stderr to the serial log / null so the helper
-        // doesn't interfere with ember's terminal output.
+        // Redirect ember-vz stderr to a per-VM log file so failures are
+        // preserved for diagnostics.  Stdout goes to null (not used).
+        let stderr_log = std::fs::File::create(vm_dir.join("ember-vz.log"))
+            .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        cmd.stderr(Stdio::from(stderr_log));
 
         // SAFETY: pre_exec runs between fork and exec. We clear the
         // close-on-exec flag on the write fd so ember-vz inherits it.
@@ -169,7 +171,25 @@ impl VmBackend for MacosVm {
                     nix::unistd::Pid::from_raw(pid as i32),
                     nix::sys::signal::Signal::SIGKILL,
                 );
-                return Err(e);
+
+                // Surface the ember-vz log before the caller rolls back vm_dir.
+                let ember_vz_log = vm_dir.join("ember-vz.log");
+                let preserved =
+                    preserve_ember_vz_log(&config.state_dir, &vm.name, &ember_vz_log);
+                let last_lines = read_last_lines(&ember_vz_log, 10);
+
+                let mut msg = e.to_string();
+                if !last_lines.is_empty() {
+                    msg.push_str("\nember-vz.log (last 10 lines):\n");
+                    for line in &last_lines {
+                        msg.push_str(&format!("  {line}\n"));
+                    }
+                }
+                if let Some(ref p) = preserved {
+                    msg.push_str(&format!("preserved at: {}", p.display()));
+                }
+
+                return Err(Error::Vm(msg));
             }
         };
 
@@ -380,4 +400,39 @@ fn read_mac_from_ready_fd(read_file: std::fs::File, timeout: Duration) -> Result
     }
 
     Ok(mac)
+}
+
+/// Read the last `n` lines from a file.
+///
+/// Returns an empty vec if the file cannot be read (e.g. the log was not
+/// created because ember-vz crashed before writing anything).
+fn read_last_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].iter().map(|s| s.to_string()).collect()
+}
+
+/// Copy `log_path` to `<state_dir>/failed-starts/<vm_name>-<unix_ts>.log`.
+///
+/// Creates the `failed-starts` directory if it does not exist.  Returns the
+/// destination path on success, or `None` if the copy fails (e.g. the log
+/// file was never written).
+fn preserve_ember_vz_log(
+    state_dir: &std::path::Path,
+    vm_name: &str,
+    log_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let dir = state_dir.join("failed-starts");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let dest = dir.join(format!("{vm_name}-{ts}.log"));
+    std::fs::copy(log_path, &dest).ok()?;
+    Some(dest)
 }

@@ -44,8 +44,15 @@ struct Start: ParsableCommand {
     var readyFd: Int32? = nil
 
     func run() throws {
-        // Build the VM configuration (does not require main actor)
-        let vmConfig = try buildConfiguration()
+        // Build the VM configuration (does not require main actor).
+        // Log validation errors explicitly before ArgumentParser reformats them.
+        let vmConfig: VZVirtualMachineConfiguration
+        do {
+            vmConfig = try buildConfiguration()
+        } catch {
+            fputs("error: ember-vz configuration failed: \(error.localizedDescription)\n", stderr)
+            throw error
+        }
 
         // Schedule VM creation and start on the main queue.
         // VZVirtualMachine must be used from the queue it was created on
@@ -54,7 +61,7 @@ struct Start: ParsableCommand {
             do {
                 try self.startVM(config: vmConfig)
             } catch {
-                fputs("error: \(error.localizedDescription)\n", stderr)
+                fputs("error: ember-vz startVM failed: \(error.localizedDescription)\n", stderr)
                 Darwin.exit(1)
             }
         }
@@ -282,7 +289,7 @@ struct Start: ParsableCommand {
                 }
 
             case .failure(let error):
-                fputs("error: vm failed to start: \(error.localizedDescription)\n", stderr)
+                fputs("AVF start failed: \(error.localizedDescription) — \(error)\n", stderr)
                 Darwin.exit(1)
             }
         }
