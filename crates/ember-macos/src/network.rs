@@ -98,21 +98,24 @@ impl NetworkBackend for MacosNetwork {
     ///   link Linux needs is overkill here and would waste 75% of
     ///   the address space.
     fn setup(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<NetworkInfo> {
-        let allocation = if config.instance_id.is_empty() {
-            // Per-VM `vm.subnet` overrides the install default; keeps
-            // parity with pre-instance-id behavior.
-            let subnet = vm.subnet.as_deref().unwrap_or(VMNET_SUBNET);
-            network::ip::allocate(&self.store, subnet, &vm.name)?
-        } else {
-            let subnet = vm.subnet.as_deref().unwrap_or(config.ip_subnet.as_str());
-            network::ip::allocate_single(
-                &self.store,
-                subnet,
-                &vm.name,
-                VMNET_GATEWAY,
-                VMNET_NETMASK,
-                &VMNET_RESERVED,
-            )?
+        let allocation = match config.instance_namespace() {
+            None => {
+                // Per-VM `vm.subnet` overrides the install default; keeps
+                // parity with pre-instance-id behavior.
+                let subnet = vm.subnet.as_deref().unwrap_or(VMNET_SUBNET);
+                network::ip::allocate(&self.store, subnet, &vm.name)?
+            }
+            Some(_) => {
+                let subnet = vm.subnet.as_deref().unwrap_or(config.ip_subnet.as_str());
+                network::ip::allocate_single(
+                    &self.store,
+                    subnet,
+                    &vm.name,
+                    VMNET_GATEWAY,
+                    VMNET_NETMASK,
+                    &VMNET_RESERVED,
+                )?
+            }
         };
 
         Ok(NetworkInfo {
