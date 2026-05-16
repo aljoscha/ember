@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ember_core::backend::{ImageToolConfig, Platform, ResolvConfMode};
-use ember_core::config::{derive_ip_subnet, GlobalConfig, StorageKind};
+use ember_core::config::{GlobalConfig, StorageKind};
 use ember_core::error::Result;
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::VmMetadata;
@@ -24,7 +24,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn default_ip_subnet(instance_id: &str) -> String {
-        derive_ip_subnet(instance_id)
+        crate::network::ip::derive_default_subnet(instance_id)
     }
 
     fn console_device() -> &'static str {

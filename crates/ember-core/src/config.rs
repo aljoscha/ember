@@ -135,20 +135,14 @@ pub fn derive_instance_id(state_dir: &std::path::Path) -> String {
     format!("{:04x}", fnv1a_32(bytes) as u16)
 }
 
-/// Derive a default `/16` IPv4 subnet from an instance id, chosen so
-/// two installations rarely overlap: `10.{slot}.0.0/16` where `slot`
-/// is the high byte of the same FNV-1a hash that produced the id. The
-/// /16 still gives ~16k VMs per install via /30 links.
-pub fn derive_ip_subnet(instance_id: &str) -> String {
-    let hash = fnv1a_32(instance_id.as_bytes());
-    let slot = ((hash >> 8) & 0xff) as u8;
-    format!("10.{slot}.0.0/16")
-}
-
 /// FNV-1a 32-bit hash. Stable across Rust versions (unlike
 /// `DefaultHasher`) and small enough to inline rather than pulling in
 /// a crypto dep just for non-security-critical name derivation.
-fn fnv1a_32(bytes: &[u8]) -> u32 {
+///
+/// Exposed for platform crates that derive their own scoped names
+/// from the instance id (e.g. Linux's `/16`-in-`10.0.0.0/8` subnet
+/// slot).
+pub fn fnv1a_32(bytes: &[u8]) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for &b in bytes {
         h ^= b as u32;
@@ -228,13 +222,6 @@ mod tests {
         let a = derive_instance_id(std::path::Path::new("/var/lib/ember"));
         let b = derive_instance_id(std::path::Path::new("/tmp/ember-test"));
         assert_ne!(a, b);
-    }
-
-    #[test]
-    fn derived_subnet_lands_in_10_slash_8() {
-        let subnet = derive_ip_subnet("a3f4");
-        assert!(subnet.starts_with("10."));
-        assert!(subnet.ends_with(".0.0/16"));
     }
 
     #[test]
