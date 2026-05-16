@@ -30,6 +30,19 @@ pub const VMNET_NETMASK: &str = "255.255.255.0";
 /// (a /27 slice) instead.
 pub const VMNET_SUBNET: &str = "192.168.64.0/24";
 
+/// vmnet-owned addresses that no guest may receive, regardless of
+/// which /27 slot an install lands in: the surrounding /24's network
+/// (.0) and broadcast (.255), plus vmnet's built-in router (.1).
+/// Addresses outside the install's /27 slot are still listed; the
+/// allocator just ignores reservations outside the subnet it's
+/// walking, so this single list covers slots 0, 7, and the middle
+/// six identically.
+const VMNET_RESERVED: [std::net::Ipv4Addr; 3] = [
+    std::net::Ipv4Addr::new(192, 168, 64, 0),
+    std::net::Ipv4Addr::new(192, 168, 64, 1),
+    std::net::Ipv4Addr::new(192, 168, 64, 255),
+];
+
 /// Derive a per-installation /27 sub-range inside [`VMNET_SUBNET`].
 ///
 /// vmnet's shared subnet is fixed by the framework, so isolation has
@@ -92,22 +105,13 @@ impl NetworkBackend for MacosNetwork {
             network::ip::allocate(&self.store, subnet, &vm.name)?
         } else {
             let subnet = vm.subnet.as_deref().unwrap_or(config.ip_subnet.as_str());
-            // Reserve vmnet's host-global addresses so the allocator
-            // never hands them out, regardless of which /27 slot the
-            // install landed in. .0/.255 are the surrounding /24's
-            // network/broadcast; .1 is vmnet's built-in router.
-            let reserved = [
-                std::net::Ipv4Addr::new(192, 168, 64, 0),
-                std::net::Ipv4Addr::new(192, 168, 64, 1),
-                std::net::Ipv4Addr::new(192, 168, 64, 255),
-            ];
             network::ip::allocate_single(
                 &self.store,
                 subnet,
                 &vm.name,
                 VMNET_GATEWAY,
                 VMNET_NETMASK,
-                &reserved,
+                &VMNET_RESERVED,
             )?
         };
 

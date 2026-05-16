@@ -3,13 +3,29 @@
 //! A thin pool is the kernel-side container holding metadata + data
 //! devices and exposing thin volumes as snapshot-capable block devices.
 //! Ember runs one named pool per installation; the pool name is
-//! derived from `GlobalConfig::dm_thin_pool_name()` so two installs on
-//! the same host don't share a pool.
+//! derived from the install's namespace by [`name`] so two installs
+//! on the same host don't share a pool.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ember_core::error::{Error, Result};
+
+/// dm-thin pool name for an installation.
+///
+/// `instance_id` is `Some(ns)` for a per-installation pool
+/// (`ember-{ns}-pool`) and `None` for legacy configs that predate
+/// per-installation isolation. Older binaries created the singleton
+/// `ember-pool`, and that exact name must remain reachable across
+/// upgrades — any other string in legacy mode would point at a
+/// non-existent pool (or, worse, a `ember--pool` typo that init
+/// would race to create), orphaning the data on disk.
+pub fn name(instance_id: Option<&str>) -> String {
+    match instance_id {
+        None => "ember-pool".to_string(),
+        Some(id) => format!("ember-{id}-pool"),
+    }
+}
 
 /// Default pool block size in 512-byte sectors (= 64 KiB).
 ///
@@ -391,5 +407,17 @@ mod tests {
             32_768,
         );
         assert_eq!(t, "0 1048576 thin-pool /dev/loop0 /dev/loop1 128 32768");
+    }
+
+    #[test]
+    fn name_for_new_install_embeds_namespace() {
+        assert_eq!(name(Some("a3f4")), "ember-a3f4-pool");
+    }
+
+    /// Locked: legacy hosts have a pool named `ember-pool` in the
+    /// kernel and any other string here would orphan their data.
+    #[test]
+    fn name_for_legacy_install_is_unprefixed() {
+        assert_eq!(name(None), "ember-pool");
     }
 }

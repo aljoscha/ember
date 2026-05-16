@@ -44,8 +44,11 @@ impl NetworkBackend for LinuxNetwork {
         let subnet = vm.subnet.as_deref().unwrap_or(&config.ip_subnet);
         let allocation = network::ip::allocate(&self.store, subnet, &vm.name)?;
 
-        // Create TAP device.
-        let tap_name = network::tap::device_name(&config.tap_prefix(), &vm.id);
+        // Each network subsystem owns its own name derivation; we
+        // hand them the install's namespace and let them produce the
+        // strings (legacy fallbacks included).
+        let ns = config.instance_namespace();
+        let tap_name = network::tap::device_name(&network::tap::prefix(ns), &vm.id);
         let host_ip_cidr = format!("{}/30", allocation.host_ip);
         if let Err(e) = network::tap::create(&tap_name, &host_ip_cidr) {
             // Clean up IP allocation on failure.
@@ -62,7 +65,7 @@ impl NetworkBackend for LinuxNetwork {
 
         // Add iptables NAT/forwarding rules tagged with this install's
         // comment so cleanup can scope to *this* installation.
-        let comment = config.iptables_comment();
+        let comment = network::nat::comment(ns);
         if let Err(e) =
             network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface, &comment)
         {

@@ -84,7 +84,10 @@ impl Platform for LinuxPlatform {
                 ("Dataset", format!("{}/{}", config.pool, config.dataset)),
             ],
             StorageKind::DmThin => {
-                let mut rows = vec![("dm-thin pool", config.dm_thin_pool_name())];
+                let mut rows = vec![(
+                    "dm-thin pool",
+                    crate::dm_thin::pool::name(config.instance_namespace()),
+                )];
                 if let Some(ref path) = config.storage_path {
                     rows.push(("Storage path", path.display().to_string()));
                 }

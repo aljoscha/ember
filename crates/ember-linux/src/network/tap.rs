@@ -152,12 +152,27 @@ pub fn delete(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// TAP device name prefix for an installation.
+///
+/// `Some(ns)` → `em{ns}-`; `None` → legacy `em-`. Bounded so
+/// `prefix + 7-hex VM id` fits in Linux's 15-char `IFNAMSIZ - 1`
+/// budget (14 chars with the default 4-char namespace, 10 in legacy
+/// mode). Pre-instance-id binaries persisted TAP names like
+/// `em-<vmid7>` on every running VM's `vm.json`, so the legacy
+/// 3-char prefix must stay byte-for-byte stable or reconcile's
+/// orphan sweep and teardown's `ip link delete` stop matching.
+pub fn prefix(instance_id: Option<&str>) -> String {
+    match instance_id {
+        None => "em-".to_string(),
+        Some(id) => format!("em{id}-"),
+    }
+}
+
 /// List TAP devices on the system whose name starts with `prefix`.
 ///
 /// Parses the output of `ip -o link show type tun`. Pass the
-/// per-installation TAP prefix from
-/// [`GlobalConfig::tap_prefix`](ember_core::config::GlobalConfig::tap_prefix)
-/// so reconciliation only sees devices belonging to *this* install.
+/// per-installation TAP prefix from [`prefix`] so reconciliation
+/// only sees devices belonging to *this* install.
 pub fn list_devices_with_prefix(prefix: &str) -> Result<Vec<String>> {
     let output = Command::new("ip")
         .args(["-o", "link", "show", "type", "tun"])
@@ -229,5 +244,21 @@ mod tests {
         assert!(matches!(err, Error::Network(_)));
         let msg = err.to_string();
         assert!(msg.contains("too long"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn prefix_for_new_install_embeds_namespace() {
+        let p = prefix(Some("ffff"));
+        assert_eq!(p, "emffff-");
+        // Locks the IFNAMSIZ budget: prefix (7) + 7-hex VM id ≤ 15.
+        assert!(p.len() + 7 <= 15);
+    }
+
+    /// Locked at 3 chars: legacy hosts have `em-<vmid7>` TAP names
+    /// persisted in their `vm.json`, and the orphan sweep + delete
+    /// paths reference that exact form.
+    #[test]
+    fn prefix_for_legacy_install_is_three_chars() {
+        assert_eq!(prefix(None), "em-");
     }
 }

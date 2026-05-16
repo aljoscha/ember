@@ -182,14 +182,38 @@ pub fn sanitize_dm_name(name: &str) -> String {
         .collect()
 }
 
-/// Device-mapper name for a VM volume. `vm_prefix` comes from
-/// [`GlobalConfig::dm_thin_vm_prefix`].
+/// Device-mapper name prefix for image base volumes.
+///
+/// `Some(ns)` → `ember-{ns}-img-`; `None` → legacy `ember-img-`.
+/// Pre-instance-id binaries wrote image volumes as `ember-img-<n>`,
+/// and teardown's prefix sweep + per-image lookups must keep matching
+/// that exact form or the pool will accumulate orphaned thin ids.
+pub fn image_prefix(instance_id: Option<&str>) -> String {
+    match instance_id {
+        None => "ember-img-".to_string(),
+        Some(id) => format!("ember-{id}-img-"),
+    }
+}
+
+/// Device-mapper name prefix for VM disks.
+///
+/// `Some(ns)` → `ember-{ns}-vm-`; `None` → legacy `ember-vm-`.
+/// Existing VM disks are recorded on `vm.json` as `ember-vm-<vm>`,
+/// so legacy mode must keep that exact prefix or the persisted
+/// device paths stop resolving.
+pub fn vm_prefix(instance_id: Option<&str>) -> String {
+    match instance_id {
+        None => "ember-vm-".to_string(),
+        Some(id) => format!("ember-{id}-vm-"),
+    }
+}
+
+/// Device-mapper name for a VM volume.
 pub fn vm_dm_name(vm_prefix: &str, vm_name: &str) -> String {
     format!("{vm_prefix}{}", sanitize_dm_name(vm_name))
 }
 
-/// Device-mapper name for an image base volume. `image_prefix` comes
-/// from [`GlobalConfig::dm_thin_image_prefix`].
+/// Device-mapper name for an image base volume.
 pub fn image_dm_name(image_prefix: &str, image_name: &str) -> String {
     format!("{image_prefix}{}", sanitize_dm_name(image_name))
 }
@@ -239,6 +263,21 @@ mod tests {
             image_staging_dm_name("ember-a3f4-img-", "foo"),
             "ember-a3f4-img-foo-staging"
         );
+    }
+
+    #[test]
+    fn prefixes_for_new_install_embed_namespace() {
+        assert_eq!(image_prefix(Some("a3f4")), "ember-a3f4-img-");
+        assert_eq!(vm_prefix(Some("a3f4")), "ember-a3f4-vm-");
+    }
+
+    #[test]
+    fn prefixes_for_legacy_install_match_pre_instance_id_literals() {
+        // Locked: existing kernel state on upgraded hosts must remain
+        // reachable, so the legacy literals are part of the
+        // on-the-wire contract.
+        assert_eq!(image_prefix(None), "ember-img-");
+        assert_eq!(vm_prefix(None), "ember-vm-");
     }
 
     #[test]

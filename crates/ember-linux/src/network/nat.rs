@@ -13,6 +13,22 @@ use std::process::Command;
 
 use ember_core::error::{Error, Result};
 
+/// iptables comment that scopes rule cleanup to one ember install.
+///
+/// `Some(ns)` → `ember:{ns}`, embedded via `-m comment --comment` in
+/// every rule so `-D` only matches *this* install's rules. `None`
+/// returns the empty string, which [`with_comment`] uses as the
+/// signal to omit the `-m comment` match entirely — older binaries
+/// added rules without a comment match, so emitting one on legacy
+/// installs would make `iptables -D` silently no-op and rules would
+/// accumulate forever. Empty preserves the original rule shape.
+pub fn comment(instance_id: Option<&str>) -> String {
+    match instance_id {
+        None => String::new(),
+        Some(id) => format!("ember:{id}"),
+    }
+}
+
 /// Add iptables NAT and forwarding rules for a VM.
 ///
 /// Creates three rules that together give the guest outbound internet access
@@ -148,6 +164,20 @@ fn with_comment<'a>(head: &[&'a str], comment: &'a str, tail: &[&'a str]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_for_new_install_tags_namespace() {
+        assert_eq!(comment(Some("a3f4")), "ember:a3f4");
+    }
+
+    /// Locked: legacy mode must return an empty string so the rule
+    /// shape stays byte-for-byte identical to what older binaries
+    /// emitted (no `-m comment` match), or `iptables -D` silently
+    /// no-ops on upgraded hosts.
+    #[test]
+    fn comment_for_legacy_install_is_empty() {
+        assert_eq!(comment(None), "");
+    }
 
     #[test]
     fn with_comment_skips_match_when_empty() {

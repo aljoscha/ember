@@ -7,9 +7,9 @@
 //!    network resources (TAP device, iptables rules, IP allocation).
 //!
 //! 2. Find orphaned TAP devices belonging to *this* installation
-//!    (matched against `GlobalConfig::tap_prefix()`) and delete them.
-//!    Other ember installs use distinct prefixes, so reconciliation
-//!    here never touches their devices.
+//!    (matched against [`network::tap::prefix`] for the install's
+//!    namespace) and delete them. Other ember installs use distinct
+//!    prefixes, so reconciliation here never touches their devices.
 //!
 //! All operations are best-effort: errors are logged but never propagated,
 //! since reconciliation should not block normal CLI operation.
@@ -86,7 +86,7 @@ pub fn run(state_dir: &Path) {
             );
             if let Some(ref net_info) = metadata.network {
                 if let Some(ref cfg) = config {
-                    cleanup_network(&store, cfg, &metadata.name, net_info);
+                    network::cleanup(&store, cfg, &metadata.name, net_info);
                 }
             }
             mark_stopped(&store, &mut metadata);
@@ -99,7 +99,7 @@ pub fn run(state_dir: &Path) {
     let Some(cfg) = config else {
         return;
     };
-    let prefix = cfg.tap_prefix();
+    let prefix = network::tap::prefix(cfg.instance_namespace());
     let system_devices = match network::tap::list_devices_with_prefix(&prefix) {
         Ok(devs) => devs,
         Err(e) => {
@@ -129,12 +129,3 @@ fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
     }
 }
 
-/// Best-effort network cleanup for a dead VM.
-fn cleanup_network(
-    store: &StateStore,
-    config: &GlobalConfig,
-    vm_name: &str,
-    net_info: &vm::NetworkInfo,
-) {
-    network::cleanup(store, config, vm_name, net_info);
-}

@@ -95,6 +95,9 @@ impl DmThinStorage {
                 DmThinMode::RawDevice
             }
         });
+        // dm-thin owns its own name derivation; we just feed it the
+        // install's namespace (or `None` for legacy configs).
+        let ns = config.instance_namespace();
         Self {
             storage_path,
             state_dir: config.state_dir.clone(),
@@ -102,9 +105,9 @@ impl DmThinStorage {
             block_size_sectors: config
                 .dm_thin_block_size
                 .unwrap_or(pool::DEFAULT_BLOCK_SIZE_SECTORS),
-            pool_name: config.dm_thin_pool_name(),
-            image_prefix: config.dm_thin_image_prefix(),
-            vm_prefix: config.dm_thin_vm_prefix(),
+            pool_name: pool::name(ns),
+            image_prefix: thin::image_prefix(ns),
+            vm_prefix: thin::vm_prefix(ns),
         }
     }
 
@@ -246,8 +249,11 @@ impl StorageBackend for DmThinStorage {
         pool::ensure_target_loaded()?;
 
         // Pool is named per-installation so two installs on one host
-        // don't share kernel state.
-        let pool_name = format!("ember-{}-pool", config.instance_id);
+        // don't share kernel state. `init` is only ever run on a
+        // fresh install (the CLI always pins a real `instance_id`),
+        // so feeding `pool::name` a `Some` here matches what
+        // `DmThinStorage::new` derives from the persisted config.
+        let pool_name = pool::name(Some(&config.instance_id));
 
         let block_size_sectors = config
             .dm_thin_block_size
