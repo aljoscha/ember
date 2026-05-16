@@ -69,6 +69,7 @@ sudo cargo test --test dm_thin -- --ignored --test-threads=1
 
 - Prefer explicit error handling. Use `?` for propagation, not `.unwrap()`.
 - Shell out to platform CLI tools — no fragile C library bindings. Linux: `zfs`/`zpool`/`iptables`. macOS: `hdiutil`/`diskutil`/`cp -c`/`ember-vz`.
+- Value clear interfaces, boundaries, and abstractions; avoid leaks between them. Subsystems own their own formats — dm-thin owns its pool/volume names, networking owns its TAP prefix and iptables comment, and so on. Shared types like `GlobalConfig` expose generic identity (e.g. `instance_namespace()`) and stay free of subsystem trivia. If you find yourself reaching across a boundary to format a name, match a string, or branch on another subsystem's mode, that's the cue to move the logic to the side that owns the concept.
 
 ## Architecture
 
