@@ -128,4 +128,3 @@ fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
         );
     }
 }
-

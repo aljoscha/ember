@@ -58,7 +58,18 @@ const VMNET_RESERVED: [std::net::Ipv4Addr; 3] = [
 /// vmnet's reserved network/gateway/broadcast addresses, well above
 /// any realistic personal workflow.
 pub fn derive_vmnet_subnet(instance_id: &str) -> String {
-    let id_int = u16::from_str_radix(instance_id, 16).unwrap_or(0);
+    // Only called from `MacosPlatform::default_ip_subnet` at
+    // `ember init`, where `instance_id` is either CLI-validated
+    // (`parse_instance_id` enforces 4 lowercase hex) or auto-derived
+    // (`derive_instance_id` always emits 4 hex chars). A non-hex id
+    // means upstream validation broke — panic so the bug is loud
+    // rather than silently colliding two installs on slot 0.
+    let id_int = u16::from_str_radix(instance_id, 16).unwrap_or_else(|_| {
+        panic!(
+            "derive_vmnet_subnet got non-hex instance_id {instance_id:?} — \
+                CLI validation should have rejected this"
+        )
+    });
     let slot = (id_int & 0b111) as u8;
     let base = slot * 32;
     format!("192.168.64.{base}/27")
@@ -261,11 +272,18 @@ destination: default
     }
 
     #[test]
-    fn vmnet_subnet_falls_back_to_slot_zero_on_garbage_id() {
-        // Defensive: parse failure shouldn't panic, just land on
-        // the legacy-equivalent base. The user can then pick
-        // `--ip-subnet` explicitly.
-        assert_eq!(derive_vmnet_subnet("zzzz"), "192.168.64.0/27");
-        assert_eq!(derive_vmnet_subnet(""), "192.168.64.0/27");
+    #[should_panic(expected = "non-hex instance_id")]
+    fn vmnet_subnet_panics_on_non_hex_id() {
+        // CLI validation guarantees a 4-hex `instance_id`; a non-hex
+        // value reaching this function means validation regressed.
+        // We'd rather panic loudly than silently collide every such
+        // install on slot 0.
+        let _ = derive_vmnet_subnet("zzzz");
+    }
+
+    #[test]
+    #[should_panic(expected = "non-hex instance_id")]
+    fn vmnet_subnet_panics_on_empty_id() {
+        let _ = derive_vmnet_subnet("");
     }
 }
