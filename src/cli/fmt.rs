@@ -2,6 +2,52 @@ pub const KIB: u64 = 1024;
 pub const MIB: u64 = 1024 * KIB;
 pub const GIB: u64 = 1024 * MIB;
 
+/// Column alignment for [`print_table`].
+#[derive(Clone, Copy)]
+pub enum Align {
+    Left,
+    Right,
+}
+
+/// Print a table whose column widths size to fit the data.
+///
+/// Each column's width is `max(header_len, max(cell_len))`. Columns are
+/// separated by a single space. Trailing whitespace is omitted on the
+/// rightmost column when it is left-aligned.
+pub fn print_table(headers: &[&str], aligns: &[Align], rows: &[Vec<String>]) {
+    debug_assert_eq!(headers.len(), aligns.len());
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        debug_assert_eq!(row.len(), headers.len());
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    print_row(headers.iter().copied(), &widths, aligns);
+    for row in rows {
+        print_row(row.iter().map(String::as_str), &widths, aligns);
+    }
+}
+
+fn print_row<'a>(cells: impl Iterator<Item = &'a str>, widths: &[usize], aligns: &[Align]) {
+    let cells: Vec<&str> = cells.collect();
+    let last = cells.len().saturating_sub(1);
+    let mut line = String::new();
+    for (i, cell) in cells.iter().enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        let w = widths[i];
+        match aligns[i] {
+            Align::Left if i == last => line.push_str(cell),
+            Align::Left => line.push_str(&format!("{cell:<w$}")),
+            Align::Right => line.push_str(&format!("{cell:>w$}")),
+        }
+    }
+    println!("{line}");
+}
+
 /// Format a byte count as a human-readable string using binary units
 /// (powers of 1,024): GiB, MiB, KiB, B.
 ///

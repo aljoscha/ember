@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
-use super::fmt::{format_bytes_binary, GIB, MIB};
+use super::fmt::{format_bytes_binary, print_table, Align, GIB, MIB};
 use crate::backend::{
     create_storage, CurrentPlatform, Network, NetworkBackend, Platform, Storage, Vm, VmBackend,
     VolumeHandle,
@@ -1181,21 +1181,31 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            println!(
-                "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
-                "NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"
+            let rows: Vec<Vec<String>> = vms
+                .iter()
+                .map(|vm| {
+                    vec![
+                        vm.name.clone(),
+                        vm.status.to_string(),
+                        vm.image.clone(),
+                        vm.cpus.to_string(),
+                        format_bytes_binary(vm.memory_mib as u64 * MIB),
+                        format_bytes_binary(vm.disk_size_gib as u64 * GIB),
+                    ]
+                })
+                .collect();
+            print_table(
+                &["NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"],
+                &[
+                    Align::Left,
+                    Align::Left,
+                    Align::Left,
+                    Align::Right,
+                    Align::Right,
+                    Align::Right,
+                ],
+                &rows,
             );
-            for vm in &vms {
-                println!(
-                    "{:<20} {:<10} {:<40} {:>4} {:>10} {:>10}",
-                    vm.name,
-                    vm.status,
-                    vm.image,
-                    vm.cpus,
-                    format_bytes_binary(vm.memory_mib as u64 * MIB),
-                    format_bytes_binary(vm.disk_size_gib as u64 * GIB),
-                );
-            }
         }
     }
 

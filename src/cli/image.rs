@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
-use super::fmt::{format_bytes_binary, MIB};
+use super::fmt::{format_bytes_binary, print_table, Align, MIB};
 use super::vm::OutputFormat;
 use crate::backend::{create_storage, CurrentPlatform, Platform, Storage, VolumeHandle};
 use crate::image;
@@ -233,19 +233,23 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            println!(
-                "{:<40} {:<30} {:>8} PULLED",
-                "REFERENCE", "LOCAL NAME", "SIZE"
+            let rows: Vec<Vec<String>> = registry
+                .images
+                .iter()
+                .map(|img| {
+                    vec![
+                        img.reference.clone(),
+                        img.local_name.clone(),
+                        format_bytes_binary(img.size_mib * MIB),
+                        img.pulled_at.clone(),
+                    ]
+                })
+                .collect();
+            print_table(
+                &["REFERENCE", "LOCAL NAME", "SIZE", "PULLED"],
+                &[Align::Left, Align::Left, Align::Right, Align::Left],
+                &rows,
             );
-            for img in &registry.images {
-                println!(
-                    "{:<40} {:<30} {:>10} {}",
-                    img.reference,
-                    img.local_name,
-                    format_bytes_binary(img.size_mib * MIB),
-                    img.pulled_at
-                );
-            }
         }
     }
 
