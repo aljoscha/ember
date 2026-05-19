@@ -18,16 +18,37 @@ use nix::unistd::Pid;
 const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Spawn a Firecracker process.
+/// Extra MiB allowed above the guest's allocation before the cgroup's
+/// `MemoryMax` kicks in. Covers Firecracker's own RSS plus KVM/vsock
+/// bookkeeping; a runaway guest still trips the limit and the kernel
+/// OOM-kills the scope instead of the host.
+const MEMORY_HEADROOM_MIB: u32 = 128;
+
+/// Spawn a Firecracker process inside a transient `systemd-run --scope`.
 ///
-/// Starts `firecracker` with the given API socket and log file paths.
-/// Returns the `Child` handle — the caller should extract `.id()` for
-/// the PID and store it in VM metadata.
+/// The scope applies cgroup limits derived from `vcpu_count` and
+/// `mem_size_mib` so a runaway guest can't take the host down with it:
+/// `MemoryMax` caps RSS, `MemorySwapMax=0` keeps the host out of swap
+/// thrash, `CPUQuota` caps CPU at N cores, and `CPUWeight=50` /
+/// `IOWeight=50` halve the scope's share of contended CPU and disk
+/// against other cgroups so the host stays responsive when the guest
+/// is busy.
+///
+/// `systemd-run --scope` execve-replaces itself with `firecracker` after
+/// the scope is set up, so `Child::id()` is the firecracker PID directly —
+/// the rest of the process module (kill, is_alive, wait_for_exit) keeps
+/// working unchanged. When firecracker exits the scope's last task is
+/// gone and systemd reaps the transient unit on its own.
 ///
 /// Guest serial console output (`console=ttyS0`) is captured to a
 /// `console.log` file next to the Firecracker log. Stderr goes to
 /// `/dev/null`; Firecracker writes its own operational log via `--log-path`.
-pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
+pub fn spawn(
+    socket_path: &Path,
+    log_path: &Path,
+    vcpu_count: u32,
+    mem_size_mib: u32,
+) -> anyhow::Result<Child> {
     let console_log_path = log_path.with_file_name("console.log");
     let console_log = File::create(&console_log_path).with_context(|| {
         format!(
@@ -36,7 +57,29 @@ pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
         )
     })?;
 
-    let child = Command::new("firecracker")
+    let mem_max_mib = mem_size_mib + MEMORY_HEADROOM_MIB;
+    let cpu_quota_pct = vcpu_count * 100;
+
+    let scope_args: [String; 14] = [
+        "--scope".into(),
+        "--quiet".into(),
+        "--slice=ember.slice".into(),
+        "-p".into(),
+        format!("MemoryMax={mem_max_mib}M"),
+        "-p".into(),
+        "MemorySwapMax=0".into(),
+        "-p".into(),
+        format!("CPUQuota={cpu_quota_pct}%"),
+        "-p".into(),
+        "CPUWeight=50".into(),
+        "-p".into(),
+        "IOWeight=50".into(),
+        "--".into(),
+    ];
+
+    let child = Command::new("systemd-run")
+        .args(scope_args)
+        .arg("firecracker")
         .arg("--api-sock")
         .arg(socket_path)
         .arg("--log-path")
@@ -49,8 +92,8 @@ pub fn spawn(socket_path: &Path, log_path: &Path) -> anyhow::Result<Child> {
         .spawn()
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to spawn firecracker: {e}\n\
-                 Hint: is the 'firecracker' binary installed and in PATH?"
+                "failed to spawn firecracker under systemd-run: {e}\n\
+                 Hint: are 'systemd-run' and 'firecracker' installed and in PATH?"
             )
         })?;
 
