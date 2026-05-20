@@ -158,11 +158,12 @@ fn init_custom_dataset_name() {
     let pool = common::linux::test_pool("customds");
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = common::linux::create_loop_device(tmp.path());
+    let (loop_dev, img) = common::linux::create_loop_device(tmp.path());
 
     let _cleanup = common::linux::PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
+        backing_file: img,
     };
 
     let output = common::ember(&[

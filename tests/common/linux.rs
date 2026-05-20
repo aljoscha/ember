@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Pool / loopback device helpers
@@ -61,6 +62,27 @@ pub fn detach_loop_device(dev: &str) {
     let _ = Command::new("losetup").args(["-d", dev]).status();
 }
 
+/// List the loop devices currently backing `file`.
+///
+/// `losetup -j <file>` exits 0 even when no loop is attached, so an
+/// empty vector means "nothing to detach." Each line of output looks
+/// like `/dev/loopN: [dev]:ino (backing-path)`, and we want just the
+/// device path before the first colon.
+fn loops_for_backing_file(file: &Path) -> Vec<String> {
+    let output = match Command::new("losetup").arg("-j").arg(file).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(name, _)| name.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Destroy a ZFS pool (best-effort cleanup).
 pub fn destroy_pool(pool: &str) {
     let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
@@ -68,16 +90,47 @@ pub fn destroy_pool(pool: &str) {
 
 /// RAII guard: destroys ZFS pool and detaches loop device on drop.
 ///
-/// Use this in tests to ensure cleanup happens even on panic.
+/// Use this in tests to ensure cleanup happens even on panic. The
+/// backing file path is stored alongside the loop device path so
+/// cleanup can re-resolve the device by file at drop time — this is
+/// what makes the guard robust to the brief EBUSY window after `zpool
+/// destroy` and to kernel loop-number recycling between setup and drop.
 pub struct PoolCleanup {
     pub pool: String,
     pub dev: String,
+    pub backing_file: PathBuf,
 }
 
 impl Drop for PoolCleanup {
     fn drop(&mut self) {
         destroy_pool(&self.pool);
-        detach_loop_device(&self.dev);
+
+        // `zpool destroy -f` can fail (a still-running firecracker
+        // child holds a zvol open) or return success while the kernel
+        // briefly keeps the loop device open. Either way a single
+        // `losetup -d` may hit EBUSY; retry, re-resolving loops by
+        // backing-file path so we don't act on a stale device number.
+        let mut still_attached = Vec::new();
+        for attempt in 0..15 {
+            still_attached = loops_for_backing_file(&self.backing_file);
+            if still_attached.is_empty() {
+                return;
+            }
+            for dev in &still_attached {
+                let _ = Command::new("losetup").args(["-d", dev]).status();
+            }
+            if attempt < 14 {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+
+        eprintln!(
+            "WARN: leaked loop device(s) {:?} backing {} — manual cleanup required \
+             (losetup -d <dev>). pool '{}' may also still be active.",
+            still_attached,
+            self.backing_file.display(),
+            self.pool,
+        );
     }
 }
 
@@ -468,11 +521,12 @@ pub fn setup_pool_and_init(
 ) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device(tmp.path());
+    let (loop_dev, img) = create_loop_device(tmp.path());
 
     let cleanup = PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
+        backing_file: img,
     };
 
     let output = super::ember(&[
@@ -601,11 +655,12 @@ pub fn setup_pool_init_and_build_ubuntu(
 ) -> (String, PathBuf, PoolCleanup) {
     let pool = test_pool(test_name);
     let state_dir = tmp.path().join("state");
-    let (loop_dev, _img) = create_loop_device_sized(tmp.path(), "8G");
+    let (loop_dev, img) = create_loop_device_sized(tmp.path(), "8G");
 
     let cleanup = PoolCleanup {
         pool: pool.clone(),
         dev: loop_dev.clone(),
+        backing_file: img,
     };
 
     let output = super::ember(&[
