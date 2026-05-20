@@ -9,18 +9,16 @@ Lightweight CLI for managing microVMs with copy-on-write storage. No daemon, no 
 
 ### macOS (Homebrew)
 
+There are no tagged releases yet, so install from `main` with `--HEAD`:
+
 ```bash
 brew tap aljoscha/ember https://github.com/aljoscha/ember
-brew install ember
-```
-
-This installs both `ember` and `ember-vz` (the Swift helper for Apple Virtualization Framework), plus runtime dependencies (`e2fsprogs`, `skopeo`). Requires macOS 13+ (Ventura) and Xcode Command Line Tools.
-
-To install the latest development version instead of a tagged release:
-
-```bash
 brew install --HEAD aljoscha/ember/ember
 ```
+
+This installs both `ember` and `ember-vz` (the Swift helper for Apple Virtualization Framework), plus runtime dependencies (`e2fsprogs`, `skopeo`). Requires macOS 13+ (Ventura) and Xcode Command Line Tools. The formula builds from source, so the first install takes a few minutes.
+
+Upgrade later with `brew upgrade --fetch-HEAD ember`.
 
 ### macOS (from source)
 
