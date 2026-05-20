@@ -76,8 +76,13 @@ pub fn refresh_size(loop_dev: &Path) -> Result<()> {
 
 /// Look up the loop device currently backing `file`, if any.
 pub fn find_for(file: &Path) -> Result<Option<PathBuf>> {
+    // `-O`/`--noheadings` silently produce no output under `-j` on
+    // util-linux (the column selection only takes effect with
+    // `-l|--list`, but `-l -j -O NAME` is also empty in practice). Use
+    // bare `-j` and parse the canonical first-column device path —
+    // each line looks like `/dev/loopN: [dev]:ino (backing-path)`.
     let output = Command::new("losetup")
-        .args(["-j", "-O", "NAME", "--noheadings"])
+        .arg("-j")
         .arg(file)
         .output()
         .map_err(|e| Error::CommandExec {
@@ -91,7 +96,8 @@ pub fn find_for(file: &Path) -> Result<Option<PathBuf>> {
     let first = stdout
         .lines()
         .next()
-        .map(str::trim)
+        .and_then(|line| line.split_once(':'))
+        .map(|(name, _)| name.trim())
         .filter(|s| !s.is_empty());
     Ok(first.map(PathBuf::from))
 }
