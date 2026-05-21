@@ -161,58 +161,6 @@ fn with_comment<'a>(head: &[&'a str], comment: &'a str, tail: &[&'a str]) -> Vec
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn comment_for_new_install_tags_namespace() {
-        assert_eq!(comment(Some("a3f4")), "ember:a3f4");
-    }
-
-    /// Locked: legacy mode must return an empty string so the rule
-    /// shape stays byte-for-byte identical to what older binaries
-    /// emitted (no `-m comment` match), or `iptables -D` silently
-    /// no-ops on upgraded hosts.
-    #[test]
-    fn comment_for_legacy_install_is_empty() {
-        assert_eq!(comment(None), "");
-    }
-
-    #[test]
-    fn with_comment_skips_match_when_empty() {
-        // Legacy mode (empty comment) must produce byte-for-byte the
-        // same rule the old binary added, otherwise `iptables -D`
-        // won't match existing rules on upgraded hosts.
-        let args = with_comment(&["-A", "FORWARD", "-i", "tap0"], "", &["-j", "ACCEPT"]);
-        assert_eq!(args, vec!["-A", "FORWARD", "-i", "tap0", "-j", "ACCEPT"]);
-    }
-
-    #[test]
-    fn with_comment_inserts_comment_match_when_non_empty() {
-        let args = with_comment(
-            &["-A", "FORWARD", "-i", "tap0"],
-            "ember:a3f4",
-            &["-j", "ACCEPT"],
-        );
-        assert_eq!(
-            args,
-            vec![
-                "-A",
-                "FORWARD",
-                "-i",
-                "tap0",
-                "-m",
-                "comment",
-                "--comment",
-                "ember:a3f4",
-                "-j",
-                "ACCEPT"
-            ]
-        );
-    }
-}
-
 /// Enable IPv4 forwarding via sysctl.
 ///
 /// This is required once before any VM can route traffic through the host.
@@ -275,5 +223,57 @@ fn iptables_delete(args: &[&str]) -> Result<()> {
             "iptables failed: {}",
             stderr.trim()
         )));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comment_for_new_install_tags_namespace() {
+        assert_eq!(comment(Some("a3f4")), "ember:a3f4");
+    }
+
+    /// Locked: legacy mode must return an empty string so the rule
+    /// shape stays byte-for-byte identical to what older binaries
+    /// emitted (no `-m comment` match), or `iptables -D` silently
+    /// no-ops on upgraded hosts.
+    #[test]
+    fn comment_for_legacy_install_is_empty() {
+        assert_eq!(comment(None), "");
+    }
+
+    #[test]
+    fn with_comment_skips_match_when_empty() {
+        // Legacy mode (empty comment) must produce byte-for-byte the
+        // same rule the old binary added, otherwise `iptables -D`
+        // won't match existing rules on upgraded hosts.
+        let args = with_comment(&["-A", "FORWARD", "-i", "tap0"], "", &["-j", "ACCEPT"]);
+        assert_eq!(args, vec!["-A", "FORWARD", "-i", "tap0", "-j", "ACCEPT"]);
+    }
+
+    #[test]
+    fn with_comment_inserts_comment_match_when_non_empty() {
+        let args = with_comment(
+            &["-A", "FORWARD", "-i", "tap0"],
+            "ember:a3f4",
+            &["-j", "ACCEPT"],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "-A",
+                "FORWARD",
+                "-i",
+                "tap0",
+                "-m",
+                "comment",
+                "--comment",
+                "ember:a3f4",
+                "-j",
+                "ACCEPT"
+            ]
+        );
     }
 }
