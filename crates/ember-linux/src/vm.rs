@@ -63,10 +63,8 @@ impl VmBackend for LinuxVm {
             })?;
         }
 
-        // Spawn Firecracker process inside a systemd scope. The cgroup
-        // limits sized from `vm.cpus` / `vm.memory_mib` make sure a
-        // runaway guest can't drag the host down with it.
-        let child = firecracker::process::spawn(socket_path, &log_path, vm.cpus, vm.memory_mib)
+        // Spawn Firecracker process.
+        let child = firecracker::process::spawn(socket_path, &log_path)
             .map_err(|e| Error::Firecracker(e.to_string()))?;
         let pid = child.id();
 
