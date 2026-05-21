@@ -717,6 +717,46 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Maximum fraction of host RAM the sum of all running VMs is allowed
+/// to reserve. The kernel OOM-kills at 100%; we leave ~20% for the host
+/// itself (kernel, page cache, the user's shells/editor/browser) plus
+/// VM-side overhead that isn't billed against `memory_mib` (firecracker
+/// RSS, KVM/EPT slab, virtio buffers).
+const MAX_HOST_RAM_FRACTION: f64 = 0.80;
+
+/// Refuse a `vm start` that would push committed guest RAM past
+/// [`MAX_HOST_RAM_FRACTION`] of host RAM. This is the only thing
+/// standing between the user and "I forgot how big my VMs already are";
+/// firecracker itself has no notion of host capacity.
+fn check_admission(store: &StateStore, vm_name: &str, requested_mib: u32) -> anyhow::Result<()> {
+    let host_mib = match CurrentPlatform::host_ram_mib() {
+        Ok(m) => m,
+        Err(e) => {
+            // Don't block on inability to read host RAM — fall back to
+            // pre-admission behavior (let the kernel be the backstop).
+            eprintln!("warning: skipping admission check: {e}");
+            return Ok(());
+        }
+    };
+    let committed_mib: u32 = vm::list(store)?
+        .iter()
+        .filter(|v| matches!(v.status, VmStatus::Running | VmStatus::Paused))
+        .map(|v| v.memory_mib)
+        .sum();
+    let new_total = committed_mib + requested_mib;
+    let cap = (host_mib as f64 * MAX_HOST_RAM_FRACTION) as u32;
+    if new_total > cap {
+        anyhow::bail!(
+            "starting '{vm_name}' ({requested_mib} MiB) would commit {new_total} MiB of guest RAM, \
+             exceeding the {pct}% cap of {cap} MiB on a host with {host_mib} MiB total \
+             ({committed_mib} MiB already committed by running VMs). \
+             Stop another VM first, or override per-VM memory with 'ember vm update-config'.",
+            pct = (MAX_HOST_RAM_FRACTION * 100.0) as u32,
+        );
+    }
+    Ok(())
+}
+
 /// Start a VM: set up networking, spawn the hypervisor, boot.
 ///
 /// Linux: allocate IP → create TAP device → set iptables → spawn Firecracker
@@ -745,6 +785,8 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
             .into())
         }
     }
+
+    check_admission(&store, &metadata.name, metadata.memory_mib)?;
 
     let mut rollback = Rollback::new();
 

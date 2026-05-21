@@ -108,4 +108,23 @@ impl Platform for MacosPlatform {
     fn estimate_ext4_size_mib(rootfs_dir: &Path) -> Result<u64> {
         crate::image::estimate_size_mib(rootfs_dir)
     }
+
+    fn host_ram_mib() -> anyhow::Result<u32> {
+        let out = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .map_err(|e| anyhow::anyhow!("running sysctl hw.memsize: {e}"))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "sysctl hw.memsize failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let bytes: u64 = std::str::from_utf8(&out.stdout)
+            .map_err(|e| anyhow::anyhow!("sysctl output not utf-8: {e}"))?
+            .trim()
+            .parse()
+            .map_err(|e| anyhow::anyhow!("parsing sysctl output: {e}"))?;
+        Ok((bytes / 1024 / 1024) as u32)
+    }
 }

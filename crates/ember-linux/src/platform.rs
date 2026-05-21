@@ -163,4 +163,20 @@ impl Platform for LinuxPlatform {
     fn estimate_ext4_size_mib(rootfs_dir: &Path) -> Result<u64> {
         crate::image::estimate_size_mib(rootfs_dir)
     }
+
+    fn host_ram_mib() -> anyhow::Result<u32> {
+        let meminfo = std::fs::read_to_string("/proc/meminfo")
+            .map_err(|e| anyhow::anyhow!("reading /proc/meminfo: {e}"))?;
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                let kib: u64 = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| anyhow::anyhow!("malformed MemTotal line: {line}"))?;
+                return Ok((kib / 1024) as u32);
+            }
+        }
+        anyhow::bail!("MemTotal not found in /proc/meminfo")
+    }
 }

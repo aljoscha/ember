@@ -444,4 +444,12 @@ pub trait Platform {
 
     /// Estimate the ext4 image size needed to hold a rootfs directory.
     fn estimate_ext4_size_mib(rootfs_dir: &Path) -> Result<u64>;
+
+    /// Total host RAM in MiB.
+    ///
+    /// Used by `ember vm start` admission control. Linux reads
+    /// `/proc/meminfo`; macOS shells out to `sysctl hw.memsize`.
+    /// Returns an error if the OS-specific source can't be read or parsed;
+    /// callers are expected to soft-fail rather than block on this.
+    fn host_ram_mib() -> anyhow::Result<u32>;
 }
