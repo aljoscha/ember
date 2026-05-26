@@ -100,6 +100,9 @@ pub enum VmCommand {
 
     /// Fork an existing VM into a new independent VM
     Fork(ForkArgs),
+
+    /// Rename a stopped VM
+    Rename(RenameArgs),
 }
 
 #[derive(Args)]
@@ -259,6 +262,15 @@ pub struct ForkArgs {
 }
 
 #[derive(Args)]
+pub struct RenameArgs {
+    /// Current VM name
+    pub name: String,
+
+    /// New VM name
+    pub new_name: String,
+}
+
+#[derive(Args)]
 pub struct InspectArgs {
     /// VM name
     pub name: String,
@@ -287,6 +299,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
         VmCommand::Fork(args) => fork(args, state_dir),
+        VmCommand::Rename(args) => rename(args, state_dir),
     }
 }
 
@@ -714,6 +727,76 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+/// Rename a stopped VM.
+///
+/// Renames the storage volume, moves the per-VM state directory, and
+/// updates `vm.json`. Any forked children's `parent_vm` field is
+/// rewritten to the new name so the fork-dependency graph stays
+/// consistent.
+fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.name == args.new_name {
+        anyhow::bail!("new name is the same as the current name");
+    }
+    if args.new_name.is_empty() {
+        anyhow::bail!("new name must not be empty");
+    }
+
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Source must exist and be stopped (renaming touches paths the
+    // hypervisor has open while running).
+    let mut metadata = vm::require_stopped(&store, &args.name, "renaming")?;
+
+    // Target must not exist.
+    if vm::exists(&store, &args.new_name) {
+        anyhow::bail!("vm '{}' already exists", args.new_name);
+    }
+
+    // Rename the storage volume first — if this fails, nothing else
+    // has moved yet.
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = create_storage(&config);
+    let new_handle = storage.rename_vm_storage(&metadata, &args.new_name)?;
+
+    // Move the per-VM state directory. If this fails, roll the
+    // storage rename back so the filesystem and the kernel agree.
+    let old_dir = store.vm_dir(&args.name);
+    let new_dir = store.vm_dir(&args.new_name);
+    if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+        let revert = VmMetadata {
+            name: args.new_name.clone(),
+            disk_path: new_handle.disk_path.to_string_lossy().into_owned(),
+            thin_id: new_handle.thin_id,
+            ..VmMetadata::default_for_teardown()
+        };
+        let _ = storage.rename_vm_storage(&revert, &args.name);
+        return Err(anyhow::anyhow!(
+            "failed to move state dir {} → {}: {e}",
+            old_dir.display(),
+            new_dir.display()
+        ));
+    }
+
+    // Update metadata to point at the new name/paths and persist.
+    metadata.name = args.new_name.clone();
+    metadata.disk_path = new_handle.disk_path.to_string_lossy().into_owned();
+    metadata.thin_id = new_handle.thin_id;
+    metadata.api_socket = store.vm_dir(&args.new_name).join("firecracker.sock");
+    vm::save(&store, &metadata)?;
+
+    // Rewrite `parent_vm` on any forked children so the dependency
+    // graph keeps resolving to a real VM.
+    for mut child in vm::list(&store)? {
+        if child.parent_vm.as_deref() == Some(&args.name) {
+            child.parent_vm = Some(args.new_name.clone());
+            vm::save(&store, &child)?;
+        }
+    }
+
+    println!("VM '{}' renamed to '{}'.", args.name, args.new_name);
     Ok(())
 }
 

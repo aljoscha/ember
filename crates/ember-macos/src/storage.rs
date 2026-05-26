@@ -300,6 +300,48 @@ impl StorageBackend for MacosStorage {
         Ok(VolumeHandle::from_path(target_rootfs))
     }
 
+    /// Rename a VM's directory under `vms/`. The `rootfs.img` inside
+    /// rides along; APFS clones are independent of the source path so
+    /// other VMs forked from this one are unaffected.
+    fn rename_vm_storage(&self, vm: &VmMetadata, new_name: &str) -> Result<VolumeHandle> {
+        let old_dir = self.vm_dir(&vm.name);
+        let new_dir = self.vm_dir(new_name);
+        if !old_dir.exists() {
+            return Err(Error::Vm(format!(
+                "VM storage not found: {}",
+                old_dir.display()
+            )));
+        }
+        fs::rename(&old_dir, &new_dir).map_err(|e| Error::Io {
+            path: new_dir.clone(),
+            source: e,
+        })?;
+        Ok(VolumeHandle::from_path(self.vm_rootfs(new_name)))
+    }
+
+    /// Rename a base image's `.img` file under `images/data/`. APFS
+    /// clones are independent of the source path, so existing VM
+    /// rootfs images continue to work unchanged.
+    fn rename_image_storage(
+        &self,
+        image: &ImageEntry,
+        new_local_name: &str,
+    ) -> Result<VolumeHandle> {
+        let old_img = self.image_path(&image.local_name);
+        let new_img = self.image_path(new_local_name);
+        if !old_img.exists() {
+            return Err(Error::Image(format!(
+                "image storage not found: {}",
+                old_img.display()
+            )));
+        }
+        fs::rename(&old_img, &new_img).map_err(|e| Error::Io {
+            path: new_img.clone(),
+            source: e,
+        })?;
+        Ok(VolumeHandle::from_path(new_img))
+    }
+
     /// No-op on macOS — APFS clones are independent, nothing to clean up.
     fn cleanup_fork(&self, _parent: &VmMetadata, _forked: &VmMetadata) -> Result<()> {
         Ok(())

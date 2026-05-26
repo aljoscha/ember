@@ -28,6 +28,9 @@ pub enum ImageCommand {
 
     /// Show detailed image information
     Inspect(InspectArgs),
+
+    /// Rename a local image
+    Rename(RenameArgs),
 }
 
 #[derive(Args)]
@@ -73,6 +76,15 @@ pub struct InspectArgs {
     pub format: OutputFormat,
 }
 
+#[derive(Args)]
+pub struct RenameArgs {
+    /// Current image name (reference or local name)
+    pub name: String,
+
+    /// New local name
+    pub new_name: String,
+}
+
 pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
     match cmd {
         ImageCommand::Pull(args) => pull(args, state_dir),
@@ -80,6 +92,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
         ImageCommand::List(args) => list(args, state_dir),
         ImageCommand::Delete(args) => delete(args, state_dir),
         ImageCommand::Inspect(args) => inspect(args, state_dir),
+        ImageCommand::Rename(args) => rename(args, state_dir),
     }
 }
 
@@ -314,6 +327,81 @@ fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
     image::registry::remove_image(&store, &local_name)?;
 
     println!("Image '{}' deleted.", entry.reference);
+    Ok(())
+}
+
+/// Rename a local image.
+///
+/// Renames the underlying storage and rewrites the registry entry's
+/// `local_name` and `disk_path`. For locally built images (`reference`
+/// starts with `local:`) the reference is rewritten too, and any VMs
+/// recorded with the old `local:` reference are updated so
+/// `image delete` continues to see them as dependents.
+fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
+    if args.new_name.is_empty() {
+        anyhow::bail!("new name must not be empty");
+    }
+
+    let store = StateStore::new(state_dir.to_path_buf());
+
+    // Normalise the new local name through the build sanitiser so it's
+    // valid for ZFS datasets / dm device names / APFS files.
+    let new_local_name = image::build::sanitize_name(&args.new_name)?;
+
+    let mut registry = ImageRegistry::load(&store)?;
+    let old_local_name = resolve_local_name(&registry, &args.name)?;
+
+    if old_local_name == new_local_name {
+        anyhow::bail!("new name is the same as the current name");
+    }
+    if registry.exists(&new_local_name) {
+        anyhow::bail!("image '{new_local_name}' already exists locally");
+    }
+
+    let mut entry = registry
+        .get(&old_local_name)
+        .ok_or_else(|| anyhow::anyhow!("image '{old_local_name}' not found locally"))?
+        .clone();
+
+    let old_reference = entry.reference.clone();
+
+    // Rename the underlying storage first; rolling back the registry
+    // is cheap, rolling back the disk after a partial registry write
+    // is not.
+    let config: GlobalConfig = store.read(&store.config_path())?;
+    let storage = create_storage(&config);
+    let new_handle = storage.rename_image_storage(&entry, &new_local_name)?;
+
+    // Update the registry entry. For built images, the user-facing
+    // reference is `local:<name>` — rewrite it so list/inspect show
+    // the new identity.
+    entry.local_name = new_local_name.clone();
+    entry.disk_path = new_handle.disk_path.to_string_lossy().into_owned();
+    entry.thin_id = new_handle.thin_id;
+    let new_reference = if old_reference.starts_with("local:") {
+        format!("local:{}", args.new_name)
+    } else {
+        old_reference.clone()
+    };
+    entry.reference = new_reference.clone();
+
+    registry.remove(&old_local_name);
+    registry.add(entry);
+    registry.save(&store)?;
+
+    // If the user-facing reference changed (built-image case), bring
+    // dependent VM records along so `image delete` and similar
+    // reference-matched lookups keep working.
+    if new_reference != old_reference {
+        for mut v in vm::list(&store)? {
+            if v.image == old_reference {
+                v.image = new_reference.clone();
+                vm::save(&store, &v)?;
+            }
+        }
+    }
+
+    println!("Image '{old_local_name}' renamed to '{new_local_name}'.");
     Ok(())
 }
 

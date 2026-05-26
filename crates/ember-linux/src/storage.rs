@@ -224,6 +224,30 @@ impl StorageBackend for LinuxStorage {
         Ok(VolumeHandle::from_path(target_zvol))
     }
 
+    /// Rename a VM's zvol via `zfs rename`. Any `@fork-*` snapshots
+    /// (and clones taken from them) ride along — ZFS reparents
+    /// clone-origin references during rename.
+    fn rename_vm_storage(&self, vm: &VmMetadata, new_name: &str) -> Result<VolumeHandle> {
+        let old_zvol = self.vm_zvol(&vm.name);
+        let new_zvol = self.vm_zvol(new_name);
+        zfs::volume::rename(&old_zvol, &new_zvol)?;
+        Ok(VolumeHandle::from_path(new_zvol))
+    }
+
+    /// Rename an image zvol (including its `@base` snapshot) via
+    /// `zfs rename`. VM zvols cloned from `@base` are reparented
+    /// automatically.
+    fn rename_image_storage(
+        &self,
+        image: &ImageEntry,
+        new_local_name: &str,
+    ) -> Result<VolumeHandle> {
+        let old_zvol = self.image_zvol(&image.local_name);
+        let new_zvol = self.image_zvol(new_local_name);
+        zfs::volume::rename(&old_zvol, &new_zvol)?;
+        Ok(VolumeHandle::from_path(new_zvol))
+    }
+
     /// Clean up the fork snapshot on the parent VM.
     ///
     /// Reconstructs the snapshot name from the naming convention:

@@ -226,6 +226,25 @@ pub trait StorageBackend {
     /// Clone a VM's disk storage to create a new VM (used by `vm fork`).
     fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle>;
 
+    /// Rename a VM's disk storage from `vm.name` to `new_name`.
+    ///
+    /// Caller is responsible for ensuring the VM is stopped. Returns
+    /// the new [`VolumeHandle`] with the updated `disk_path`; the
+    /// `thin_id` (if any) is preserved. Any storage-level child
+    /// references (e.g. fork snapshots / clones) keep working.
+    fn rename_vm_storage(&self, vm: &VmMetadata, new_name: &str) -> Result<VolumeHandle>;
+
+    /// Rename a base image's storage from `image.local_name` to
+    /// `new_local_name`.
+    ///
+    /// Returns the new [`VolumeHandle`]; the `thin_id` (if any) is
+    /// preserved. Dependent VM clones keep working.
+    fn rename_image_storage(
+        &self,
+        image: &ImageEntry,
+        new_local_name: &str,
+    ) -> Result<VolumeHandle>;
+
     /// Clean up fork-related resources on the source VM.
     ///
     /// Used by ZFS to drop the per-fork snapshot it created on the

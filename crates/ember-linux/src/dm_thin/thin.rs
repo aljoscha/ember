@@ -114,6 +114,23 @@ pub fn activate(name: &str, pool_name: &str, thin_id: u64, size_sectors: u64) ->
     Ok(device_path(name))
 }
 
+/// Rename an active thin volume's `/dev/mapper` device.
+///
+/// Atomic from the kernel's perspective — running I/O against the
+/// device keeps working through the rename. The underlying thin id
+/// is unchanged.
+pub fn rename(old_name: &str, new_name: &str) -> Result<()> {
+    let output = Command::new("dmsetup")
+        .args(["rename", old_name, new_name])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "dmsetup rename".to_string(),
+            source: e,
+        })?;
+    Error::check_command("dmsetup rename", output)?;
+    Ok(())
+}
+
 /// Tear down a thin volume's `/dev/mapper` device. The underlying thin
 /// id and its blocks remain in the pool until [`delete`] is called.
 pub fn deactivate(name: &str) -> Result<()> {

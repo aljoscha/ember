@@ -530,6 +530,52 @@ impl StorageBackend for DmThinStorage {
         }
     }
 
+    /// Rename a VM's `/dev/mapper/<vm_prefix><name>` device.
+    ///
+    /// Uses `dmsetup rename` when the device is currently active;
+    /// otherwise it's a no-op since the new dm name is constructed
+    /// from the new VM name at lazy-activation time. The thin id —
+    /// which is what fork snapshots/clones actually reference —
+    /// stays the same.
+    fn rename_vm_storage(&self, vm: &VmMetadata, new_name: &str) -> Result<VolumeHandle> {
+        // Ensure the pool is up so `dmsetup` can see/rename the
+        // device; otherwise rename would silently 'succeed' against
+        // a missing device tree.
+        self.ensure_pool_active()?;
+        let old_dm = thin::vm_dm_name(&self.vm_prefix, &vm.name);
+        let new_dm = thin::vm_dm_name(&self.vm_prefix, new_name);
+        if dm_device_exists(&old_dm)? {
+            thin::rename(&old_dm, &new_dm)?;
+        }
+        Ok(VolumeHandle {
+            disk_path: thin::device_path(&new_dm),
+            thin_id: vm.thin_id,
+        })
+    }
+
+    /// Rename an image's `/dev/mapper/<image_prefix><name>` device.
+    ///
+    /// Image base devices are usually inactive (lazy activation), so
+    /// this most often just produces the new path. When active, the
+    /// rename is atomic via `dmsetup rename`. Clones of the image
+    /// share blocks by thin id and are unaffected by the name change.
+    fn rename_image_storage(
+        &self,
+        image: &ImageEntry,
+        new_local_name: &str,
+    ) -> Result<VolumeHandle> {
+        self.ensure_pool_active()?;
+        let old_dm = thin::image_dm_name(&self.image_prefix, &image.local_name);
+        let new_dm = thin::image_dm_name(&self.image_prefix, new_local_name);
+        if dm_device_exists(&old_dm)? {
+            thin::rename(&old_dm, &new_dm)?;
+        }
+        Ok(VolumeHandle {
+            disk_path: thin::device_path(&new_dm),
+            thin_id: image.thin_id,
+        })
+    }
+
     fn cleanup_fork(&self, _parent: &VmMetadata, _forked: &VmMetadata) -> Result<()> {
         // dm-thin forks are independent — the snapshot id used to
         // create the fork is the fork's own thin id, not a marker on

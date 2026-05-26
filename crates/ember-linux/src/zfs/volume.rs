@@ -88,6 +88,23 @@ pub fn set_volsize(zvol: &str, size_gib: u32) -> Result<()> {
     Ok(())
 }
 
+/// Rename a ZFS zvol (or dataset).
+///
+/// Snapshots come along under the new path, and ZFS reparents any
+/// clone-origin references so existing clones keep resolving.
+pub fn rename(old: &str, new: &str) -> Result<()> {
+    let output = Command::new("zfs")
+        .args(["rename", old, new])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "zfs rename".to_string(),
+            source: e,
+        })?;
+
+    Error::check_command("zfs rename", output)?;
+    Ok(())
+}
+
 /// Return the `/dev/zvol/...` block device path for a zvol.
 ///
 /// The kernel creates this device node automatically when the zvol exists.
