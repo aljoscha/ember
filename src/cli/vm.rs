@@ -90,7 +90,8 @@ pub enum VmCommand {
     UpdateConfig(UpdateConfigArgs),
 
     /// Delete a VM and its resources
-    Delete(DeleteArgs),
+    #[command(visible_alias = "delete")]
+    Rm(RmArgs),
 
     /// List all VMs
     List(ListArgs),
@@ -213,7 +214,7 @@ pub struct UpdateConfigArgs {
 }
 
 #[derive(Args)]
-pub struct DeleteArgs {
+pub struct RmArgs {
     /// VM name
     pub name: String,
 
@@ -296,7 +297,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Resume(args) => resume(args, state_dir),
         VmCommand::Resize(args) => resize(args, state_dir),
         VmCommand::UpdateConfig(args) => update_config(args, state_dir),
-        VmCommand::Delete(args) => delete(args, state_dir),
+        VmCommand::Rm(args) => rm(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
         VmCommand::Cp(args) => cp(args, state_dir),
@@ -1183,7 +1184,7 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
 /// directory.
 ///
 /// Each cleanup step is idempotent — continues if the resource is already gone.
-fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+fn rm(args: &RmArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Load VM metadata (must exist).

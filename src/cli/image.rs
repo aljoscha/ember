@@ -24,7 +24,8 @@ pub enum ImageCommand {
     List(ListArgs),
 
     /// Delete a local image
-    Delete(DeleteArgs),
+    #[command(visible_alias = "delete")]
+    Rm(RmArgs),
 
     /// Show detailed image information
     Inspect(InspectArgs),
@@ -57,7 +58,7 @@ pub struct ListArgs {
 }
 
 #[derive(Args)]
-pub struct DeleteArgs {
+pub struct RmArgs {
     /// Image name
     pub name: String,
 
@@ -90,7 +91,7 @@ pub fn run(cmd: &ImageCommand, state_dir: &Path) -> anyhow::Result<()> {
         ImageCommand::Pull(args) => pull(args, state_dir),
         ImageCommand::Build(args) => build(args, state_dir),
         ImageCommand::List(args) => list(args, state_dir),
-        ImageCommand::Delete(args) => delete(args, state_dir),
+        ImageCommand::Rm(args) => rm(args, state_dir),
         ImageCommand::Inspect(args) => inspect(args, state_dir),
         ImageCommand::Rename(args) => rename(args, state_dir),
     }
@@ -275,7 +276,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// image's `@base` snapshot. Without `--force`, the command lists the
 /// dependent VMs and exits. With `--force`, it deletes those VMs first,
 /// then destroys the image.
-fn delete(args: &DeleteArgs, state_dir: &Path) -> anyhow::Result<()> {
+fn rm(args: &RmArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
 
     // Look up the image entry (don't remove from registry yet — the storage
