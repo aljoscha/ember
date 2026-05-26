@@ -181,3 +181,85 @@ fn pull_same_image_twice_is_idempotent() {
         "expected 'already exists' on re-pull: {stdout2}"
     );
 }
+
+/// Basic image rename: rename a pulled image, verify registry + storage moved.
+#[test]
+#[ignore]
+fn image_rename_basic() {
+    let env = common::TestEnv::with_image("imgrename");
+    let state = env.state();
+
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "image",
+        "rename",
+        "alpine:latest",
+        "my-alpine",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "image rename failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The new local_name appears in `image list`; the old one doesn't.
+    let output = common::ember(&["--state-dir", state, "image", "list", "--format", "json"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {stdout}"));
+    let images = parsed["images"]
+        .as_array()
+        .expect("expected 'images' array");
+    assert_eq!(images.len(), 1, "expected one image after rename");
+    assert_eq!(images[0]["local_name"], "my-alpine");
+    // Pulled images keep their OCI reference unchanged.
+    assert_eq!(images[0]["reference"], "docker.io/library/alpine:latest");
+
+    // Platform-specific storage verification.
+    #[cfg(target_os = "linux")]
+    {
+        let old_zvol = format!("{}/ember/images/library-alpine-latest", env.pool);
+        let new_zvol = format!("{}/ember/images/my-alpine", env.pool);
+        common::linux::assert_dataset_absent(&old_zvol);
+        common::linux::assert_dataset_exists(&new_zvol);
+        // The @base snapshot rides along with the rename.
+        common::linux::assert_snapshot_exists(&format!("{new_zvol}@base"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let old_img = env.state_dir.join("images/data/library-alpine-latest.img");
+        let new_img = env.state_dir.join("images/data/my-alpine.img");
+        assert!(!old_img.exists(), "old image file should be gone");
+        assert!(new_img.exists(), "new image file should exist");
+    }
+}
+
+/// Renaming to an existing image local name should fail.
+#[test]
+#[ignore]
+fn image_rename_to_existing_name_fails() {
+    let env = common::TestEnv::with_image("imgrenamedup");
+    let state = env.state();
+
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "image",
+        "rename",
+        "alpine:latest",
+        "library-alpine-latest",
+    ]);
+    assert!(
+        !output.status.success(),
+        "expected rename to existing local name to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already exists") || stderr.contains("same as"),
+        "expected 'already exists' or 'same as' error, got: {stderr}"
+    );
+}

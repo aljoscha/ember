@@ -269,6 +269,175 @@ fn vm_resume_created_fails() {
     );
 }
 
+/// Basic VM rename: rename a stopped VM, verify metadata + storage moved.
+#[test]
+#[ignore]
+fn vm_rename_basic() {
+    let env = common::TestEnv::with_vm("vmrename", "old");
+    let state = env.state();
+
+    let output = common::ember(&["--state-dir", state, "vm", "rename", "old", "new"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "vm rename failed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // Old name should no longer resolve.
+    let output = common::ember(&["--state-dir", state, "vm", "inspect", "old"]);
+    assert!(
+        !output.status.success(),
+        "expected 'old' VM to be gone after rename"
+    );
+
+    // New name should resolve, with metadata pointing at the new disk path.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "new",
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "vm inspect 'new' failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let meta: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {stdout}"));
+    assert_eq!(meta["name"], "new");
+    let disk_path = meta["disk_path"]
+        .as_str()
+        .expect("disk_path should be a string");
+    assert!(
+        disk_path.contains("new") && !disk_path.contains("/old"),
+        "disk_path should reference the new name, got: {disk_path}"
+    );
+
+    // Platform-specific storage verification.
+    #[cfg(target_os = "linux")]
+    {
+        let old_zvol = format!("{}/ember/vms/old", env.pool);
+        let new_zvol = format!("{}/ember/vms/new", env.pool);
+        common::linux::assert_zvol_absent(&old_zvol);
+        common::linux::assert_zvol_exists(&new_zvol);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        assert!(
+            !env.state_dir.join("vms/old").exists(),
+            "old VM directory should be gone"
+        );
+        assert!(
+            env.state_dir.join("vms/new/rootfs.img").exists(),
+            "new VM rootfs should exist"
+        );
+    }
+}
+
+/// Renaming to an existing VM name should fail.
+#[test]
+#[ignore]
+fn vm_rename_to_existing_name_fails() {
+    let env = common::TestEnv::with_vm("vmrenamedup", "src");
+    let state = env.state();
+
+    // Create a second VM that will collide on the target name.
+    let kernel_tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(kernel_tmp.path(), b"not a real kernel").unwrap();
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "create",
+        "taken",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel_tmp.path().to_str().unwrap(),
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "second vm create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = common::ember(&["--state-dir", state, "vm", "rename", "src", "taken"]);
+    assert!(
+        !output.status.success(),
+        "expected rename to existing name to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already exists"),
+        "expected 'already exists' error, got: {stderr}"
+    );
+}
+
+/// Renaming a VM with forked children rewrites their `parent_vm` field.
+#[test]
+#[ignore]
+fn vm_rename_updates_child_parent_vm() {
+    let env = common::TestEnv::with_vm("vmrenamechild", "parent");
+    let state = env.state();
+
+    // Fork (now spelled `cp`, but `fork` is a visible alias) the child off.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "cp",
+        "parent",
+        "child",
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm cp failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Rename the parent.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "rename",
+        "parent",
+        "renamed-parent",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm rename failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Child's `parent_vm` should now point at the new name.
+    let output = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "child",
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success());
+    let meta: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\noutput: {stdout}"));
+    assert_eq!(
+        meta["parent_vm"], "renamed-parent",
+        "child's parent_vm should track the renamed parent"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Cross-platform tests (require running VM / hypervisor)
 // ---------------------------------------------------------------------------
