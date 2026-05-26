@@ -98,8 +98,9 @@ pub enum VmCommand {
     /// Show detailed VM information
     Inspect(InspectArgs),
 
-    /// Fork an existing VM into a new independent VM
-    Fork(ForkArgs),
+    /// Copy a VM into a new independent VM
+    #[command(visible_alias = "fork")]
+    Cp(CpArgs),
 
     /// Rename a stopped VM
     Rename(RenameArgs),
@@ -229,8 +230,8 @@ pub struct ListArgs {
 }
 
 #[derive(Args)]
-pub struct ForkArgs {
-    /// Source VM to fork from
+pub struct CpArgs {
+    /// Source VM to copy from
     pub source: String,
 
     /// New VM name
@@ -256,7 +257,7 @@ pub struct ForkArgs {
     #[arg(long)]
     pub network: Option<String>,
 
-    /// Don't start the VM after forking
+    /// Don't start the VM after copying
     #[arg(long)]
     pub no_start: bool,
 }
@@ -298,7 +299,7 @@ pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
         VmCommand::Delete(args) => delete(args, state_dir),
         VmCommand::List(args) => list(args, state_dir),
         VmCommand::Inspect(args) => inspect(args, state_dir),
-        VmCommand::Fork(args) => fork(args, state_dir),
+        VmCommand::Cp(args) => cp(args, state_dir),
         VmCommand::Rename(args) => rename(args, state_dir),
     }
 }
@@ -599,20 +600,20 @@ fn create_post_clone(
     Ok(())
 }
 
-/// Fork an existing VM into a new independent VM.
+/// Copy an existing VM into a new independent VM.
 ///
 /// Workflow: validate source is stopped → COW clone source disk into
 /// new VM → optionally grow disk → resolve kernel → save metadata → optionally start.
 ///
-/// No SSH key injection — the forked disk already has keys from the source VM.
-fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
+/// No SSH key injection — the cloned disk already has keys from the source VM.
+fn cp(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
     use ember_core::cleanup::Rollback;
 
     let store = StateStore::new(state_dir.to_path_buf());
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
 
     // Source must exist and be stopped.
-    let source = vm::require_stopped(&store, &args.source, "forking")?;
+    let source = vm::require_stopped(&store, &args.source, "copying")?;
 
     // Target must not exist.
     if vm::exists(&store, &args.name) {
@@ -651,7 +652,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
     let storage = create_storage(&global_config);
 
     // Clone source VM's storage into the new VM via the storage backend.
-    println!("Forking '{}' → '{}'...", args.source, args.name);
+    println!("Copying '{}' → '{}'...", args.source, args.name);
     let handle = storage.clone_vm_storage(&source, &args.name)?;
     let pending = pending_metadata(&args.name, &handle, disk_size_gib);
 
@@ -661,7 +662,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
         let parent = source.clone();
         let pending = pending.clone();
         let sd = state_dir.to_path_buf();
-        rollback.push("fork clone + snapshot", move || {
+        rollback.push("vm copy clone + snapshot", move || {
             let _ = storage.destroy_vm_storage(&pending);
             let _ = storage.cleanup_fork(&parent, &pending);
             let _ = vm::delete(&StateStore::new(sd), &pending.name);
@@ -716,7 +717,7 @@ fn fork(args: &ForkArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     rollback.commit();
 
-    println!("VM '{}' forked from '{}'.", args.name, args.source);
+    println!("VM '{}' copied from '{}'.", args.name, args.source);
 
     if !args.no_start {
         start(
