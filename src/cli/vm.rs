@@ -228,6 +228,11 @@ pub struct ListArgs {
     /// Output format
     #[arg(long, default_value = "table")]
     pub format: OutputFormat,
+
+    /// Only show VMs in the given state (repeat to include several).
+    /// Omit to show all VMs.
+    #[arg(long)]
+    pub status: Vec<StatusFilter>,
 }
 
 #[derive(Args)]
@@ -286,6 +291,30 @@ pub struct InspectArgs {
 pub enum OutputFormat {
     Table,
     Json,
+}
+
+/// CLI mirror of [`VmStatus`] used for `vm list --status` filtering.
+///
+/// Kept separate from the core type so `clap` stays out of `ember-core`,
+/// mirroring how [`OutputFormat`] lives in the CLI layer.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum StatusFilter {
+    Created,
+    Running,
+    Stopped,
+    Paused,
+}
+
+impl StatusFilter {
+    fn matches(self, status: VmStatus) -> bool {
+        matches!(
+            (self, status),
+            (StatusFilter::Created, VmStatus::Created)
+                | (StatusFilter::Running, VmStatus::Running)
+                | (StatusFilter::Stopped, VmStatus::Stopped)
+                | (StatusFilter::Paused, VmStatus::Paused)
+        )
+    }
 }
 
 pub fn run(cmd: &VmCommand, state_dir: &Path) -> anyhow::Result<()> {
@@ -1296,7 +1325,12 @@ pub fn force_delete_vm(store: &StateStore, metadata: &VmMetadata) -> anyhow::Res
 /// List all VMs with summary information.
 fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let vms = vm::list(&store)?;
+    let mut vms = vm::list(&store)?;
+
+    // Empty `--status` means "all"; otherwise keep VMs matching any given state.
+    if !args.status.is_empty() {
+        vms.retain(|vm| args.status.iter().any(|f| f.matches(vm.status)));
+    }
 
     match args.format {
         OutputFormat::Json => {
@@ -1304,7 +1338,13 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
         }
         OutputFormat::Table => {
             if vms.is_empty() {
-                println!("No VMs found. Create one with: ember vm create <name> --image <image>");
+                if args.status.is_empty() {
+                    println!(
+                        "No VMs found. Create one with: ember vm create <name> --image <image>"
+                    );
+                } else {
+                    println!("No VMs match the requested status.");
+                }
                 return Ok(());
             }
 
