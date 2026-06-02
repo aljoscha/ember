@@ -95,13 +95,14 @@ The `--ready-fd` flag causes `ember-vz` to write the guest's vmnet-assigned MAC 
 
 AVF's `VZLinuxBootLoader` boots a `vmlinux` kernel directly, just like Firecracker. The same kernel presets work, though a separate macOS-compatible preset may be needed (Firecracker's kernel config is very minimal and may lack virtio drivers AVF needs).
 
-Kernel preset for macOS:
+Kernel presets for macOS:
 
 | Preset | Description | Notes |
 |--------|-------------|-------|
 | `stock` | AVF-compatible Linux kernel | Must include virtio-blk, virtio-net, virtio-console drivers |
+| `docker` | Custom kernel built by `ember kernel build` | Adds Docker bridge networking (iptables `raw`, nftables) on top of the AVF fragment |
 
-The stock kernel URL will differ between Linux (Firecracker CI kernel) and macOS (AVF-compatible kernel). The `kernel.rs` module selects the right preset based on `#[cfg(target_os)]`.
+The stock kernel URL differs between Linux (Firecracker CI kernel) and macOS (AVF-compatible kernel); the `kernel.rs` module selects the right preset based on `#[cfg(target_os)]`. The `docker` preset is compiled in a container by `kernel::build`, which targets the **host CPU architecture** (`aarch64` config + raw `Image` on Apple Silicon, `x86_64` config + ELF `vmlinux` on Intel) — AVF only boots a guest kernel matching the host, so this is resolved automatically from `std::env::consts::ARCH`.
 
 ### Serial Console
 
