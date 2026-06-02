@@ -9,6 +9,7 @@ RUN apt-get update -qq && \
         curl \
         flex \
         gcc \
+        gcc-aarch64-linux-gnu \
         git \
         libelf-dev \
         libssl-dev \

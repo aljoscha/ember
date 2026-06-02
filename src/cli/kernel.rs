@@ -43,12 +43,16 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
             .unwrap_or(4)
     });
 
+    // The architecture the build actually targets (also validates that this
+    // host is supported before we prompt or start a long build).
+    let arch = kernel::build::host_config_arch()?;
+
     if !args.yes {
         println!(
             "This will build a Linux kernel with Docker networking and AVF support.\n\
              \n\
              \x20 Kernel source:  Amazon Linux 6.1.163 (shallow clone, ~1 GB download)\n\
-             \x20 Base config:    Firecracker CI x86_64 6.1\n\
+             \x20 Base config:    Firecracker CI {arch} 6.1\n\
              \x20 Extra config:   iptables raw, nftables, dummy interface (Docker)\n\
              \x20                  virtio-pci, virtio-console, ip=dhcp (AVF)\n\
              \x20 Build method:   container ({tool})\n\

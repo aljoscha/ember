@@ -67,7 +67,7 @@ Linux requires **root privileges** — ZFS, TAP devices, iptables, and Firecrack
 
 ```bash
 ember init
-ember kernel build -y
+ember kernel build -y -j 8
 ember image build ubuntu-dev
 ember vm create myvm --image ubuntu-dev
 ember ssh myvm
@@ -244,6 +244,10 @@ Use `-y` to skip the confirmation prompt:
 ember kernel build -y
 ```
 
+> [!NOTE]
+> If encountering memory allocation issues when building the kernel,
+> change the parallelism to 8 or lower via `-j 8`
+
 The built kernel becomes the default for new VMs. Fall back to the stock kernel with:
 
 ```bash
@@ -264,17 +268,19 @@ Alternatively, build directly from the `kernel/` directory:
 
 ```bash
 cd kernel
-make
+make                                       # builds for the host arch
+make ARCH=arm64 FRAGMENTS="docker.fragment avf.fragment"   # cross-build arm64
 ```
 
 **Docker** (reproducible, no host deps beyond Docker):
 
 ```bash
 cd kernel
-make docker-build
+make docker-build                          # x86_64 (the Makefile default)
+make docker-build ARCH=arm64 FRAGMENTS="docker.fragment avf.fragment"   # Apple Silicon / arm64
 ```
 
-Both produce `kernel/vmlinux`. Pass the path when creating a VM:
+The Makefile defaults to `x86_64`, so on an arm64 host pass `ARCH=arm64`. Both produce `kernel/vmlinux` (on arm64 this file is the raw `Image`). Pass the path when creating a VM:
 
 ```bash
 ember vm create myvm --image ubuntu-dev --kernel ./kernel/vmlinux
