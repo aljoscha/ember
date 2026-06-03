@@ -49,6 +49,10 @@ pub enum Error {
     #[error("state: {0}")]
     State(String),
 
+    /// A state file already exists where a fresh create was expected.
+    #[error("{path}: already exists")]
+    AlreadyExists { path: PathBuf },
+
     /// Storage pool error (dm-thin / btrfs / ZFS pool-level state, as
     /// distinct from individual volume / dataset errors).
     #[error("storage pool: {0}")]

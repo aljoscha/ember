@@ -4,6 +4,13 @@
 //! Shared locks (`LOCK_SH`) for concurrent readers, exclusive locks
 //! (`LOCK_EX`) for writers. Writes use temp file + `rename()` for
 //! atomicity — readers never see partial data.
+//!
+//! Mutations go through [`StateStore::update`] / [`StateStore::update_with`]
+//! (read-modify-write) or [`StateStore::create`] (write-once). These hold a
+//! single exclusive lock across the whole transaction, so concurrent
+//! processes cannot lose each other's updates. There is deliberately no
+//! fire-and-forget `write`: an unlocked read-then-write would reopen the
+//! lost-update window these methods exist to close.
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -73,6 +80,26 @@ impl StateStore {
                 source: e,
             })?;
         }
+
+        // Pre-create companion lock files for the shared, append-heavy
+        // state files so concurrent readers take a shared lock from the
+        // first access rather than the lock-free path (see `FileLock::shared`).
+        for data in [
+            self.config_path(),
+            self.image_registry_path(),
+            self.network_allocations_path(),
+        ] {
+            let lock = lock_path_for(&data);
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock)
+                .map_err(|e| Error::Io {
+                    path: lock,
+                    source: e,
+                })?;
+        }
         Ok(())
     }
 
@@ -111,18 +138,59 @@ impl StateStore {
         self.root.join("kernels")
     }
 
+    /// Acquire the exclusive per-VM operation lock for `name`.
+    ///
+    /// Serializes whole lifecycle commands (create / start / stop / delete /
+    /// rename / …) for a single VM: while one process holds it, another that
+    /// targets the same name blocks until the first finishes. This prevents
+    /// interleavings the per-file content locks can't — double-start, start
+    /// racing delete, or two creates of the same name. Different names lock
+    /// independently.
+    ///
+    /// The lock is released when the returned guard is dropped. This is
+    /// distinct from the content locks taken inside [`update`](Self::update) /
+    /// [`create`](Self::create); a command holds the op lock for its whole
+    /// duration and takes content locks briefly within. Do not acquire it
+    /// twice for the same name in one process — `flock` would self-block.
+    ///
+    /// The lock file lives in a dedicated `locks/` directory, not inside the
+    /// per-VM directory, so deleting or renaming a VM never removes a lock
+    /// that another process is blocked on (which would defeat the exclusion).
+    /// Lock files are intentionally never removed.
+    pub fn lock_vm(&self, name: &str) -> Result<VmOpLock> {
+        let path = self.root.join("locks").join(format!("{name}.lock"));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| Error::Io {
+                path: path.clone(),
+                source: e,
+            })?;
+        let flock = Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Io {
+            path,
+            source: errno.into(),
+        })?;
+        Ok(VmOpLock { _flock: flock })
+    }
+
     /// Read and deserialize a JSON file, using a shared (read) lock.
     ///
     /// Returns an error if the file does not exist or cannot be parsed.
     pub fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let _lock = FileLock::shared(path)?;
-
-        let contents = fs::read_to_string(path).map_err(|e| Error::Io {
+        self.read_unlocked(path)?.ok_or_else(|| Error::Io {
             path: path.to_path_buf(),
-            source: e,
-        })?;
-
-        serde_json::from_str(&contents).map_err(Into::into)
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        })
     }
 
     /// Read and deserialize a JSON file, returning `None` if it doesn't exist.
@@ -130,18 +198,101 @@ impl StateStore {
     /// Uses a shared (read) lock. Returns an error only on I/O failures
     /// other than "not found" or on parse errors.
     pub fn read_optional<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        self.read(path).map(Some)
+        let _lock = FileLock::shared(path)?;
+        self.read_unlocked(path)
     }
 
-    /// Serialize and write a JSON file atomically, using an exclusive lock.
+    /// Atomically read-modify-write a JSON file under a single exclusive lock.
     ///
-    /// Writes to a temporary file first, then renames to the target path.
-    /// Parent directories are created if needed.
+    /// The lock is held across the read, the closure, and the write, so two
+    /// concurrent callers serialize and neither loses the other's change.
+    /// Errors if the file does not exist — use [`update_with`](Self::update_with)
+    /// for state that materializes on first write.
+    ///
+    /// The closure must be cheap: it runs while the exclusive lock is held,
+    /// blocking every other reader and writer of this file. Do not perform
+    /// I/O, downloads, or process spawns inside it — do that work first and
+    /// apply only the resulting field changes here.
+    pub fn update<T, R>(&self, path: &Path, f: impl FnOnce(&mut T) -> Result<R>) -> Result<R>
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let _lock = FileLock::exclusive(path)?;
+        let mut value: T = self
+            .read_unlocked(path)?
+            .ok_or_else(|| Error::State(format!("{}: not found", path.display())))?;
+        let result = f(&mut value)?;
+        self.write_locked(path, &value)?;
+        Ok(result)
+    }
+
+    /// Like [`update`](Self::update), but seeds the value from `default()`
+    /// when the file does not exist yet.
+    ///
+    /// For shared accumulators (image registry, IP allocations) that are
+    /// created lazily on their first mutation. The same cheap-closure
+    /// contract as [`update`](Self::update) applies.
+    pub fn update_with<T, R>(
+        &self,
+        path: &Path,
+        default: impl FnOnce() -> T,
+        f: impl FnOnce(&mut T) -> Result<R>,
+    ) -> Result<R>
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let _lock = FileLock::exclusive(path)?;
+        let mut value: T = self.read_unlocked(path)?.unwrap_or_else(default);
+        let result = f(&mut value)?;
+        self.write_locked(path, &value)?;
+        Ok(result)
+    }
+
+    /// Atomically create a JSON file, failing if it already exists.
+    ///
+    /// The existence check and the write happen under one exclusive lock, so
+    /// two concurrent creators cannot both succeed — exactly one wins and the
+    /// other gets [`Error::AlreadyExists`]. Use for write-once state (the
+    /// global config, a VM's initial metadata).
+    pub fn create<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
+        let _lock = FileLock::exclusive(path)?;
+        if path.exists() {
+            return Err(Error::AlreadyExists {
+                path: path.to_path_buf(),
+            });
+        }
+        self.write_locked(path, data)
+    }
+
+    /// Serialize and write a JSON file atomically, taking the exclusive lock.
+    ///
+    /// Fire-and-forget overwrite, kept while callers migrate to
+    /// [`update`](Self::update) / [`create`](Self::create); it does not guard
+    /// against a lost update across a preceding read.
     pub fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
-        // Ensure parent directory exists.
+        let _lock = FileLock::exclusive(path)?;
+        self.write_locked(path, data)
+    }
+
+    /// Deserialize the JSON file at `path`, returning `None` if it is absent.
+    ///
+    /// Takes no lock — the caller must already hold one.
+    fn read_unlocked<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
+        match fs::read_to_string(path) {
+            Ok(contents) => Ok(Some(serde_json::from_str(&contents)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::Io {
+                path: path.to_path_buf(),
+                source: e,
+            }),
+        }
+    }
+
+    /// Serialize `data` to `path` via temp file + atomic `rename`, creating
+    /// parent directories as needed.
+    ///
+    /// Takes no lock — the caller must already hold the exclusive lock.
+    fn write_locked<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::Io {
                 path: parent.to_path_buf(),
@@ -149,9 +300,7 @@ impl StateStore {
             })?;
         }
 
-        let _lock = FileLock::exclusive(path)?;
-
-        // Write to temp file in the same directory (same filesystem for rename).
+        // Write to a temp file in the same directory (same filesystem for rename).
         let tmp_path = tmp_path_for(path);
         let json = serde_json::to_string_pretty(data)?;
 
@@ -215,6 +364,12 @@ fn lock_path_for(path: &Path) -> PathBuf {
     let mut lock = path.as_os_str().to_owned();
     lock.push(".lock");
     PathBuf::from(lock)
+}
+
+/// RAII guard for the per-VM operation lock returned by
+/// [`StateStore::lock_vm`]. Releases the lock when dropped.
+pub struct VmOpLock {
+    _flock: Flock<File>,
 }
 
 /// RAII guard that holds an `flock` on a companion `.lock` file.
@@ -290,6 +445,174 @@ impl FileLock {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn create_rejects_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        let path = dir.path().join("once.json");
+
+        store.create(&path, &1u32).unwrap();
+        let err = store.create(&path, &2u32).unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists { .. }));
+
+        // The original value is untouched.
+        let loaded: u32 = store.read(&path).unwrap();
+        assert_eq!(loaded, 1);
+    }
+
+    #[test]
+    fn update_errors_on_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        let path = dir.path().join("missing.json");
+
+        let err = store.update(&path, |_: &mut u32| Ok(())).unwrap_err();
+        assert!(matches!(err, Error::State(_)));
+    }
+
+    #[test]
+    fn update_with_seeds_default_then_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        let path = dir.path().join("acc.json");
+
+        // First call materializes from the default.
+        store
+            .update_with(
+                &path,
+                || vec![1u32],
+                |v| {
+                    v.push(2);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        // Second call reads back and appends.
+        store
+            .update_with(&path, Vec::new, |v| {
+                v.push(3);
+                Ok(())
+            })
+            .unwrap();
+
+        let loaded: Vec<u32> = store.read(&path).unwrap();
+        assert_eq!(loaded, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn concurrent_updates_do_not_lose_increments() {
+        // The core lost-update regression test: N threads each do M locked
+        // read-modify-write increments against the same file. Without the
+        // lock spanning the whole transaction, increments would be lost.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(StateStore::new(dir.path().to_path_buf()));
+        store.init().unwrap();
+        let path = Arc::new(dir.path().join("counter.json"));
+
+        store.create(&path, &0u64).unwrap();
+
+        const THREADS: u64 = 8;
+        const PER_THREAD: u64 = 50;
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let path = Arc::clone(&path);
+                std::thread::spawn(move || {
+                    for _ in 0..PER_THREAD {
+                        store
+                            .update(&path, |n: &mut u64| {
+                                *n += 1;
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_count: u64 = store.read(&path).unwrap();
+        assert_eq!(final_count, THREADS * PER_THREAD);
+    }
+
+    #[test]
+    fn concurrent_creates_have_exactly_one_winner() {
+        // Many threads race to create the same file; exactly one succeeds.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(StateStore::new(dir.path().to_path_buf()));
+        store.init().unwrap();
+        let path = Arc::new(dir.path().join("unique.json"));
+
+        const THREADS: usize = 16;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let store = Arc::clone(&store);
+                let path = Arc::clone(&path);
+                std::thread::spawn(move || store.create(&path, &(i as u32)).is_ok())
+            })
+            .collect();
+
+        let winners = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|&ok| ok)
+            .count();
+        assert_eq!(winners, 1);
+    }
+
+    #[test]
+    fn lock_vm_serializes_same_name() {
+        // Two threads taking the op-lock for the same VM name must not hold it
+        // simultaneously. We assert mutual exclusion by counting overlaps.
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(StateStore::new(dir.path().to_path_buf()));
+        store.init().unwrap();
+
+        let active = Arc::new(AtomicI32::new(0));
+        let max_seen = Arc::new(AtomicI32::new(0));
+
+        let handles: Vec<_> = (0..6)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let active = Arc::clone(&active);
+                let max_seen = Arc::clone(&max_seen);
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        let _guard = store.lock_vm("shared").unwrap();
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_seen.fetch_max(now, Ordering::SeqCst);
+                        // Tiny critical section; any overlap would push `now` past 1.
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn lock_vm_distinct_names_are_independent() {
+        // Different names must be lockable at the same time (no global lock).
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        store.init().unwrap();
+
+        let a = store.lock_vm("alpha").unwrap();
+        let b = store.lock_vm("beta").unwrap();
+        drop((a, b));
+    }
 
     #[test]
     fn tmp_path_contains_pid() {
@@ -315,7 +638,7 @@ mod tests {
         let data: HashMap<String, String> = [("key".to_string(), "value".to_string())].into();
 
         let path = dir.path().join("test.json");
-        store.write(&path, &data).unwrap();
+        store.create(&path, &data).unwrap();
 
         let loaded: HashMap<String, String> = store.read(&path).unwrap();
         assert_eq!(loaded, data);
@@ -338,7 +661,7 @@ mod tests {
 
         let data = vec![1u32, 2, 3];
         let path = dir.path().join("list.json");
-        store.write(&path, &data).unwrap();
+        store.create(&path, &data).unwrap();
 
         let loaded: Option<Vec<u32>> = store.read_optional(&path).unwrap();
         assert_eq!(loaded, Some(vec![1, 2, 3]));
@@ -367,7 +690,7 @@ mod tests {
         store.remove(&path).unwrap();
 
         // Write then remove.
-        store.write(&path, &"hello").unwrap();
+        store.create(&path, &"hello").unwrap();
         assert!(path.exists());
         store.remove(&path).unwrap();
         assert!(!path.exists());
@@ -396,7 +719,7 @@ mod tests {
         let store = StateStore::new(dir.path().to_path_buf());
 
         let path = dir.path().join("deep").join("nested").join("file.json");
-        store.write(&path, &42u32).unwrap();
+        store.create(&path, &42u32).unwrap();
 
         let loaded: u32 = store.read(&path).unwrap();
         assert_eq!(loaded, 42);
