@@ -230,7 +230,15 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         dm_thin_block_size: resolved_block_size,
         dm_thin_mode: resolved_dm_thin_mode,
     };
-    store.write(&store.config_path(), &config)?;
+    store
+        .create(&store.config_path(), &config)
+        .map_err(|e| match e {
+            ember_core::error::Error::AlreadyExists { .. } => anyhow::anyhow!(
+                "ember is already initialized at {} — run 'ember deinit' first to reconfigure",
+                store.config_path().display()
+            ),
+            other => other.into(),
+        })?;
     println!("Configuration written to {}", store.config_path().display());
     println!("Instance id: {instance_id}");
     println!("VM IP subnet: {ip_subnet}");
@@ -317,7 +325,7 @@ mod tests {
             state_dir: dir.path().to_path_buf(),
             ..zfs_config("testpool", "ember")
         };
-        store.write(&store.config_path(), &config).unwrap();
+        store.create(&store.config_path(), &config).unwrap();
 
         let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
         assert_eq!(loaded.pool, "testpool");
@@ -327,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn global_config_overwritten_on_reinit() {
+    fn global_config_create_rejects_reinit() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().to_path_buf());
         store.init().unwrap();
@@ -337,18 +345,46 @@ mod tests {
             state_dir: dir.path().to_path_buf(),
             ..zfs_config("pool1", "ds1")
         };
-        store.write(&store.config_path(), &config1).unwrap();
+        store.create(&store.config_path(), &config1).unwrap();
 
+        // A second create must fail rather than clobber the existing config.
         let config2 = GlobalConfig {
-            kernel_path: Some(PathBuf::from("/kernels/vmlinux")),
-            wan_iface: Some("wlp2s0".to_string()),
             state_dir: dir.path().to_path_buf(),
             ..zfs_config("pool2", "ds2")
         };
-        store.write(&store.config_path(), &config2).unwrap();
+        let err = store.create(&store.config_path(), &config2).unwrap_err();
+        assert!(matches!(
+            err,
+            ember_core::error::Error::AlreadyExists { .. }
+        ));
+
+        // The original config is untouched.
+        let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
+        assert_eq!(loaded, config1);
+    }
+
+    #[test]
+    fn global_config_kernel_path_updated_via_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().to_path_buf());
+        store.init().unwrap();
+
+        let config = GlobalConfig {
+            state_dir: dir.path().to_path_buf(),
+            ..zfs_config("tank", "ember")
+        };
+        store.create(&store.config_path(), &config).unwrap();
+
+        store
+            .update(&store.config_path(), |c: &mut GlobalConfig| {
+                c.kernel_path = Some(PathBuf::from("/kernels/vmlinux"));
+                Ok(())
+            })
+            .unwrap();
 
         let loaded: GlobalConfig = store.read(&store.config_path()).unwrap();
-        assert_eq!(loaded, config2);
+        assert_eq!(loaded.kernel_path, Some(PathBuf::from("/kernels/vmlinux")));
+        assert_eq!(loaded.pool, "tank");
     }
 
     #[test]

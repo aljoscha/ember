@@ -445,13 +445,20 @@ fn ensure_kernel(
         return Ok(path.clone());
     }
 
-    // No kernel configured — download the default preset.
+    // No kernel configured — download the default preset. This runs
+    // outside the config lock; downloads must never be held under it.
     let default_spec = ember_core::kernel::KernelSpec::Preset(ember_core::kernel::DEFAULT_PRESET);
     let dest = default_spec.resolve(store)?;
 
-    // Persist so future creates skip the download.
+    // Persist so future creates skip the download. Re-read under the lock and
+    // only set the path if a concurrent create didn't already record one.
+    store.update(&store.config_path(), |cfg: &mut GlobalConfig| {
+        if cfg.kernel_path.is_none() {
+            cfg.kernel_path = Some(dest.clone());
+        }
+        Ok(())
+    })?;
     config.kernel_path = Some(dest.clone());
-    store.write(&store.config_path(), config)?;
 
     Ok(dest)
 }
@@ -481,6 +488,11 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // Resolve configuration: program defaults < YAML config < CLI flags.
     let resolved = resolve_create_config(args, yaml_config.as_ref())?;
+
+    // Serialize all lifecycle operations on this name for the whole command,
+    // so the exists-check below and the metadata create below are atomic with
+    // respect to a concurrent create/delete of the same VM.
+    let op = store.lock_vm(&resolved.name)?;
 
     // Check VM doesn't already exist.
     if vm::exists(&store, &resolved.name) {
@@ -531,6 +543,10 @@ fn create(args: &CreateArgs, state_dir: &Path) -> anyhow::Result<()> {
     )?;
 
     rollback.commit();
+
+    // Release the per-VM op lock before delegating to `start`, which
+    // re-acquires it for the same name; holding it here would self-deadlock.
+    drop(op);
 
     if !resolved.no_start {
         start(
@@ -623,7 +639,7 @@ fn create_post_clone(
         thin_id: pending.thin_id,
     };
 
-    vm::save(store, &metadata)?;
+    vm::create(store, &metadata)?;
 
     println!("VM '{}' created successfully.", resolved.name);
 
@@ -641,6 +657,9 @@ fn cp(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let store = StateStore::new(state_dir.to_path_buf());
     let mut global_config: GlobalConfig = store.read(&store.config_path())?;
+
+    // Serialize lifecycle operations on the new VM name for the whole command.
+    let op = store.lock_vm(&args.name)?;
 
     // Source must exist and be stopped.
     let source = vm::require_stopped(&store, &args.source, "copying")?;
@@ -743,11 +762,14 @@ fn cp(args: &CpArgs, state_dir: &Path) -> anyhow::Result<()> {
         thin_id: pending.thin_id,
     };
 
-    vm::save(&store, &metadata)?;
+    vm::create(&store, &metadata)?;
 
     rollback.commit();
 
     println!("VM '{}' copied from '{}'.", args.name, args.source);
+
+    // Release the op lock before delegating to `start` (same name).
+    drop(op);
 
     if !args.no_start {
         start(
@@ -777,9 +799,12 @@ fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     let store = StateStore::new(state_dir.to_path_buf());
 
+    // Serialize lifecycle operations on the source name for the whole rename.
+    let _op = store.lock_vm(&args.name)?;
+
     // Source must exist and be stopped (renaming touches paths the
     // hypervisor has open while running).
-    let mut metadata = vm::require_stopped(&store, &args.name, "renaming")?;
+    let metadata = vm::require_stopped(&store, &args.name, "renaming")?;
 
     // Target must not exist.
     if vm::exists(&store, &args.new_name) {
@@ -811,19 +836,25 @@ fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
         ));
     }
 
-    // Update metadata to point at the new name/paths and persist.
-    metadata.name = args.new_name.clone();
-    metadata.disk_path = new_handle.disk_path.to_string_lossy().into_owned();
-    metadata.thin_id = new_handle.thin_id;
-    metadata.api_socket = store.vm_dir(&args.new_name).join("firecracker.sock");
-    vm::save(&store, &metadata)?;
+    // Update the moved metadata to point at the new name/paths. The
+    // vm.json now lives under the new directory (moved above), so this
+    // is a delta on the existing file rather than a fresh create.
+    vm::update(&store, &args.new_name, |m| {
+        m.name = args.new_name.clone();
+        m.disk_path = new_handle.disk_path.to_string_lossy().into_owned();
+        m.thin_id = new_handle.thin_id;
+        m.api_socket = store.vm_dir(&args.new_name).join("firecracker.sock");
+        Ok(())
+    })?;
 
     // Rewrite `parent_vm` on any forked children so the dependency
     // graph keeps resolving to a real VM.
-    for mut child in vm::list(&store)? {
+    for child in vm::list(&store)? {
         if child.parent_vm.as_deref() == Some(&args.name) {
-            child.parent_vm = Some(args.new_name.clone());
-            vm::save(&store, &child)?;
+            vm::update(&store, &child.name, |m| {
+                m.parent_vm = Some(args.new_name.clone());
+                Ok(())
+            })?;
         }
     }
 
@@ -884,6 +915,7 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
     use ember_core::cleanup::Rollback;
 
     let store = StateStore::new(state_dir.to_path_buf());
+    let _op = store.lock_vm(&args.name)?;
     let config: GlobalConfig = store.read(&store.config_path())?;
 
     // Load and validate VM state.
@@ -948,9 +980,16 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 
     // ── Persist state ─────────────────────────────────────────────
 
-    metadata.status = VmStatus::Running;
-    metadata.pid = Some(pid);
-    vm::save(&store, &metadata)?;
+    // Apply the running-state delta under the lock. The expensive work
+    // (network setup, boot) is already done; only the field assignments
+    // happen while the lock is held.
+    let net = metadata.network.clone();
+    vm::update(&store, &args.name, |m| {
+        m.status = VmStatus::Running;
+        m.pid = Some(pid);
+        m.network = net;
+        Ok(())
+    })?;
 
     // Everything succeeded — keep all resources.
     rollback.commit();
@@ -966,9 +1005,10 @@ fn start(args: &StartArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// socket → update metadata.
 fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
+    let _op = store.lock_vm(&args.name)?;
 
     // Load and validate VM state.
-    let mut metadata = vm::load(&store, &args.name)?;
+    let metadata = vm::load(&store, &args.name)?;
     match metadata.status {
         VmStatus::Running | VmStatus::Paused => {}
         _ => {
@@ -1008,10 +1048,12 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
     let _ = net_backend.teardown(&metadata, &config);
 
     // Update metadata.
-    metadata.status = VmStatus::Stopped;
-    metadata.pid = None;
-    metadata.network = None;
-    vm::save(&store, &metadata)?;
+    vm::update(&store, &args.name, |m| {
+        m.status = VmStatus::Stopped;
+        m.pid = None;
+        m.network = None;
+        Ok(())
+    })?;
 
     println!("VM '{}' stopped.", args.name);
     Ok(())
@@ -1023,9 +1065,10 @@ fn stop(args: &StopArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Network and PID are preserved — the VM can be resumed or stopped from this state.
 fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
+    let _op = store.lock_vm(&args.name)?;
 
     // Load and validate VM state — only running VMs can be paused.
-    let mut metadata = vm::load(&store, &args.name)?;
+    let metadata = vm::load(&store, &args.name)?;
     match metadata.status {
         VmStatus::Running => {}
         _ => {
@@ -1044,8 +1087,10 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("Pausing VM '{}'...", args.name);
     Vm::pause(&metadata)?;
 
-    metadata.status = VmStatus::Paused;
-    vm::save(&store, &metadata)?;
+    vm::update(&store, &args.name, |m| {
+        m.status = VmStatus::Paused;
+        Ok(())
+    })?;
 
     println!("VM '{}' paused.", args.name);
     Ok(())
@@ -1057,9 +1102,10 @@ fn pause(args: &PauseArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// Network and PID were preserved during pause, so the VM resumes exactly where it left off.
 fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
+    let _op = store.lock_vm(&args.name)?;
 
     // Load and validate VM state — only paused VMs can be resumed.
-    let mut metadata = vm::load(&store, &args.name)?;
+    let metadata = vm::load(&store, &args.name)?;
     match metadata.status {
         VmStatus::Paused => {}
         _ => {
@@ -1078,8 +1124,10 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
     println!("Resuming VM '{}'...", args.name);
     Vm::resume(&metadata)?;
 
-    metadata.status = VmStatus::Running;
-    vm::save(&store, &metadata)?;
+    vm::update(&store, &args.name, |m| {
+        m.status = VmStatus::Running;
+        Ok(())
+    })?;
 
     println!("VM '{}' resumed.", args.name);
     Ok(())
@@ -1091,7 +1139,8 @@ fn resume(args: &ResumeArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// → grow disk → expand ext4 → update metadata.
 fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let mut metadata = vm::require_stopped(&store, &args.name, "resizing")?;
+    let _op = store.lock_vm(&args.name)?;
+    let metadata = vm::require_stopped(&store, &args.name, "resizing")?;
 
     // Convert size with unit to GiB.
     let new_gib = args
@@ -1119,8 +1168,10 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
     storage.resize(&metadata, args.disk_size)?;
 
     // Update metadata.
-    metadata.disk_size_gib = new_gib;
-    vm::save(&store, &metadata)?;
+    vm::update(&store, &args.name, |m| {
+        m.disk_size_gib = new_gib;
+        Ok(())
+    })?;
 
     println!(
         "VM '{}' disk resized from {} to {}.",
@@ -1138,7 +1189,8 @@ fn resize(args: &ResizeArgs, state_dir: &Path) -> anyhow::Result<()> {
 /// VM to be stopped.
 fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
-    let mut metadata = vm::require_stopped(&store, &args.name, "updating configuration")?;
+    let _op = store.lock_vm(&args.name)?;
+    vm::require_stopped(&store, &args.name, "updating configuration")?;
 
     // Require at least one field to update.
     if args.cpus.is_none()
@@ -1151,53 +1203,82 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
         anyhow::bail!("no configuration changes specified");
     }
 
+    // Compute the new field values up front, outside the metadata lock —
+    // validation may fail and the kernel branch may download. The locked
+    // delta below is pure field assignment.
     let mut changes = Vec::new();
 
-    if let Some(cpus) = args.cpus {
-        if cpus == 0 {
-            anyhow::bail!("cpus must be at least 1");
+    let new_cpus = match args.cpus {
+        Some(0) => anyhow::bail!("cpus must be at least 1"),
+        Some(cpus) => {
+            changes.push(format!("cpus: {cpus}"));
+            Some(cpus)
         }
-        metadata.cpus = cpus;
-        changes.push(format!("cpus: {cpus}"));
-    }
+        None => None,
+    };
 
-    if let Some(ref memory) = args.memory {
+    let new_memory_mib = if let Some(ref memory) = args.memory {
         let mib = memory
             .to_mib()
             .map_err(|e| anyhow::anyhow!("invalid memory size: {e}"))?;
-        metadata.memory_mib = mib;
         changes.push(format!("memory: {}", format_bytes_binary(mib as u64 * MIB)));
-    }
+        Some(mib)
+    } else {
+        None
+    };
 
-    if let Some(ref kernel) = args.kernel {
+    let new_kernel = if let Some(ref kernel) = args.kernel {
         let mut config: GlobalConfig = store.read(&store.config_path())?;
         let kernel_path = ensure_kernel(&Some(kernel.clone()), &mut config, &store)?;
-        metadata.kernel_path = kernel_path.clone();
         changes.push(format!("kernel: {}", kernel_path.display()));
-    }
+        Some(kernel_path)
+    } else {
+        None
+    };
 
-    if let Some(ref boot_args) = args.boot_args {
+    // `None` = unchanged, `Some(None)` = clear, `Some(Some(_))` = set.
+    let new_boot_args = args.boot_args.as_ref().map(|boot_args| {
         if boot_args.is_empty() {
-            metadata.boot_args = None;
             changes.push("boot-args: cleared".to_string());
+            None
         } else {
-            metadata.boot_args = Some(boot_args.clone());
             changes.push(format!("boot-args: {boot_args}"));
+            Some(boot_args.clone())
         }
-    }
+    });
 
-    if let Some(ref user) = args.ssh_user {
-        metadata.ssh.user = user.clone();
+    let new_ssh_user = args.ssh_user.as_ref().map(|user| {
         changes.push(format!("ssh-user: {user}"));
-    }
+        user.clone()
+    });
 
-    if let Some(ref key) = args.ssh_key {
+    let new_ssh_key = args.ssh_key.as_ref().map(|key| {
         let expanded = config::vm::expand_tilde(key);
-        metadata.ssh.key = expanded.clone();
         changes.push(format!("ssh-key: {}", expanded.display()));
-    }
+        expanded
+    });
 
-    vm::save(&store, &metadata)?;
+    vm::update(&store, &args.name, |m| {
+        if let Some(cpus) = new_cpus {
+            m.cpus = cpus;
+        }
+        if let Some(mib) = new_memory_mib {
+            m.memory_mib = mib;
+        }
+        if let Some(kernel_path) = new_kernel {
+            m.kernel_path = kernel_path;
+        }
+        if let Some(boot_args) = new_boot_args {
+            m.boot_args = boot_args;
+        }
+        if let Some(user) = new_ssh_user {
+            m.ssh.user = user;
+        }
+        if let Some(key) = new_ssh_key {
+            m.ssh.key = key;
+        }
+        Ok(())
+    })?;
 
     println!("Updated VM '{}':", args.name);
     for change in &changes {
@@ -1215,6 +1296,7 @@ fn update_config(args: &UpdateConfigArgs, state_dir: &Path) -> anyhow::Result<()
 /// Each cleanup step is idempotent — continues if the resource is already gone.
 fn rm(args: &RmArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
+    let _op = store.lock_vm(&args.name)?;
 
     // Load VM metadata (must exist).
     let metadata = vm::load(&store, &args.name)?;

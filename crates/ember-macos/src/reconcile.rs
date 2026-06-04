@@ -35,7 +35,7 @@ pub fn run(state_dir: &Path) {
         }
     };
 
-    for mut metadata in vms {
+    for metadata in vms {
         match metadata.status {
             VmStatus::Running | VmStatus::Paused => {}
             _ => continue,
@@ -48,7 +48,7 @@ pub fn run(state_dir: &Path) {
                     "Warning: VM '{}' is {} but has no PID, marking stopped",
                     metadata.name, metadata.status
                 );
-                mark_stopped(&store, &mut metadata);
+                mark_stopped(&store, &metadata);
                 continue;
             }
         };
@@ -59,19 +59,22 @@ pub fn run(state_dir: &Path) {
                 "Warning: VM '{}' process (pid {pid}) is dead, marking stopped",
                 metadata.name
             );
-            mark_stopped(&store, &mut metadata);
+            mark_stopped(&store, &metadata);
         }
     }
 }
 
 /// Mark a VM as Stopped, clearing its PID and network info,
 /// and releasing its IP allocation.
-fn mark_stopped(store: &StateStore, metadata: &mut vm::VmMetadata) {
+fn mark_stopped(store: &StateStore, metadata: &vm::VmMetadata) {
     let _ = network::ip::release(store, &metadata.name);
-    metadata.status = VmStatus::Stopped;
-    metadata.pid = None;
-    metadata.network = None;
-    if let Err(e) = vm::save(store, metadata) {
+    let result = vm::update(store, &metadata.name, |m| {
+        m.status = VmStatus::Stopped;
+        m.pid = None;
+        m.network = None;
+        Ok(())
+    });
+    if let Err(e) = result {
         eprintln!(
             "Warning: failed to update VM '{}' state: {e}",
             metadata.name
