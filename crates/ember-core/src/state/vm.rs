@@ -267,12 +267,6 @@ pub fn update<R>(
     store.update(&path, f)
 }
 
-/// Overwrite a VM's metadata file. Fire-and-forget shim kept while callers
-/// migrate to [`create`] / [`update`].
-pub fn save(store: &StateStore, vm: &VmMetadata) -> Result<()> {
-    store.write(&store.vm_metadata_path(&vm.name), vm)
-}
-
 /// List all VMs by reading metadata from each subdirectory under `vms/`.
 ///
 /// Skips directories that don't contain a valid `vm.json` (e.g., partially
