@@ -118,8 +118,9 @@ fn block_ips(base: Ipv4Addr, block_index: u32) -> IpAllocation {
 /// Allocate a /30 block for a VM.
 ///
 /// Finds the lowest-numbered available block in the subnet, records the
-/// allocation, and persists it to the state store. The state store's
-/// flock ensures safe concurrent access.
+/// allocation, and persists it. The find-and-insert runs inside a single
+/// locked read-modify-write so concurrent allocators can't both claim the
+/// same block.
 pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAllocation> {
     let path = store.network_allocations_path();
     let (base, prefix) = parse_cidr(subnet)?;
@@ -130,35 +131,36 @@ pub fn allocate(store: &StateStore, subnet: &str, vm_name: &str) -> Result<IpAll
     }
     let max = max_blocks(prefix);
 
-    let mut allocs: IpAllocations = store
-        .read_optional(&path)?
-        .unwrap_or_else(|| IpAllocations {
+    let block_index = store.update_with(
+        &path,
+        || IpAllocations {
             base_subnet: subnet.to_string(),
             allocations: HashMap::new(),
-        });
+        },
+        |allocs| {
+            // Verify the subnet hasn't changed since allocations started.
+            if allocs.base_subnet != subnet {
+                return Err(Error::Network(format!(
+                    "subnet mismatch: state has '{}', requested '{subnet}'",
+                    allocs.base_subnet
+                )));
+            }
 
-    // Verify the subnet hasn't changed since allocations started.
-    if allocs.base_subnet != subnet {
-        return Err(Error::Network(format!(
-            "subnet mismatch: state has '{}', requested '{subnet}'",
-            allocs.base_subnet
-        )));
-    }
+            // Find the first free block.
+            let block_index = (0..max)
+                .find(|i| !allocs.allocations.contains_key(i))
+                .ok_or_else(|| {
+                    Error::Network(format!(
+                        "no free /30 blocks in {subnet} (all {max} blocks allocated)"
+                    ))
+                })?;
 
-    // Find the first free block.
-    let block_index = (0..max)
-        .find(|i| !allocs.allocations.contains_key(i))
-        .ok_or_else(|| {
-            Error::Network(format!(
-                "no free /30 blocks in {subnet} (all {max} blocks allocated)"
-            ))
-        })?;
+            allocs.allocations.insert(block_index, vm_name.to_string());
+            Ok(block_index)
+        },
+    )?;
 
-    let allocation = block_ips(base, block_index);
-    allocs.allocations.insert(block_index, vm_name.to_string());
-    store.write(&path, &allocs)?;
-
-    Ok(allocation)
+    Ok(block_ips(base, block_index))
 }
 
 /// Allocate a single /32 address for a VM in a shared subnet.
@@ -185,44 +187,46 @@ pub fn allocate_single(
     let path = store.network_allocations_path();
     let (base, prefix) = parse_cidr(subnet)?;
     let max = 1u32 << (32 - prefix);
-
-    let mut allocs: IpAllocations = store
-        .read_optional(&path)?
-        .unwrap_or_else(|| IpAllocations {
-            base_subnet: subnet.to_string(),
-            allocations: HashMap::new(),
-        });
-
-    if allocs.base_subnet != subnet {
-        return Err(Error::Network(format!(
-            "subnet mismatch: state has '{}', requested '{subnet}'",
-            allocs.base_subnet
-        )));
-    }
-
     let base_u32 = u32::from(base);
 
-    // Walk the subnet looking for an unallocated, non-reserved slot.
-    // Skipping reserved addresses keeps the gateway (and the wider
-    // /24's network/broadcast when carved into /27s) un-handout-able
-    // without the caller having to seed allocations.json.
-    let block_index = (0..max)
-        .find(|i| {
-            if allocs.allocations.contains_key(i) {
-                return false;
+    let block_index = store.update_with(
+        &path,
+        || IpAllocations {
+            base_subnet: subnet.to_string(),
+            allocations: HashMap::new(),
+        },
+        |allocs| {
+            if allocs.base_subnet != subnet {
+                return Err(Error::Network(format!(
+                    "subnet mismatch: state has '{}', requested '{subnet}'",
+                    allocs.base_subnet
+                )));
             }
-            let addr = Ipv4Addr::from(base_u32 + i);
-            !reserved.contains(&addr)
-        })
-        .ok_or_else(|| {
-            Error::Network(format!(
-                "no free addresses in {subnet} (all {max} candidates allocated or reserved)"
-            ))
-        })?;
+
+            // Walk the subnet looking for an unallocated, non-reserved slot.
+            // Skipping reserved addresses keeps the gateway (and the wider
+            // /24's network/broadcast when carved into /27s) un-handout-able
+            // without the caller having to seed allocations.json.
+            let block_index = (0..max)
+                .find(|i| {
+                    if allocs.allocations.contains_key(i) {
+                        return false;
+                    }
+                    let addr = Ipv4Addr::from(base_u32 + i);
+                    !reserved.contains(&addr)
+                })
+                .ok_or_else(|| {
+                    Error::Network(format!(
+                        "no free addresses in {subnet} (all {max} candidates allocated or reserved)"
+                    ))
+                })?;
+
+            allocs.allocations.insert(block_index, vm_name.to_string());
+            Ok(block_index)
+        },
+    )?;
 
     let guest_ip = Ipv4Addr::from(base_u32 + block_index);
-    allocs.allocations.insert(block_index, vm_name.to_string());
-    store.write(&path, &allocs)?;
 
     Ok(IpAllocation {
         block_index,
@@ -239,20 +243,17 @@ pub fn allocate_single(
 /// has no allocation or the allocations file doesn't exist.
 pub fn release(store: &StateStore, vm_name: &str) -> Result<()> {
     let path = store.network_allocations_path();
-    let mut allocs: IpAllocations = match store.read_optional(&path)? {
-        Some(a) => a,
-        None => return Ok(()),
-    };
-
-    let before = allocs.allocations.len();
-    allocs.allocations.retain(|_, name| name != vm_name);
-
-    // Only write back if something changed.
-    if allocs.allocations.len() != before {
-        store.write(&path, &allocs)?;
+    // Nothing to release before any allocation has been made. Avoid
+    // materializing an empty allocations file (which would also have no
+    // valid `base_subnet`).
+    if !path.exists() {
+        return Ok(());
     }
 
-    Ok(())
+    store.update(&path, |allocs: &mut IpAllocations| {
+        allocs.allocations.retain(|_, name| name != vm_name);
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +357,34 @@ mod tests {
         assert_eq!(alloc.block_index, 0);
         assert_eq!(alloc.host_ip, "10.100.0.1");
         assert_eq!(alloc.guest_ip, "10.100.0.2");
+    }
+
+    #[test]
+    fn concurrent_allocations_are_distinct() {
+        // Regression test for the double-allocation bug: N threads allocate
+        // concurrently against one subnet; every block index must be unique.
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(StateStore::new(dir.path().to_path_buf()));
+        store.init().unwrap();
+
+        const THREADS: u32 = 12;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    allocate(&store, "10.100.0.0/16", &format!("vm{i}"))
+                        .unwrap()
+                        .block_index
+                })
+            })
+            .collect();
+
+        let blocks: Vec<u32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let unique: HashSet<u32> = blocks.iter().copied().collect();
+        assert_eq!(unique.len(), THREADS as usize, "blocks: {blocks:?}");
     }
 
     #[test]
