@@ -233,13 +233,44 @@ pub fn load(store: &StateStore, name: &str) -> Result<VmMetadata> {
         })
 }
 
-/// Save VM metadata to the state store.
+/// Create a VM's metadata file, failing if one already exists for this name.
 ///
-/// Creates the per-VM directory and writes `vm.json`. Overwrites
-/// any existing metadata for this VM.
-pub fn save(store: &StateStore, vm: &VmMetadata) -> Result<()> {
+/// Atomically reserves the VM name: two concurrent creates of the same name
+/// cannot both succeed (the loser gets [`Error::AlreadyExists`]). Creates the
+/// per-VM directory as a side effect.
+pub fn create(store: &StateStore, vm: &VmMetadata) -> Result<()> {
     let path = store.vm_metadata_path(&vm.name);
-    store.write(&path, vm)
+    store.create(&path, vm)
+}
+
+/// Atomically apply a delta to a VM's metadata under an exclusive lock.
+///
+/// The closure runs against the freshly-read on-disk state with the lock
+/// held across read and write, so field updates computed after a long-running
+/// operation (boot, network setup) are applied without clobbering a
+/// concurrent change. Returns [`Error::VmNotFound`] if no metadata exists.
+///
+/// Do the expensive work (process spawn, network setup) before calling this
+/// and only assign the resulting fields inside the closure — the exclusive
+/// lock is held for the closure's whole duration.
+pub fn update<R>(
+    store: &StateStore,
+    name: &str,
+    f: impl FnOnce(&mut VmMetadata) -> Result<R>,
+) -> Result<R> {
+    let path = store.vm_metadata_path(name);
+    if !path.exists() {
+        return Err(Error::VmNotFound {
+            name: name.to_string(),
+        });
+    }
+    store.update(&path, f)
+}
+
+/// Overwrite a VM's metadata file. Fire-and-forget shim kept while callers
+/// migrate to [`create`] / [`update`].
+pub fn save(store: &StateStore, vm: &VmMetadata) -> Result<()> {
+    store.write(&store.vm_metadata_path(&vm.name), vm)
 }
 
 /// List all VMs by reading metadata from each subdirectory under `vms/`.
@@ -397,7 +428,7 @@ mod tests {
         let (_dir, store) = test_store();
         let vm = sample_vm("testvm");
 
-        save(&store, &vm).unwrap();
+        create(&store, &vm).unwrap();
         let loaded = load(&store, "testvm").unwrap();
         assert_eq!(loaded, vm);
     }
@@ -410,20 +441,39 @@ mod tests {
     }
 
     #[test]
-    fn save_overwrites_existing() {
+    fn create_rejects_duplicate() {
         let (_dir, store) = test_store();
-        let mut vm = sample_vm("testvm");
-        save(&store, &vm).unwrap();
+        let vm = sample_vm("testvm");
+        create(&store, &vm).unwrap();
 
-        vm.cpus = 4;
-        vm.status = VmStatus::Running;
-        vm.pid = Some(12345);
-        save(&store, &vm).unwrap();
+        let err = create(&store, &vm).unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists { .. }));
+    }
+
+    #[test]
+    fn update_applies_delta() {
+        let (_dir, store) = test_store();
+        create(&store, &sample_vm("testvm")).unwrap();
+
+        update(&store, "testvm", |m| {
+            m.cpus = 4;
+            m.status = VmStatus::Running;
+            m.pid = Some(12345);
+            Ok(())
+        })
+        .unwrap();
 
         let loaded = load(&store, "testvm").unwrap();
         assert_eq!(loaded.cpus, 4);
         assert_eq!(loaded.status, VmStatus::Running);
         assert_eq!(loaded.pid, Some(12345));
+    }
+
+    #[test]
+    fn update_nonexistent_returns_not_found() {
+        let (_dir, store) = test_store();
+        let err = update(&store, "nope", |_: &mut VmMetadata| Ok(())).unwrap_err();
+        assert!(matches!(err, Error::VmNotFound { name } if name == "nope"));
     }
 
     #[test]
@@ -436,9 +486,9 @@ mod tests {
     #[test]
     fn list_multiple_vms() {
         let (_dir, store) = test_store();
-        save(&store, &sample_vm("beta")).unwrap();
-        save(&store, &sample_vm("alpha")).unwrap();
-        save(&store, &sample_vm("gamma")).unwrap();
+        create(&store, &sample_vm("beta")).unwrap();
+        create(&store, &sample_vm("alpha")).unwrap();
+        create(&store, &sample_vm("gamma")).unwrap();
 
         let vms = list(&store).unwrap();
         assert_eq!(vms.len(), 3);
@@ -453,14 +503,14 @@ mod tests {
         let (_dir, store) = test_store();
         assert!(!exists(&store, "testvm"));
 
-        save(&store, &sample_vm("testvm")).unwrap();
+        create(&store, &sample_vm("testvm")).unwrap();
         assert!(exists(&store, "testvm"));
     }
 
     #[test]
     fn delete_removes_vm_dir() {
         let (_dir, store) = test_store();
-        save(&store, &sample_vm("testvm")).unwrap();
+        create(&store, &sample_vm("testvm")).unwrap();
         assert!(exists(&store, "testvm"));
 
         delete(&store, "testvm").unwrap();
@@ -489,7 +539,7 @@ mod tests {
         vm.status = VmStatus::Running;
         vm.pid = Some(42);
 
-        save(&store, &vm).unwrap();
+        create(&store, &vm).unwrap();
         let loaded = load(&store, "netvm").unwrap();
         assert_eq!(loaded, vm);
         assert_eq!(loaded.network.as_ref().unwrap().guest_ip, "10.100.0.2");
@@ -513,7 +563,7 @@ mod tests {
     #[test]
     fn list_skips_invalid_entries() {
         let (_dir, store) = test_store();
-        save(&store, &sample_vm("good")).unwrap();
+        create(&store, &sample_vm("good")).unwrap();
 
         // Create a bogus VM directory with invalid JSON.
         let bad_dir = store.root().join("vms").join("bad");
