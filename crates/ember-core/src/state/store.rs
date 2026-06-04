@@ -264,16 +264,6 @@ impl StateStore {
         self.write_locked(path, data)
     }
 
-    /// Serialize and write a JSON file atomically, taking the exclusive lock.
-    ///
-    /// Fire-and-forget overwrite, kept while callers migrate to
-    /// [`update`](Self::update) / [`create`](Self::create); it does not guard
-    /// against a lost update across a preceding read.
-    pub fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
-        let _lock = FileLock::exclusive(path)?;
-        self.write_locked(path, data)
-    }
-
     /// Deserialize the JSON file at `path`, returning `None` if it is absent.
     ///
     /// Takes no lock — the caller must already hold one.
