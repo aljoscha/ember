@@ -146,9 +146,10 @@ fn pull(args: &PullArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Step 5: Register in local image registry.
     let disk = handle.disk_path.to_string_lossy().to_string();
     let entry = new_entry(&reference, &disk, size_mib, handle.thin_id);
-    let mut registry = ImageRegistry::load(&store)?;
-    registry.add(entry);
-    registry.save(&store)?;
+    image::registry::update(&store, |registry| {
+        registry.add(entry);
+        Ok(())
+    })?;
 
     rollback.commit();
 
@@ -222,9 +223,10 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
     // Step 5: Register in local image registry.
     let disk = handle.disk_path.to_string_lossy().to_string();
     let entry = new_build_entry(&args.name, &local_name, &disk, size_mib, handle.thin_id);
-    let mut registry = ImageRegistry::load(&store)?;
-    registry.add(entry);
-    registry.save(&store)?;
+    image::registry::update(&store, |registry| {
+        registry.add(entry);
+        Ok(())
+    })?;
 
     rollback.commit();
 
@@ -349,7 +351,9 @@ fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
     // valid for ZFS datasets / dm device names / APFS files.
     let new_local_name = image::build::sanitize_name(&args.new_name)?;
 
-    let mut registry = ImageRegistry::load(&store)?;
+    // Snapshot the registry for validation and to read the source entry.
+    // The actual mutation is applied later under an exclusive lock.
+    let registry = ImageRegistry::load(&store)?;
     let old_local_name = resolve_local_name(&registry, &args.name)?;
 
     if old_local_name == new_local_name {
@@ -386,18 +390,22 @@ fn rename(args: &RenameArgs, state_dir: &Path) -> anyhow::Result<()> {
     };
     entry.reference = new_reference.clone();
 
-    registry.remove(&old_local_name);
-    registry.add(entry);
-    registry.save(&store)?;
+    image::registry::update(&store, |reg| {
+        reg.remove(&old_local_name);
+        reg.add(entry);
+        Ok(())
+    })?;
 
     // If the user-facing reference changed (built-image case), bring
     // dependent VM records along so `image delete` and similar
     // reference-matched lookups keep working.
     if new_reference != old_reference {
-        for mut v in vm::list(&store)? {
+        for v in vm::list(&store)? {
             if v.image == old_reference {
-                v.image = new_reference.clone();
-                vm::save(&store, &v)?;
+                vm::update(&store, &v.name, |m| {
+                    m.image = new_reference.clone();
+                    Ok(())
+                })?;
             }
         }
     }
