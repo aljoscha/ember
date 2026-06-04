@@ -48,12 +48,6 @@ impl ImageRegistry {
             .map(|opt| opt.unwrap_or_default())
     }
 
-    /// Save the registry to the state store.
-    pub fn save(&self, store: &StateStore) -> Result<()> {
-        let path = store.image_registry_path();
-        store.write(&path, self)
-    }
-
     /// Add an image entry. Replaces any existing entry with the same local name.
     pub fn add(&mut self, entry: ImageEntry) {
         self.remove(&entry.local_name);
@@ -148,17 +142,25 @@ fn now_iso8601() -> String {
     crate::state::vm::now_iso8601()
 }
 
-/// Load the registry, remove an entry by local name, save, and return
-/// the removed entry. Returns [`Error::ImageNotFound`] if not present.
+/// Atomically read-modify-write the persisted registry under an exclusive
+/// lock, materializing an empty registry if none exists yet.
+///
+/// All registry mutations must go through here (rather than a load/save
+/// pair) so concurrent `image` commands can't lose each other's changes.
+pub fn update<R>(store: &StateStore, f: impl FnOnce(&mut ImageRegistry) -> Result<R>) -> Result<R> {
+    store.update_with(&store.image_registry_path(), ImageRegistry::default, f)
+}
+
+/// Remove an entry by local name and return it. Returns
+/// [`Error::ImageNotFound`] if not present.
 pub fn remove_image(store: &StateStore, local_name: &str) -> Result<ImageEntry> {
-    let mut registry = ImageRegistry::load(store)?;
-    let entry = registry
-        .remove(local_name)
-        .ok_or_else(|| Error::ImageNotFound {
-            name: local_name.to_string(),
-        })?;
-    registry.save(store)?;
-    Ok(entry)
+    update(store, |registry| {
+        registry
+            .remove(local_name)
+            .ok_or_else(|| Error::ImageNotFound {
+                name: local_name.to_string(),
+            })
+    })
 }
 
 #[cfg(test)]
@@ -259,28 +261,35 @@ mod tests {
     fn round_trip_through_state_store() {
         let (_dir, store) = test_store();
 
-        let mut reg = ImageRegistry::default();
-        reg.add(sample_entry("alpine"));
-        reg.add(sample_entry("ubuntu"));
-        reg.save(&store).unwrap();
+        update(&store, |reg| {
+            reg.add(sample_entry("alpine"));
+            reg.add(sample_entry("ubuntu"));
+            Ok(())
+        })
+        .unwrap();
 
         let loaded = ImageRegistry::load(&store).unwrap();
-        assert_eq!(loaded, reg);
         assert_eq!(loaded.len(), 2);
+        assert!(loaded.exists("library-alpine-latest"));
+        assert!(loaded.exists("library-ubuntu-latest"));
     }
 
     #[test]
     fn save_and_reload_preserves_data() {
         let (_dir, store) = test_store();
 
-        // Save, load, modify, save, load — verify consistency.
-        let mut reg = ImageRegistry::default();
-        reg.add(sample_entry("alpine"));
-        reg.save(&store).unwrap();
+        // Two independent update calls — verify consistency across reloads.
+        update(&store, |reg| {
+            reg.add(sample_entry("alpine"));
+            Ok(())
+        })
+        .unwrap();
 
-        let mut reg2 = ImageRegistry::load(&store).unwrap();
-        reg2.add(sample_entry("ubuntu"));
-        reg2.save(&store).unwrap();
+        update(&store, |reg| {
+            reg.add(sample_entry("ubuntu"));
+            Ok(())
+        })
+        .unwrap();
 
         let final_reg = ImageRegistry::load(&store).unwrap();
         assert_eq!(final_reg.len(), 2);
@@ -310,9 +319,11 @@ mod tests {
     fn remove_image_from_store() {
         let (_dir, store) = test_store();
 
-        let mut reg = ImageRegistry::default();
-        reg.add(sample_entry("alpine"));
-        reg.save(&store).unwrap();
+        update(&store, |reg| {
+            reg.add(sample_entry("alpine"));
+            Ok(())
+        })
+        .unwrap();
 
         let removed = remove_image(&store, "library-alpine-latest").unwrap();
         assert_eq!(removed.local_name, "library-alpine-latest");
