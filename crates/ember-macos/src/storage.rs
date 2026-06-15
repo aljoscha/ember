@@ -300,22 +300,23 @@ impl StorageBackend for MacosStorage {
         Ok(VolumeHandle::from_path(target_rootfs))
     }
 
-    /// Rename a VM's directory under `vms/`. The `rootfs.img` inside
-    /// rides along; APFS clones are independent of the source path so
-    /// other VMs forked from this one are unaffected.
+    /// Report where a VM's rootfs will live after a rename.
+    ///
+    /// On macOS the `rootfs.img` lives inside the per-VM state directory
+    /// (`vms/<name>/`), which the state layer owns and physically moves
+    /// during a rename. The rootfs therefore rides along with that move,
+    /// so storage has nothing to relocate itself — it only resolves the
+    /// new path. APFS clones are independent of the source path, so VMs
+    /// forked from this one are unaffected. We still verify the source
+    /// exists so a rename of a missing VM fails here rather than later.
     fn rename_vm_storage(&self, vm: &VmMetadata, new_name: &str) -> Result<VolumeHandle> {
         let old_dir = self.vm_dir(&vm.name);
-        let new_dir = self.vm_dir(new_name);
         if !old_dir.exists() {
             return Err(Error::Vm(format!(
                 "VM storage not found: {}",
                 old_dir.display()
             )));
         }
-        fs::rename(&old_dir, &new_dir).map_err(|e| Error::Io {
-            path: new_dir.clone(),
-            source: e,
-        })?;
         Ok(VolumeHandle::from_path(self.vm_rootfs(new_name)))
     }
 
