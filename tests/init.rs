@@ -66,10 +66,13 @@ fn init_writes_config_json() {
     }
 }
 
-/// Re-running `ember init` is idempotent.
+/// Re-running `ember init` on an initialized state dir is rejected.
+///
+/// An existing config wins; the user must `ember deinit` first to
+/// reconfigure. This guards against silently clobbering a live install.
 #[test]
 #[ignore]
-fn init_is_idempotent() {
+fn init_rejects_reinit() {
     let env = common::TestEnv::init("initidem");
 
     // Run init again on the same state directory.
@@ -82,21 +85,20 @@ fn init_is_idempotent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "second init failed.\nstdout: {stdout}\nstderr: {stderr}"
+        !output.status.success(),
+        "second init should be rejected.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("already initialized") && stderr.contains("deinit"),
+        "expected an 'already initialized — run deinit' error.\nstderr: {stderr}"
     );
 
-    // Directories should still exist.
+    // The existing install is left intact.
     assert!(env.state_dir.join("vms").is_dir());
     assert!(env.state_dir.join("images").is_dir());
 
     #[cfg(target_os = "linux")]
     {
-        assert!(
-            stdout.contains("already exists"),
-            "expected 'already exists' in: {stdout}"
-        );
-        assert!(stdout.contains("ember initialized successfully"));
         common::linux::assert_pool_exists(&env.pool);
         common::linux::assert_dataset_exists(&format!("{}/ember", env.pool));
         common::linux::assert_dataset_exists(&format!("{}/ember/images", env.pool));
