@@ -442,6 +442,17 @@ fn ensure_kernel(
         return spec.resolve(store);
     }
     if let Some(path) = &config.kernel_path {
+        // A configured path can dangle: an older config may name a kernel that
+        // no longer exists, or one that was never installed. Catch it here with
+        // an actionable message instead of letting it surface later as the VM
+        // backend's opaque "boot loader is invalid".
+        if !path.exists() {
+            anyhow::bail!(
+                "configured kernel '{}' does not exist.\n\
+                 Build one with `ember kernel build`, or pass `--kernel <preset|path>`.",
+                path.display()
+            );
+        }
         return Ok(path.clone());
     }
 
