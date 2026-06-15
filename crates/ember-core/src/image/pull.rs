@@ -188,6 +188,13 @@ pub fn pull(reference: &ImageReference, dest: &Path, config: &ImageToolConfig) -
     let mut cmd = Command::new("skopeo");
     cmd.args(["copy"]);
 
+    // skopeo otherwise requires a trust-policy file (policy.json) in one of a
+    // few hardcoded system paths, which is not guaranteed to exist (e.g.
+    // Homebrew installs its policy.json under its own prefix, which skopeo
+    // does not search). We pull public images to build VM rootfs and don't
+    // rely on signature verification, so use the permissive default policy.
+    cmd.args(["--insecure-policy"]);
+
     // When override_os is set (e.g., macOS), skopeo would otherwise default
     // to the host OS when resolving multi-arch manifest lists. We always
     // want Linux images for VMs.
