@@ -6,7 +6,9 @@ use std::path::Path;
 use clap::{Args, Subcommand};
 
 use super::fmt::format_bytes_binary;
+use ember_core::config::GlobalConfig;
 use ember_core::kernel;
+use ember_core::state::store::StateStore;
 
 #[derive(Subcommand)]
 pub enum KernelCommand {
@@ -68,11 +70,32 @@ fn build(args: &BuildArgs, state_dir: &Path) -> anyhow::Result<()> {
         println!();
     }
 
-    let store = ember_core::state::store::StateStore::new(state_dir.to_path_buf());
+    let store = StateStore::new(state_dir.to_path_buf());
     let dest = kernel::build::build(&store, jobs, &tool)?;
 
+    // Record the freshly built kernel as the default for new VMs. Without this
+    // the build is installed to the kernels/ directory but never referenced,
+    // and `vm create` falls back to whatever (possibly stale) path the config
+    // already held. We only touch the config when ember is initialized; a
+    // build run before `ember init` still installs the kernel, it just has no
+    // config to point at yet.
+    let initialized = store
+        .read_optional::<GlobalConfig>(&store.config_path())?
+        .is_some();
+    if initialized {
+        store.update(&store.config_path(), |cfg: &mut GlobalConfig| {
+            cfg.kernel_path = Some(dest.clone());
+            Ok(())
+        })?;
+    }
+
+    let default_note = if initialized {
+        "It is now the default kernel for new VMs."
+    } else {
+        "Run `ember init` to set up ember; this kernel will then be available as the `docker` preset."
+    };
     println!(
-        "\nKernel ready. It is now the default kernel for new VMs.\n\
+        "\nKernel ready. {default_note}\n\
          To use explicitly: ember vm create <name> --image <image> --kernel docker\n\
          Installed at: {}",
         dest.display()
