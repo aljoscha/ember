@@ -125,11 +125,25 @@ impl VmBackend for MacosVm {
             .arg("--ready-fd")
             .arg(write_fd_num.to_string());
 
-        // Redirect stdout/stderr to the serial log / null so the helper
-        // doesn't interfere with ember's terminal output.
+        // Capture the helper's own stdout/stderr to a log file instead of the
+        // terminal. Its diagnostics (e.g. "vm failed to start: The boot loader
+        // is invalid") are the only explanation we get when a boot fails, so we
+        // keep them for the error path — but they must not interleave with
+        // ember's output. The guest serial console goes to a separate
+        // --serial-log; this captures the helper process itself.
+        let helper_log_path = vm_dir.join("ember-vz.log");
+        let helper_log = std::fs::File::create(&helper_log_path).map_err(|e| {
+            Error::Vm(format!(
+                "failed to create {}: {e}",
+                helper_log_path.display()
+            ))
+        })?;
+        let helper_log_err = helper_log
+            .try_clone()
+            .map_err(|e| Error::Vm(format!("clone ember-vz log fd: {e}")))?;
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        cmd.stdout(Stdio::from(helper_log));
+        cmd.stderr(Stdio::from(helper_log_err));
 
         // SAFETY: pre_exec runs between fork and exec. We clear the
         // close-on-exec flag on the write fd so ember-vz inherits it.
@@ -169,7 +183,7 @@ impl VmBackend for MacosVm {
                     nix::unistd::Pid::from_raw(pid as i32),
                     nix::sys::signal::Signal::SIGKILL,
                 );
-                return Err(e);
+                return Err(enrich_with_helper_log(e, &helper_log_path));
             }
         };
 
@@ -298,6 +312,23 @@ impl VmBackend for MacosVm {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Append the captured ember-vz output to a boot error.
+///
+/// The helper logs the concrete AVF failure (invalid bootloader, internal
+/// virtualization error, ...) that our ready-fd timeout/EOF alone can't
+/// explain. We fold it into the error so the caller sees what actually went
+/// wrong, falling back to the bare error when the log is empty or unreadable.
+fn enrich_with_helper_log(err: Error, log_path: &std::path::Path) -> Error {
+    let log = match std::fs::read_to_string(log_path) {
+        Ok(contents) if !contents.trim().is_empty() => contents.trim().to_string(),
+        _ => return err,
+    };
+    match err {
+        Error::Vm(msg) => Error::Vm(format!("{msg}\nember-vz output:\n{log}")),
+        other => Error::Vm(format!("{other}\nember-vz output:\n{log}")),
+    }
+}
 
 /// Wait for a process to exit, polling `kill(pid, 0)` at regular intervals.
 ///
