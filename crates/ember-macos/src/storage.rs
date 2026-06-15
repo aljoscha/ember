@@ -1,7 +1,7 @@
 //! macOS storage backend: APFS copy-on-write clones for disk images.
 //!
-//! Uses raw `.img` files (ext4) and `cp -c` (APFS CoW clones) for instant
-//! VM cloning. No ZFS, no root privileges required.
+//! Uses raw `.img` files (ext4) and `clonefile(2)` (APFS CoW clones) for
+//! instant VM cloning. No ZFS, no root privileges required.
 //!
 //! Storage layout under the state directory:
 //! ```text
@@ -11,10 +11,11 @@
 //!     └── rootfs.img                    # APFS clone of base image
 //! ```
 
+use std::ffi::CString;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
 
 use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
 use ember_core::config::size::ByteSize;
@@ -137,8 +138,8 @@ impl StorageBackend for MacosStorage {
 
     /// Clone a base image for a new VM using APFS copy-on-write.
     ///
-    /// `cp -c` creates an instant CoW clone — the VM's rootfs shares blocks
-    /// with the base image until written to. This is the macOS equivalent of
+    /// Creates an instant CoW clone — the VM's rootfs shares blocks with the
+    /// base image until written to. This is the macOS equivalent of
     /// `zfs clone pool/.../images/name@base pool/.../vms/vm_name`.
     fn clone_for_vm(&self, image: &ImageEntry, vm_name: &str) -> Result<VolumeHandle> {
         let src = self.image_path(&image.local_name);
@@ -276,9 +277,9 @@ impl StorageBackend for MacosStorage {
 
     /// Clone a source VM's disk for forking via APFS copy-on-write.
     ///
-    /// Directly clones the source VM's rootfs into the target VM's rootfs
-    /// using `cp -c`. APFS clones are fully independent, so no cleanup
-    /// or dependency tracking is needed.
+    /// Directly clones the source VM's rootfs into the target VM's rootfs.
+    /// APFS clones are fully independent, so no cleanup or dependency
+    /// tracking is needed.
     fn clone_vm_storage(&self, source: &VmMetadata, target_vm: &str) -> Result<VolumeHandle> {
         let source_rootfs = self.vm_rootfs(&source.name);
         if !source_rootfs.exists() {
@@ -622,63 +623,60 @@ fn parse_debugfs_uid_gid(stat_output: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Create an APFS copy-on-write clone using `cp -c`.
+/// Create an APFS copy-on-write clone via the `clonefile(2)` syscall.
 ///
 /// This is instant regardless of file size — APFS shares the underlying
-/// blocks between source and destination. Only blocks that are subsequently
-/// modified will be allocated separately.
+/// blocks between source and destination. Only blocks that are
+/// subsequently modified are allocated separately.
 ///
-/// `cp -c` fails with a clear error (rather than silently falling back to
-/// a full copy) if CoW isn't possible:
-/// - Cross-volume: "clonefile failed: Cross-device link"
-/// - Non-APFS: "clonefile failed: Not supported"
+/// We call the syscall directly rather than shelling out to `cp -c`.
+/// `cp -c` silently falls back to a full `copyfile(2)` when a clone isn't
+/// possible (source and destination on different filesystems, or a
+/// filesystem without clone support), which would mask a misconfigured
+/// non-APFS state directory as a slow, space-wasting copy that looks like
+/// success. `clonefile(2)` has no such fallback: it fails with `EXDEV`
+/// (cross-filesystem) or `ENOTSUP` (no clone support), which we surface as
+/// a clear error. No `cp` flag disables the fallback, so the syscall is the
+/// only way to reliably detect a non-CoW situation — hence this is the one
+/// place we reach for an FFI call instead of a platform CLI tool.
+///
+/// `clonefile(2)` requires `dest` not to exist; both callers clone into a
+/// freshly created VM directory, so that holds.
 fn apfs_clone(src: &Path, dest: &Path) -> Result<()> {
-    let start = Instant::now();
+    let to_cstring = |p: &Path| {
+        CString::new(p.as_os_str().as_bytes()).map_err(|_| {
+            Error::Image(format!(
+                "path contains an interior NUL byte: {}",
+                p.display()
+            ))
+        })
+    };
+    let src_c = to_cstring(src)?;
+    let dest_c = to_cstring(dest)?;
 
-    let output = Command::new("cp")
-        .arg("-c")
-        .arg(src)
-        .arg(dest)
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "cp -c".to_string(),
-            source: e,
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Provide a clear error message for common APFS clone failures.
-        let msg = if stderr.contains("Cross-device link") || stderr.contains("Not supported") {
-            format!(
-                "APFS clone failed: {}. \
-                 VM storage must be on an APFS volume. The state directory may be on \
-                 a non-APFS filesystem or the source and destination are on different volumes.",
-                stderr.trim()
-            )
-        } else {
-            format!(
-                "cp -c {} → {} failed: {}",
-                src.display(),
-                dest.display(),
-                stderr.trim()
-            )
-        };
-        return Err(Error::Image(msg));
+    // flags = 0: follow symlinks on src and copy ownership, matching the
+    // behavior of `cp -c` on a regular file.
+    let rc = unsafe { nix::libc::clonefile(src_c.as_ptr(), dest_c.as_ptr(), 0) };
+    if rc == 0 {
+        return Ok(());
     }
 
-    // A CoW clone completes in milliseconds regardless of file size.
-    // If it takes over 1 second, something may be wrong (e.g., falling
-    // back to a full copy on a non-APFS volume that doesn't error).
-    let elapsed = start.elapsed();
-    if elapsed.as_secs() >= 1 {
-        eprintln!(
-            "Warning: disk clone took {:.1}s — this may indicate copy-on-write is not working. \
-             Run `ember debug storage-efficiency` to check.",
-            elapsed.as_secs_f64()
-        );
-    }
-
-    Ok(())
+    let err = std::io::Error::last_os_error();
+    let msg = match err.raw_os_error() {
+        Some(code) if code == nix::libc::EXDEV || code == nix::libc::ENOTSUP => format!(
+            "APFS clone {} → {} failed: {err}. \
+             VM storage must be on an APFS volume, and the source and \
+             destination must be on the same volume.",
+            src.display(),
+            dest.display(),
+        ),
+        _ => format!(
+            "clonefile {} → {} failed: {err}",
+            src.display(),
+            dest.display(),
+        ),
+    };
+    Err(Error::Image(msg))
 }
 
 /// Find an e2fsprogs tool (e2fsck, resize2fs, mkfs.ext4) by checking

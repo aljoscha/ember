@@ -1,7 +1,7 @@
 //! Integration tests for macOS APFS storage backend.
 //!
 //! These tests verify macOS-specific storage behaviors:
-//! - APFS CoW clone space efficiency (cp -c doesn't consume extra space)
+//! - APFS CoW clone space efficiency (clones don't consume extra space)
 //! - Storage efficiency debug command
 //! - VM delete removes storage
 //! - Non-APFS (HFS+) detection and warnings
@@ -20,6 +20,8 @@
 #[allow(dead_code)]
 mod common;
 
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -134,10 +136,11 @@ fn vm_delete_removes_storage() {
 // Non-APFS failure tests
 // ---------------------------------------------------------------------------
 
-/// Verify that ember warns about non-APFS volumes and detects missing CoW.
+/// Verify that ember warns about non-APFS volumes and that the
+/// `clonefile(2)` mechanism it relies on surfaces a non-CoW situation.
 #[test]
 #[ignore]
-fn cp_c_fails_gracefully_on_non_apfs() {
+fn clone_fails_gracefully_on_non_apfs() {
     let tmp = tempfile::tempdir().unwrap();
     let dmg_path = tmp.path().join("hfsplus.dmg");
 
@@ -199,21 +202,21 @@ fn cp_c_fails_gracefully_on_non_apfs() {
         "expected APFS warning during init on HFS+ volume.\nstderr: {stderr}"
     );
 
+    // ember clones via `clonefile(2)` directly, not `cp -c` — modern `cp -c`
+    // silently falls back to a full copy across volumes, which would hide a
+    // misconfigured non-APFS state directory. Verify the syscall ember relies
+    // on does surface the cross-volume case (EXDEV) or an unsupported
+    // filesystem (ENOTSUP), rather than succeeding.
     let img = common::macos::create_test_image(tmp.path(), "hfstest", 8);
     let cross_vol_dest = PathBuf::from(&mount_point).join("cross-vol-clone.img");
-    let cp_output = Command::new("cp")
-        .arg("-c")
-        .arg(&img)
-        .arg(&cross_vol_dest)
-        .output()
-        .expect("failed to run cp -c");
+
+    let src_c = CString::new(img.as_os_str().as_bytes()).unwrap();
+    let dst_c = CString::new(cross_vol_dest.as_os_str().as_bytes()).unwrap();
+    let rc = unsafe { nix::libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+    assert_eq!(rc, -1, "clonefile should fail across volumes");
+    let errno = std::io::Error::last_os_error().raw_os_error();
     assert!(
-        !cp_output.status.success(),
-        "cp -c should fail for cross-volume clone"
-    );
-    let cp_stderr = String::from_utf8_lossy(&cp_output.stderr);
-    assert!(
-        cp_stderr.contains("Cross-device link"),
-        "expected 'Cross-device link' error for cross-volume cp -c.\nstderr: {cp_stderr}"
+        errno == Some(nix::libc::EXDEV) || errno == Some(nix::libc::ENOTSUP),
+        "expected EXDEV or ENOTSUP for cross-volume clonefile, got {errno:?}"
     );
 }
