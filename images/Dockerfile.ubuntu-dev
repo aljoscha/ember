@@ -108,13 +108,13 @@ RUN echo 'net.ipv4.ping_group_range = 0 2147483647' > /etc/sysctl.d/50-ping.conf
 
 # ---------- Buildkite CLI (bk) ----------
 ARG TARGETARCH
-ARG BK_VERSION=3.31.1
+ARG BK_VERSION=3.54.2
 RUN curl -fsSL "https://github.com/buildkite/cli/releases/download/v${BK_VERSION}/bk_${BK_VERSION}_linux_${TARGETARCH}.deb" -o /tmp/bk.deb \
     && dpkg -i /tmp/bk.deb \
     && rm /tmp/bk.deb
 
 # ---------- jujutsu (jj) ----------
-ARG JJ_VERSION=0.41.0
+ARG JJ_VERSION=0.44.0
 RUN case "$TARGETARCH" in \
         amd64) JJ_ARCH=x86_64-unknown-linux-musl ;; \
         arm64) JJ_ARCH=aarch64-unknown-linux-musl ;; \
@@ -123,6 +123,16 @@ RUN case "$TARGETARCH" in \
     && curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v${JJ_VERSION}/jj-v${JJ_VERSION}-${JJ_ARCH}.tar.gz" \
         | tar -xzf - -C /usr/local/bin ./jj \
     && chmod +x /usr/local/bin/jj
+
+# ---------- jjui (terminal UI for jj) ----------
+# The release zip holds a single binary named after the archive, so we
+# extract it to stdout rather than guessing an entry path.
+ARG JJUI_VERSION=0.10.9
+RUN curl -fsSL "https://github.com/idursun/jjui/releases/download/v${JJUI_VERSION}/jjui-${JJUI_VERSION}-linux-${TARGETARCH}.zip" \
+        -o /tmp/jjui.zip \
+    && unzip -p /tmp/jjui.zip > /usr/local/bin/jjui \
+    && chmod +x /usr/local/bin/jjui \
+    && rm /tmp/jjui.zip
 
 # ---------- enable services ----------
 # Firecracker uses ttyS0; macOS AVF uses hvc0 (virtio-console).
