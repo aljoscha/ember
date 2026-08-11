@@ -111,6 +111,10 @@ pub fn remove_install_chains(state_dir: &Path) {
         return;
     };
 
+    // `output()` rather than `status()` throughout: most of these calls
+    // are expected to fail, because a test that never started a VM has no
+    // chains to remove, and letting iptables write "No chain/target/match"
+    // to the inherited stderr buries the actual test output.
     for (builtin, chain) in [
         ("INPUT", format!("ember-{id}-input")),
         ("FORWARD", format!("ember-{id}-forward")),
@@ -119,16 +123,15 @@ pub fn remove_install_chains(state_dir: &Path) {
         // iptables refuses to delete a chain anything still references.
         while Command::new("iptables")
             .args(["-w", "5", "-D", builtin, "-j", &chain])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
         {}
-        let _ = Command::new("iptables")
-            .args(["-w", "5", "-F", &chain])
-            .status();
-        let _ = Command::new("iptables")
-            .args(["-w", "5", "-X", &chain])
-            .status();
+        for verb in ["-F", "-X"] {
+            let _ = Command::new("iptables")
+                .args(["-w", "5", verb, &chain])
+                .output();
+        }
     }
 }
 
