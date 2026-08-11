@@ -61,6 +61,16 @@ pub struct NetworkInfo {
     /// even if the default route changes between start and stop.
     #[serde(default)]
     pub wan_iface: Option<String>,
+    /// iptables chain holding this VM's forwarding rules (Linux only).
+    ///
+    /// `None` means the rules were appended to the built-in FORWARD
+    /// chain, tagged with the per-installation comment, which is what
+    /// binaries predating the install-owned policy chains wrote.
+    /// Teardown of such a VM has to delete them from there, so where a
+    /// VM's rules live is recorded per VM rather than derived from the
+    /// current config.
+    #[serde(default)]
+    pub firewall_chain: Option<String>,
 }
 
 /// SSH connection configuration for a VM.
@@ -529,6 +539,7 @@ mod tests {
             netmask: "255.255.255.252".to_string(),
             guest_mac: Some("AA:FC:00:00:00:01".to_string()),
             wan_iface: Some("eth0".to_string()),
+            firewall_chain: Some("ember-a3f4-forward".to_string()),
         });
         vm.status = VmStatus::Running;
         vm.pid = Some(42);

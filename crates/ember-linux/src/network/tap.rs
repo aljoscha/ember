@@ -168,6 +168,20 @@ pub fn prefix(instance_id: Option<&str>) -> String {
     }
 }
 
+/// iptables interface match covering every TAP device of an
+/// installation.
+///
+/// [`prefix`] followed by iptables' `+` wildcard, which matches any
+/// interface whose name starts with what precedes it. The trailing dash
+/// in the prefix is what keeps this away from physical NICs named `em1`
+/// or `em2`, and what keeps installs apart: `em-+` does not match
+/// `emaaaa-...` and vice versa. Two legacy installs on one host do
+/// share `em-+`, which is the same collision their shared TAP prefix
+/// already has.
+pub fn wildcard(instance_id: Option<&str>) -> String {
+    format!("{}+", prefix(instance_id))
+}
+
 /// List TAP devices on the system whose name starts with `prefix`.
 ///
 /// Parses the output of `ip -o link show type tun`. Pass the
@@ -252,6 +266,15 @@ mod tests {
         assert_eq!(p, "emffff-");
         // Locks the IFNAMSIZ budget: prefix (7) + 7-hex VM id ≤ 15.
         assert!(p.len() + 7 <= 15);
+    }
+
+    #[test]
+    fn wildcard_matches_one_installs_devices() {
+        assert_eq!(wildcard(Some("a3f4")), "ema3f4-+");
+        assert_eq!(wildcard(None), "em-+");
+        // The trailing dash is the whole reason a physical `em1`
+        // cannot match, so it must survive into the wildcard.
+        assert!(wildcard(Some("a3f4")).contains('-'));
     }
 
     /// Locked at 3 chars: legacy hosts have `em-<vmid7>` TAP names
