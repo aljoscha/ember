@@ -55,7 +55,7 @@ regardless of what else is in the host's firewall:
 - IPv6 connectivity of any kind. ember is IPv4-only, and this spec
   closes IPv6 on ember links rather than policing it.
 - Per-VM network policy knobs. The design leaves room for them (see
-  Open decisions) but does not add any.
+  Still open) but does not add any.
 - nftables. ember shells out to `iptables`, and that stays.
 
 ## Design
@@ -410,23 +410,31 @@ Rough size: 350 to 450 lines including tests, most of it in
   Reporting policy health from `ember info` would close the
   observability gap.
 
-## Open decisions
+## Decisions
 
-1. **Should VM-to-host be overridable?** Decided: no, not for now. The
-   host block has no escape hatch, and reaching a service on the host
-   from a VM is simply not possible. If that turns out to be needed, the
-   shape would be an install-wide `ember init --allow-host-access`
-   persisted on `GlobalConfig` and read by `policy::ensure`, which would
-   then omit the drop or accept the TAP gateway address only.
-2. **Is punching through the host's `FORWARD` rules acceptable?** The
-   alternative is leaving egress appended at the bottom of the
-   built-in chain, which keeps ember deferential but makes egress and
-   VM-to-VM behave inconsistently on restrictive hosts.
-3. **Should masquerade move into an `ember-<id>-postrouting` chain
+1. **VM-to-host is not overridable.** The host block has no escape
+   hatch, and reaching a service on the host from a VM is simply not
+   possible. If that turns out to be needed, the shape would be an
+   install-wide `ember init --allow-host-access` persisted on
+   `GlobalConfig` and read by `policy::ensure`, which would then omit the drop
+   or accept the TAP gateway address only.
+2. **Entering `FORWARD` at position 1 is accepted**, with the
+   consequence that a host admin's mid-chain `DROP` or `REJECT` no
+   longer governs ember VM traffic. The alternative, leaving egress
+   appended at the bottom of the built-in chain, keeps ember deferential
+   but makes egress and VM-to-VM behave inconsistently on restrictive
+   hosts, which is the inconsistency this design exists to remove. An
+   admin who does want to restrain ember VMs still can: `policy::ensure` only
+   checks that its jump exists, not where it sits, so a rule inserted
+   above the jump survives every subsequent VM start.
+
+## Still open
+
+1. **Should masquerade move into an `ember-<id>-postrouting` chain
    too?** Uniform scoping and immunity to `POSTROUTING` ordering, at
    the cost of a third chain and lifecycle. It does not let the
    comment machinery retire, since legacy deletes need it regardless.
-4. **Per-VM opt-out.** A `network.isolated: true` in the VM config
+2. **Per-VM opt-out.** A `network.isolated: true` in the VM config
    would be a per-VM drop inserted above the sibling accept. Cheap to
    add later, out of scope now.
 
