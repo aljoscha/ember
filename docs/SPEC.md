@@ -103,7 +103,9 @@ src/
 │   ├── mod.rs
 │   ├── tap.rs           # TAP device via ioctl (nix crate)
 │   ├── ip.rs            # IP allocation from pool
-│   ├── nat.rs           # iptables NAT/masquerade rules
+│   ├── iptables.rs      # iptables invocation: rules, chains, locking
+│   ├── nat.rs           # Per-VM masquerade and forwarding rules
+│   ├── policy.rs        # Install-owned chains: VM-to-VM, host isolation
 │   ├── dns.rs           # Host DNS nameserver detection for guests
 │   └── wan.rs           # WAN interface auto-detection
 ├── image/
@@ -278,7 +280,7 @@ The `forked_from` field in VM metadata tracks the origin snapshot path (e.g., `<
 
 1. Load VM metadata from state store
 2. Create TAP device + allocate IP
-3. Configure iptables NAT rules
+3. Assert the installation's firewall chains, add the VM's iptables rules
 4. Spawn: `firecracker --api-sock <sock-path> --log-path <log-path> --level Info`
 5. Wait for API socket (poll 10ms, timeout 5s)
 6. Configure via API:
@@ -333,11 +335,15 @@ When no kernel is specified, `stock` is used as the default and auto-downloaded 
 
 ### Model: TAP + NAT per VM
 
-Each VM gets an isolated point-to-point link:
+Each VM gets a point-to-point link:
 
 ```
 Host: em-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 ```
+
+Traffic between two VMs is routed by the host across their TAPs, since
+each sits on its own /30. What is and isn't permitted across those links
+is the firewall policy below.
 
 ### IP Allocation
 
@@ -347,23 +353,80 @@ Host: em-<short-id> (TAP)  10.100.0.1/30  ←→  Guest: eth0  10.100.0.2/30
 - Supports ~16384 concurrent VMs with a /16
 - Allocations tracked in state store, released on VM delete
 
+### Firewall Policy
+
+One contract, independent of whatever else the host keeps in its
+firewall: **a VM reaches the internet and the other VMs of its own
+installation, and nothing else.** In particular it cannot reach the
+host, at any host address.
+
+Each installation owns two chains, entered from position 1 of the
+built-in chains. Position 1 is what makes the policy hold: a
+pre-existing `-A INPUT -s 10.0.0.0/8 -j ACCEPT` would otherwise match
+guest traffic before the host block, and a mid-chain `REJECT` from ufw
+or firewalld would be reached before the forwarding rules. Both chains
+are transparent to non-ember traffic, since every rule in them matches
+an ember TAP interface and anything else falls through to the built-in
+chain right after the jump.
+
+```
+-A INPUT   -j ember-<id>-input
+-A FORWARD -j ember-<id>-forward
+
+# ember-<id>-input: host isolation.
+-i em<id>-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-i em<id>-+ -j DROP
+
+# ember-<id>-forward: install-wide.
+-i em<id>-+ -o em<id>-+ -j ACCEPT      # VM to VM, both directions
+-i em<id>-+ -j DROP                    # terminal
+
+# ember-<id>-forward: per VM.
+-i <tap-dev> -o <wan-iface> -j ACCEPT
+-i <wan-iface> -o <tap-dev> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+```
+
+The established-accept in the input chain is mandatory. Replies to
+host-initiated connections arrive on INPUT from the TAP, so without it
+`ember ssh`, `exec` and `cp` would break.
+
+Rule order needs no bookkeeping. Each chain holds ACCEPTs plus exactly
+one terminal DROP, ACCEPTs are inserted at the front and the DROP is
+appended, so the DROP is always last whatever subset of rules already
+exists.
+
+Chains are asserted on every VM start, not created once at `ember
+init`, because iptables state does not survive a reboot. They are
+removed by `ember deinit`. The chain a VM's rules went into is recorded
+on its `NetworkInfo`, so rules written by an older binary (appended
+straight to FORWARD with a `-m comment --comment ember:<id>` tag) are
+still deleted from where they actually are.
+
+Masquerade stays in the shared `nat` POSTROUTING chain with its comment
+tag. It is an address translation rather than a policy decision, and
+keeping its shape unchanged means rules written before and after the
+policy chains existed remain mutually deletable.
+
 ### Setup (per VM start)
 
 1. Create TAP device via ioctl (`/dev/net/tun`, IFF_TAP | IFF_NO_PI)
-2. `ip addr add <host-ip>/30 dev em-<short-id>` + `ip link set up`
-3. Enable IP forwarding: `sysctl net.ipv4.ip_forward=1`
-4. iptables rules:
-   ```
-   -t nat -A POSTROUTING -s <guest-ip>/32 -o <wan-iface> -j MASQUERADE
-   -A FORWARD -i <tap-dev> -o <wan-iface> -j ACCEPT
-   -A FORWARD -i <wan-iface> -o <tap-dev> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-   ```
+2. Disable IPv6 on the device (`net.ipv6.conf.<tap>.disable_ipv6=1`),
+   before the link comes up so no link-local address is ever assigned.
+   ember is IPv4-only, and a v6 link-local pair would let a guest reach
+   the host past the IPv4 policy.
+3. `ip addr add <host-ip>/30 dev em-<short-id>` + `ip link set up`
+4. Enable IP forwarding: `sysctl net.ipv4.ip_forward=1`
+5. Create the installation's chains and jumps if absent (idempotent)
+6. Add the per-VM masquerade and forwarding rules
 
 ### Cleanup (per VM stop/delete)
 
-1. `iptables -D` (same rules with delete flag)
+1. `iptables -D` for the per-VM rules, in the chain recorded on the VM
 2. `ip link delete em-<short-id>`
 3. Release IP allocation
+
+The installation's chains outlive its VMs and are removed by `ember
+deinit`.
 
 ### WAN Interface Detection
 
@@ -380,7 +443,7 @@ Detection order (scoped to the WAN interface to avoid unreachable servers):
 3. `/etc/resolv.conf` — direct resolv.conf parsing
 4. Fallback: `1.1.1.1`, `8.8.8.8`
 
-Filters out IPv6 addresses (VMs only have IPv4) and loopback addresses (unreachable from the guest). Returns at most 2 servers (kernel `ip=` parameter limit).
+Filters out IPv6 addresses (VMs only have IPv4), loopback addresses, and the host's own addresses. All three are unreachable from a guest, the last because the firewall policy blocks VM-to-host traffic, so a host running its own resolver (dnsmasq, or a pihole bound to the LAN address) would otherwise hand every guest a nameserver that answers nothing. A dropped server falls through to the next detection source and is reported as a warning. Returns at most 2 servers (kernel `ip=` parameter limit).
 
 ### Rootfs Injection
 
