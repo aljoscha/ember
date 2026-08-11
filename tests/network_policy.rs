@@ -80,6 +80,25 @@ impl Drop for ChainCleanup {
     }
 }
 
+/// Stops the test's VMs on the way out, including on a panic.
+///
+/// Without this, a Firecracker process outlives the test and holds its
+/// zvol open, and the harness's pool teardown blocks in `zpool destroy`
+/// in uninterruptible sleep until the process is killed by hand. Must
+/// be declared *after* the `TestEnv` so it drops before the pool does.
+struct VmCleanup {
+    state: String,
+    names: Vec<&'static str>,
+}
+
+impl Drop for VmCleanup {
+    fn drop(&mut self) {
+        for name in &self.names {
+            common::stop_and_delete_vm(&self.state, name);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // State helpers
 // ---------------------------------------------------------------------------
@@ -128,9 +147,13 @@ fn policy_chains_are_placed_correctly_and_removed_on_deinit() {
     let input_chain = format!("ember-{id}-input");
     let forward_chain = format!("ember-{id}-forward");
     let taps = format!("em{id}-+");
-    let _cleanup = ChainCleanup {
+    let _chain_cleanup = ChainCleanup {
         input: input_chain.clone(),
         forward: forward_chain.clone(),
+    };
+    let _vm_cleanup = VmCleanup {
+        state: state.clone(),
+        names: vec!["polvm"],
     };
 
     let net = network_info(&state, "polvm");
@@ -302,12 +325,26 @@ fn vms_reach_each_other_but_not_the_host() {
     let state = env.state().to_string();
 
     let id = instance_id(&state);
-    let _cleanup = ChainCleanup {
+    let _chain_cleanup = ChainCleanup {
         input: format!("ember-{id}-input"),
         forward: format!("ember-{id}-forward"),
     };
+    let _vm_cleanup = VmCleanup {
+        state: state.clone(),
+        names: vec!["vma", "vmb"],
+    };
 
-    // A second VM in the same install, so the two are siblings.
+    // A second VM in the same install, so the two are siblings. Alpine
+    // rather than the ubuntu-slim image vma runs: this VM only has to
+    // answer pings, which the guest kernel does on its own, and the
+    // harness sizes its pool for exactly one ubuntu rootfs.
+    let output = common::ember(&["--state-dir", &state, "image", "pull", "alpine:latest"]);
+    assert!(
+        output.status.success(),
+        "pulling alpine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let kernel = common::linux::ensure_kernel();
     let output = common::ember(&[
         "--state-dir",
@@ -316,13 +353,13 @@ fn vms_reach_each_other_but_not_the_host() {
         "create",
         "vmb",
         "--image",
-        "ubuntu-slim",
+        "alpine:latest",
         "--kernel",
         kernel.to_str().unwrap(),
         "--cpus",
         "1",
         "--memory",
-        "512M",
+        "128M",
     ]);
     assert!(
         output.status.success(),
@@ -369,6 +406,4 @@ fn vms_reach_each_other_but_not_the_host() {
         0,
         "VM A lost outbound connectivity"
     );
-
-    common::stop_and_delete_vm(&state, "vmb");
 }
