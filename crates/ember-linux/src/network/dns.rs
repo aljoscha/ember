@@ -30,32 +30,85 @@ const MAX_NAMESERVERS: usize = 2;
 /// 3. `/etc/resolv.conf` — direct resolv.conf
 /// 4. Fallback to 1.1.1.1 + 8.8.8.8
 ///
-/// Filters out IPv6 addresses (VMs only have IPv4) and loopback
-/// addresses (unreachable from the guest).
+/// Filters out IPv6 addresses (VMs only have IPv4), loopback
+/// addresses, and the host's own addresses. All three are unreachable
+/// from a guest, the last because [`super::policy`] blocks VM-to-host
+/// traffic, so a host running its own resolver (dnsmasq or a pihole
+/// bound to the LAN address) would otherwise hand every guest a
+/// nameserver that answers nothing.
 pub fn detect_nameservers(wan_iface: &str) -> Vec<String> {
-    // Try interface-specific DNS via resolvectl (most accurate).
-    if let Some(servers) = resolvectl_dns(wan_iface) {
-        if !servers.is_empty() {
-            return servers;
-        }
+    let host = host_addresses();
+    let mut blocked = Vec::new();
+
+    // Sources in order of accuracy, each dropping anything the guest
+    // can't reach and falling through to the next if nothing survives.
+    let mut take = |servers: Option<Vec<String>>| -> Option<Vec<String>> {
+        let (reachable, unreachable) = partition_reachable(servers.unwrap_or_default(), &host);
+        blocked.extend(unreachable);
+        (!reachable.is_empty()).then_some(reachable)
+    };
+
+    let mut servers = take(resolvectl_dns(wan_iface));
+    if servers.is_none() {
+        servers = take(parse_resolv_conf(Path::new(
+            "/run/systemd/resolve/resolv.conf",
+        )));
+    }
+    if servers.is_none() {
+        servers = take(parse_resolv_conf(Path::new("/etc/resolv.conf")));
     }
 
-    // Fall back to systemd-resolved upstream config.
-    if let Some(servers) = parse_resolv_conf(Path::new("/run/systemd/resolve/resolv.conf")) {
-        if !servers.is_empty() {
-            return servers;
-        }
-    }
+    let servers =
+        servers.unwrap_or_else(|| FALLBACK_NAMESERVERS.iter().map(|s| s.to_string()).collect());
 
-    // Fall back to /etc/resolv.conf.
-    if let Some(servers) = parse_resolv_conf(Path::new("/etc/resolv.conf")) {
-        if !servers.is_empty() {
-            return servers;
-        }
+    if !blocked.is_empty() {
+        eprintln!(
+            "Warning: DNS server(s) {} belong to the host, which guests cannot reach.",
+            blocked.join(", ")
+        );
+        eprintln!("  Using {} instead.", servers.join(", "));
     }
+    servers
+}
 
-    // Last resort: hardcoded public DNS.
-    FALLBACK_NAMESERVERS.iter().map(|s| s.to_string()).collect()
+/// Split nameservers into those a guest can reach and those it can't
+/// because they are host addresses.
+fn partition_reachable(servers: Vec<String>, host: &[String]) -> (Vec<String>, Vec<String>) {
+    servers
+        .into_iter()
+        .partition(|server| !host.iter().any(|addr| addr == server))
+}
+
+/// The host's own IPv4 addresses, including TAP gateways.
+///
+/// Empty if the addresses can't be listed, which leaves detection
+/// exactly as permissive as it was before this filter existed rather
+/// than failing a VM start over a diagnostic.
+fn host_addresses() -> Vec<String> {
+    let Ok(output) = Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_host_addresses(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Pull the addresses out of `ip -4 -o addr show` output, whose lines
+/// look like `2: enp7s0    inet 192.168.0.23/24 brd ... scope global`.
+fn parse_host_addresses(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            fields.find(|f| *f == "inet")?;
+            let cidr = fields.next()?;
+            Some(cidr.split('/').next()?.to_string())
+        })
+        .collect()
 }
 
 /// Query DNS servers for a specific interface via `resolvectl dns`.
@@ -204,6 +257,50 @@ mod tests {
     #[test]
     fn parse_resolv_conf_missing_file() {
         assert!(parse_resolv_conf(Path::new("/nonexistent/resolv.conf")).is_none());
+    }
+
+    #[test]
+    fn host_addresses_parsed_from_ip_output() {
+        let output = "\
+1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever
+2: enp7s0    inet 192.168.0.23/24 brd 192.168.0.255 scope global dynamic enp7s0\\       valid_lft 5000sec
+8: em-eefd28d    inet 10.100.0.1/30 brd 10.100.0.3 scope global em-eefd28d\\       valid_lft forever
+";
+        assert_eq!(
+            parse_host_addresses(output),
+            ["127.0.0.1", "192.168.0.23", "10.100.0.1"]
+        );
+    }
+
+    #[test]
+    fn host_addresses_tolerates_empty_output() {
+        assert!(parse_host_addresses("").is_empty());
+    }
+
+    /// A host-run resolver is unreachable from a guest, so it has to be
+    /// dropped rather than handed over and left to time out.
+    #[test]
+    fn nameservers_on_host_addresses_are_dropped() {
+        let host = ["192.168.0.23".to_string(), "10.100.0.1".to_string()];
+        let (reachable, blocked) = partition_reachable(
+            vec![
+                "192.168.0.23".to_string(),
+                "1.1.1.1".to_string(),
+                "10.100.0.1".to_string(),
+            ],
+            &host,
+        );
+        assert_eq!(reachable, ["1.1.1.1"]);
+        assert_eq!(blocked, ["192.168.0.23", "10.100.0.1"]);
+    }
+
+    #[test]
+    fn nameservers_off_host_are_all_kept() {
+        let host = ["192.168.0.23".to_string()];
+        let servers = vec!["9.9.9.9".to_string(), "1.1.1.1".to_string()];
+        let (reachable, blocked) = partition_reachable(servers.clone(), &host);
+        assert_eq!(reachable, servers);
+        assert!(blocked.is_empty());
     }
 
     #[test]
