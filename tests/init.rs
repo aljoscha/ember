@@ -166,6 +166,7 @@ fn init_custom_dataset_name() {
         pool: pool.clone(),
         dev: loop_dev.clone(),
         backing_file: img,
+        state_dir: state_dir.clone(),
     };
 
     let output = common::ember(&[
