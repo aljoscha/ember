@@ -224,17 +224,17 @@ impl DmThinStorage {
             pool::PoolMode::ReadWrite => Ok(()),
             pool::PoolMode::ReadOnly => Err(Error::Pool(format!(
                 "dm-thin pool '{}' is read-only — run `thin_check` and `thin_repair` to recover",
-                &self.pool_name
+                self.pool_name
             ))),
             pool::PoolMode::OutOfDataSpace => Err(Error::Pool(format!(
                 "dm-thin pool '{}' is out of data space ({}/{} blocks used) — run `ember storage grow --size <bigger>` to extend it",
-                &self.pool_name,
+                self.pool_name,
                 status.used_data_blocks,
                 status.total_data_blocks,
             ))),
             pool::PoolMode::Failed => Err(Error::Pool(format!(
                 "dm-thin pool '{}' has failed — inspect dmesg and `thin_check` the metadata device",
-                &self.pool_name
+                self.pool_name
             ))),
         }
     }
@@ -622,7 +622,7 @@ impl StorageBackend for DmThinStorage {
                 let _ = fs::remove_dir(&self.storage_path);
             }
         }
-        println!("dm-thin pool '{}' torn down.", &self.pool_name);
+        println!("dm-thin pool '{}' torn down.", self.pool_name);
         Ok(())
     }
 
