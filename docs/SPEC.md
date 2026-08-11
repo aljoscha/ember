@@ -511,6 +511,7 @@ pub struct VmMetadata {
 On every privileged command invocation (skipped for `init`, `version`, read-only queries, and SSH-client commands), lightweight reconciliation runs (`state/reconcile.rs`):
 - For each VM in Running or Paused state, check if PID is alive (`kill(pid, 0)`)
 - Dead process → mark Stopped, cleanup TAP + iptables + IP allocation
+- A running VM whose forwarding rules are outside the installation's policy chain → move them in, so the chain's terminal DROP doesn't cut off a VM that was started before the chain existed
 - Orphaned `em-*` TAP devices without running VM → delete
 
 Reconciliation can also be triggered manually via `ember reconcile`.

@@ -104,14 +104,29 @@ pub fn ensure(instance_id: Option<&str>) -> Result<()> {
 pub fn deinit(instance_id: Option<&str>) -> Result<()> {
     let chains = chains(instance_id);
 
+    // Every step is attempted even after one fails, and only the first
+    // error is reported. Bailing early would leave one chain behind
+    // because the other could not be removed, and the caller's only
+    // recourse is a warning either way.
+    let mut failure = None;
+
     // Jumps first. iptables refuses to delete a chain that anything
     // still references.
     for rule in jumps(&chains) {
-        rule.remove()?;
+        if let Err(e) = rule.remove() {
+            failure = failure.or(Some(e));
+        }
     }
-    iptables::remove_chain(&chains.input)?;
-    iptables::remove_chain(&chains.forward)?;
-    Ok(())
+    for chain in [&chains.input, &chains.forward] {
+        if let Err(e) = iptables::remove_chain(chain) {
+            failure = failure.or(Some(e));
+        }
+    }
+
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// The install-wide rules, the ones that hold no per-VM state.

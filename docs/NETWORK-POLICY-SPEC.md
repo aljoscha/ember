@@ -304,6 +304,30 @@ pub struct VmRules<'a> {
 `comment` stays needed in both modes, for the masquerade rule in the
 new mode and for all three rules in the legacy mode.
 
+### Adopting VMs that are already running
+
+A VM running at the moment the chains first appear is the sharp edge of
+the upgrade. Its rules are in the built-in FORWARD chain, which is
+below the jump, so the chain's terminal DROP cuts it off the instant
+another VM start creates the chain. The VM keeps running and silently
+loses its network.
+
+Reconcile, which runs at the start of every command, therefore moves
+such a VM's forwarding rules into the chain: add the in-chain pair,
+delete the built-in pair, then record `firewall_chain` on the VM so
+teardown deletes from the right place. Add before delete, so the VM is
+never without a rule. A momentary duplicate ACCEPT is harmless.
+
+The masquerade rule must be excluded from this move. Its shape is
+identical in both modes, so a naive add-then-remove of the full rule
+set would delete it immediately after re-adding it and leave the VM
+with no NAT. That is why `VmRules` exposes the forwarding pair
+separately from the full set.
+
+The work is one-shot per VM. After it runs, every VM's record points at
+a chain and the check costs nothing, so reconcile does not re-assert
+rules for VMs that already have them.
+
 ### Landing order hazard
 
 The terminal `DROP` in `ember-<id>-forward` must not exist until the
