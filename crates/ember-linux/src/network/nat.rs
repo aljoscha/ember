@@ -87,24 +87,53 @@ impl VmRules<'_> {
         }
     }
 
+    /// Add only the two forwarding rules.
+    ///
+    /// Pairs with [`remove_forwarding`](Self::remove_forwarding) to move
+    /// a VM's forwarding rules from one chain to another without
+    /// touching the masquerade rule, whose shape is identical in both
+    /// modes and would otherwise be deleted right after being re-added.
+    pub fn add_forwarding(&self) -> Result<()> {
+        for rule in self.forwarding() {
+            rule.ensure()?;
+        }
+        Ok(())
+    }
+
+    /// Remove only the two forwarding rules, best effort.
+    pub fn remove_forwarding(&self) {
+        for rule in self.forwarding() {
+            let _ = rule.remove();
+        }
+    }
+
     /// The rules, in the order `add` applies them.
     fn rules(&self) -> Vec<Rule> {
-        let guest_cidr = format!("{}/32", self.guest_ip);
+        let mut rules = vec![self.masquerade()];
+        rules.extend(self.forwarding());
+        rules
+    }
 
-        // The masquerade rule keeps the same shape in both modes: it
-        // has always lived in the shared POSTROUTING chain with the
-        // comment as its only scoping, so rules written before and
-        // after the policy chains existed are byte-for-byte identical
-        // and stay mutually deletable.
-        let masquerade = Rule::nat(
+    /// Source NAT for the guest's address.
+    ///
+    /// Identical in both modes: it has always lived in the shared
+    /// POSTROUTING chain with the comment as its only scoping, so rules
+    /// written before and after the policy chains existed are
+    /// byte-for-byte identical and stay mutually deletable.
+    fn masquerade(&self) -> Rule {
+        let guest_cidr = format!("{}/32", self.guest_ip);
+        Rule::nat(
             "POSTROUTING",
             &with_comment(
                 &["-s", &guest_cidr, "-o", self.wan_iface],
                 self.comment,
                 &["-j", "MASQUERADE"],
             ),
-        );
+        )
+    }
 
+    /// Outbound and return-path rules for the guest's TAP.
+    fn forwarding(&self) -> [Rule; 2] {
         let outbound = &["-i", self.tap_device, "-o", self.wan_iface];
         let inbound = &[
             "-i",
@@ -117,16 +146,16 @@ impl VmRules<'_> {
             "RELATED,ESTABLISHED",
         ];
 
-        let (outbound, inbound) = match self.chain {
+        match self.chain {
             // Inside a chain ember owns, the chain itself is the
             // scope, so the comment match would be noise. Front
             // placement keeps both ACCEPTs above the chain's terminal
             // DROP without having to inspect rule order.
-            Some(chain) => (
+            Some(chain) => [
                 Rule::filter(chain, &[outbound.as_slice(), &["-j", "ACCEPT"]].concat()).at_front(),
                 Rule::filter(chain, &[inbound.as_slice(), &["-j", "ACCEPT"]].concat()).at_front(),
-            ),
-            None => (
+            ],
+            None => [
                 Rule::filter(
                     "FORWARD",
                     &with_comment(outbound, self.comment, &["-j", "ACCEPT"]),
@@ -135,10 +164,8 @@ impl VmRules<'_> {
                     "FORWARD",
                     &with_comment(inbound, self.comment, &["-j", "ACCEPT"]),
                 ),
-            ),
-        };
-
-        vec![masquerade, outbound, inbound]
+            ],
+        }
     }
 }
 
@@ -352,6 +379,37 @@ mod tests {
                 "ACCEPT"
             ]
         );
+    }
+
+    /// The forwarding set must exclude masquerade. Moving a VM's rules
+    /// between chains adds the new set and removes the old one, and
+    /// masquerade has the same shape in both, so including it would
+    /// delete the rule right after re-adding it and leave the VM
+    /// without NAT.
+    #[test]
+    fn forwarding_set_excludes_masquerade() {
+        let rules = tagged(Some("ember-a3f4-forward"));
+        for rule in rules.forwarding() {
+            let invocation = rule.add_args();
+            assert!(
+                !invocation.contains(&"MASQUERADE".to_string())
+                    && !invocation.contains(&"nat".to_string()),
+                "masquerade must not be part of the forwarding set: {invocation:?}"
+            );
+        }
+        assert_eq!(rules.rules().len(), rules.forwarding().len() + 1);
+    }
+
+    /// Moving rules between chains only works if the two modes really
+    /// target different chains for the same VM.
+    #[test]
+    fn the_two_modes_target_different_chains() {
+        let in_chain = tagged(Some("ember-a3f4-forward"));
+        let outside = tagged(None);
+        for (a, b) in in_chain.forwarding().iter().zip(outside.forwarding()) {
+            assert_ne!(a.add_args(), b.add_args());
+            assert_ne!(a.delete_args(), b.delete_args());
+        }
     }
 
     /// A legacy install has no namespace, so its rules carry no

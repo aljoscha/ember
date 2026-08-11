@@ -6,7 +6,11 @@
 //!    is still alive. If dead, mark the VM as Stopped and clean up its
 //!    network resources (TAP device, iptables rules, IP allocation).
 //!
-//! 2. Find orphaned TAP devices belonging to *this* installation
+//! 2. Move the forwarding rules of VMs that were started before the
+//!    installation had policy chains into the chain, so the chain's
+//!    terminal DROP doesn't cut them off.
+//!
+//! 3. Find orphaned TAP devices belonging to *this* installation
 //!    (matched against [`network::tap::prefix`] for the install's
 //!    namespace) and delete them. Other ember installs use distinct
 //!    prefixes, so reconciliation here never touches their devices.
@@ -49,6 +53,8 @@ pub fn run(state_dir: &Path) {
 
     // Track TAP devices that belong to legitimately running VMs.
     let mut active_tap_devices = HashSet::new();
+    // Running VMs whose forwarding rules predate the policy chains.
+    let mut unchained = Vec::new();
 
     // Phase 1: Reconcile VMs whose processes have died.
     for metadata in vms {
@@ -77,6 +83,9 @@ pub fn run(state_dir: &Path) {
             // Process is alive — this VM is genuinely running.
             if let Some(ref net) = metadata.network {
                 active_tap_devices.insert(net.tap_device.clone());
+                if net.firewall_chain.is_none() {
+                    unchained.push(metadata.clone());
+                }
             }
         } else {
             // Process is dead — clean up and mark stopped.
@@ -93,12 +102,19 @@ pub fn run(state_dir: &Path) {
         }
     }
 
-    // Phase 2: Clean up orphaned TAP devices belonging to this install.
-    // Without a config we have no way to scope the listing safely, so
-    // skip — leaving an orphan is preferable to deleting a foreign one.
+    // Without a config we have no way to scope host-global names safely,
+    // so skip the rest — leaving an orphan is preferable to deleting a
+    // foreign one.
     let Some(cfg) = config else {
         return;
     };
+
+    // Phase 2: Adopt running VMs whose rules predate the policy chains.
+    for metadata in unchained {
+        adopt_into_policy_chain(&store, &cfg, &metadata);
+    }
+
+    // Phase 3: Clean up orphaned TAP devices belonging to this install.
     let prefix = network::tap::prefix(cfg.instance_namespace());
     let system_devices = match network::tap::list_devices_with_prefix(&prefix) {
         Ok(devs) => devs,
@@ -113,6 +129,83 @@ pub fn run(state_dir: &Path) {
             eprintln!("Warning: deleting orphaned TAP device '{device}'");
             let _ = network::tap::delete(&device);
         }
+    }
+}
+
+/// Move a running VM's forwarding rules into the install's policy
+/// chain.
+///
+/// A VM started before the install had policy chains has its rules
+/// appended to the built-in FORWARD chain, which is below the jump into
+/// our chain, so the chain's terminal DROP would cut the VM off the
+/// moment the chain appears. Rather than leave the user with a live VM
+/// that has silently lost its network until they restart it, we re-add
+/// its rules inside the chain and delete the ones outside.
+///
+/// The masquerade rule is deliberately untouched. Its shape is
+/// identical in both modes, so adding and then removing the full set
+/// would delete it and break the VM's outbound NAT.
+///
+/// Best effort. On failure the VM keeps working exactly as badly as it
+/// would have anyway, and the warning says what to do about it.
+fn adopt_into_policy_chain(store: &StateStore, config: &GlobalConfig, metadata: &vm::VmMetadata) {
+    let Some(net) = metadata.network.as_ref() else {
+        return;
+    };
+    let Some(wan_iface) = net
+        .wan_iface
+        .clone()
+        .or_else(|| network::wan::detect().ok())
+    else {
+        return;
+    };
+
+    let ns = config.instance_namespace();
+    if let Err(e) = network::policy::ensure(ns) {
+        eprintln!("Warning: could not set up firewall chains: {e}");
+        return;
+    }
+    let chains = network::policy::chains(ns);
+
+    let comment = network::nat::comment(ns);
+    let in_chain = network::nat::VmRules {
+        chain: Some(&chains.forward),
+        tap_device: &net.tap_device,
+        guest_ip: &net.guest_ip,
+        wan_iface: &wan_iface,
+        comment: &comment,
+    };
+    let outside = network::nat::VmRules {
+        chain: None,
+        ..in_chain
+    };
+
+    // Add before removing, so the VM is never without a rule. A brief
+    // duplicate ACCEPT is harmless.
+    if let Err(e) = in_chain.add_forwarding() {
+        eprintln!(
+            "Warning: VM '{}' still has its firewall rules outside '{}' \
+             and may have lost network access ({e}). Restart it with \
+             'ember vm stop {} && ember vm start {}'.",
+            metadata.name, chains.forward, metadata.name, metadata.name
+        );
+        return;
+    }
+    outside.remove_forwarding();
+
+    // Record where the rules now live, so teardown deletes them from
+    // the chain rather than from the built-in one.
+    let result = vm::update(store, &metadata.name, |m| {
+        if let Some(ref mut net) = m.network {
+            net.firewall_chain = Some(chains.forward.clone());
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
+        eprintln!(
+            "Warning: failed to record the firewall chain for VM '{}': {e}",
+            metadata.name
+        );
     }
 }
 
