@@ -188,6 +188,88 @@ fn legacy_config_without_instance_id_keeps_working() {
     );
 }
 
+/// `deinit` must only remove firewall chains belonging to *this*
+/// install. Create install A's chains manually, tear down install B,
+/// and verify A's chains are still there. Chains are host-global and
+/// named per install, so an unscoped delete would take down the
+/// developer's live policy from inside a test run.
+#[test]
+#[ignore = "requires root + iptables"]
+fn deinit_does_not_touch_other_installs_chains() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage_b = tmp.path().join("dm-thin-b");
+    let state_b = tmp.path().join("state-b");
+
+    let _cleanup_b = common::linux::DmThinCleanup {
+        state_dir: state_b.clone(),
+    };
+
+    // Stand in for install A: the chain names `instance_id` "aaaa"
+    // would derive, created directly so the test doesn't have to boot a
+    // VM to bring them into existence.
+    const CHAINS_A: [&str; 2] = ["ember-aaaa-input", "ember-aaaa-forward"];
+    struct ChainCleanup;
+    impl Drop for ChainCleanup {
+        fn drop(&mut self) {
+            for chain in CHAINS_A {
+                let _ = std::process::Command::new("iptables")
+                    .args(["-w", "5", "-X", chain])
+                    .status();
+            }
+        }
+    }
+    let _chain_cleanup = ChainCleanup;
+    for chain in CHAINS_A {
+        let status = std::process::Command::new("iptables")
+            .args(["-w", "5", "-N", chain])
+            .status()
+            .expect("failed to run iptables -N");
+        assert!(status.success(), "failed to create test chain {chain}");
+    }
+
+    let output = common::ember(&[
+        "--state-dir",
+        state_b.to_str().unwrap(),
+        "init",
+        "--storage",
+        "dm-thin",
+        "--storage-path",
+        storage_b.to_str().unwrap(),
+        "--size",
+        "200M",
+        "--instance-id",
+        "bbbb",
+    ]);
+    assert!(
+        output.status.success(),
+        "init B failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = common::ember(&[
+        "--state-dir",
+        state_b.to_str().unwrap(),
+        "deinit",
+        "--purge",
+    ]);
+    assert!(
+        output.status.success(),
+        "deinit B failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for chain in CHAINS_A {
+        let check = std::process::Command::new("iptables")
+            .args(["-w", "5", "-S", chain])
+            .output()
+            .expect("failed to run iptables -S");
+        assert!(
+            check.status.success(),
+            "install B's deinit deleted install A's chain '{chain}'"
+        );
+    }
+}
+
 /// Reconcile (run at the start of every command) must only sweep
 /// TAP devices belonging to *this* install's prefix. Create a TAP
 /// device manually with install A's prefix, then run a reconcile-
