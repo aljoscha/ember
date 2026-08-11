@@ -240,10 +240,14 @@ fn policy_chains_are_placed_correctly_and_removed_on_deinit() {
         !chain_exists(&forward_chain),
         "{forward_chain} survived deinit"
     );
-    for builtin in ["INPUT", "FORWARD"] {
+    // Scoped to this install's chain names. The developer's own install
+    // has its chains in INPUT and FORWARD too, and they legitimately
+    // outlive its VMs, so anything looser than an exact name here fails
+    // on every machine that actually runs ember.
+    for (builtin, chain) in [("INPUT", &input_chain), ("FORWARD", &forward_chain)] {
         assert!(
-            !rules(builtin).iter().any(|r| r.contains("ember-")),
-            "a jump into an ember chain survived deinit in {builtin}"
+            !rules(builtin).iter().any(|r| r.contains(chain.as_str())),
+            "the jump into {chain} survived deinit in {builtin}"
         );
     }
 }
