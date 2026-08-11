@@ -136,6 +136,9 @@ impl NetworkBackend for MacosNetwork {
             netmask: VMNET_NETMASK.to_string(),
             guest_mac: None,
             wan_iface: None,
+            // vmnet keeps no host firewall state, so there is no
+            // chain to record.
+            firewall_chain: None,
         })
     }
 

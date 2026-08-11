@@ -56,19 +56,29 @@ impl NetworkBackend for LinuxNetwork {
             return Err(e);
         }
 
-        // Enable IP forwarding (idempotent).
-        if let Err(e) = network::nat::enable_ip_forwarding() {
+        // Enable IP forwarding and put this install's policy chains in
+        // place. Idempotent, and done on every start because iptables
+        // state does not survive a reboot.
+        let chains = network::policy::chains(ns);
+        if let Err(e) = network::policy::ensure(ns) {
             let _ = network::tap::delete(&tap_name);
             let _ = network::ip::release(&self.store, &vm.name);
             return Err(e);
         }
 
-        // Add iptables NAT/forwarding rules tagged with this install's
-        // comment so cleanup can scope to *this* installation.
+        // Per-VM rules: masquerade in the shared nat table, tagged with
+        // this install's comment, and the two forwarding rules inside
+        // the install's own chain.
         let comment = network::nat::comment(ns);
-        if let Err(e) =
-            network::nat::add_rules(&tap_name, &allocation.guest_ip, &wan_iface, &comment)
-        {
+        let rules = network::nat::VmRules {
+            chain: Some(&chains.forward),
+            tap_device: &tap_name,
+            guest_ip: &allocation.guest_ip,
+            wan_iface: &wan_iface,
+            comment: &comment,
+        };
+        if let Err(e) = rules.add() {
+            rules.remove();
             let _ = network::tap::delete(&tap_name);
             let _ = network::ip::release(&self.store, &vm.name);
             return Err(e);
@@ -81,6 +91,7 @@ impl NetworkBackend for LinuxNetwork {
             netmask: allocation.netmask,
             guest_mac: None,
             wan_iface: Some(wan_iface),
+            firewall_chain: Some(chains.forward),
         })
     }
 

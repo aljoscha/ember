@@ -206,6 +206,7 @@ impl VmBackend for MacosVm {
                 netmask: String::new(),
                 guest_mac: Some(mac),
                 wan_iface: None,
+                firewall_chain: None,
             }
         };
 
