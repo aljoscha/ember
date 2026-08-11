@@ -412,13 +412,12 @@ Rough size: 350 to 450 lines including tests, most of it in
 
 ## Open decisions
 
-1. **Should VM-to-host be overridable?** Running a service on the
-   host and hitting it from a VM is a common dev workflow, and this
-   spec makes it impossible. The escape hatch would be an install-wide
-   `ember init --allow-host-access` persisted on `GlobalConfig` and
-   read by `policy::ensure`, which then omits the drop or accepts the
-   TAP gateway address only. Not specced, since the ask was to block
-   the host.
+1. **Should VM-to-host be overridable?** Decided: no, not for now. The
+   host block has no escape hatch, and reaching a service on the host
+   from a VM is simply not possible. If that turns out to be needed, the
+   shape would be an install-wide `ember init --allow-host-access`
+   persisted on `GlobalConfig` and read by `policy::ensure`, which would
+   then omit the drop or accept the TAP gateway address only.
 2. **Is punching through the host's `FORWARD` rules acceptable?** The
    alternative is leaving egress appended at the bottom of the
    built-in chain, which keeps ember deferential but makes egress and
