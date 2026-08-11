@@ -95,7 +95,14 @@ pub fn create(name: &str, host_ip: &str) -> Result<()> {
     // fd can now be closed — the device persists in the kernel.
     drop(tun_fd);
 
-    // 5. Assign IP address: `ip addr add <host_ip> dev <name>`
+    // 5. Close the IPv6 stack on the link, before it comes up and the
+    //    kernel would assign a link-local address.
+    if let Err(e) = disable_ipv6(name) {
+        let _ = delete(name);
+        return Err(e);
+    }
+
+    // 6. Assign IP address: `ip addr add <host_ip> dev <name>`
     let output = Command::new("ip")
         .args(["addr", "add", host_ip, "dev", name])
         .output()
@@ -108,7 +115,7 @@ pub fn create(name: &str, host_ip: &str) -> Result<()> {
         Error::check_command("ip addr add", output)?;
     }
 
-    // 6. Bring the interface up: `ip link set <name> up`
+    // 7. Bring the interface up: `ip link set <name> up`
     let output = Command::new("ip")
         .args(["link", "set", name, "up"])
         .output()
@@ -122,6 +129,33 @@ pub fn create(name: &str, host_ip: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Turn off IPv6 on a TAP device.
+///
+/// ember configures IPv4 only, but the kernel would otherwise give both
+/// ends of the link a v6 link-local address, and a guest could then
+/// reach the host over IPv6 while the v4 rules in [`super::policy`]
+/// hold the host to be unreachable. Disabling the stack on the device
+/// closes that without a second, parallel set of ip6tables rules to
+/// keep in sync.
+///
+/// Call before the link comes up, so no link-local address is ever
+/// assigned. We write the sysctl directly rather than shelling out
+/// because a kernel built without IPv6 has no such knob, and a missing
+/// file tells us that apart from a genuine write failure while
+/// `sysctl`'s exit status would not.
+fn disable_ipv6(name: &str) -> Result<()> {
+    let path = format!("/proc/sys/net/ipv6/conf/{name}/disable_ipv6");
+    match std::fs::write(&path, "1") {
+        Ok(()) => Ok(()),
+        // No IPv6 in this kernel, so nothing to close.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io {
+            path: path.into(),
+            source: e,
+        }),
+    }
 }
 
 /// Delete a TAP device by name.
