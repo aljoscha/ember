@@ -105,4 +105,10 @@ impl NetworkBackend for LinuxNetwork {
         }
         Ok(())
     }
+
+    /// Remove this installation's firewall chains and the jumps into
+    /// them.
+    fn deinit(&self, config: &GlobalConfig) -> Result<()> {
+        network::policy::deinit(config.instance_namespace())
+    }
 }
