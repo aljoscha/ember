@@ -113,6 +113,8 @@ impl Platform for LinuxPlatform {
         if let Some(ref wan_iface) = config.wan_iface {
             extra.push(("WAN iface", wan_iface.clone()));
         }
+        let chains = crate::network::policy::chains(config.instance_namespace());
+        extra.push(("Firewall", format!("{}, {}", chains.input, chains.forward)));
         extra
     }
 

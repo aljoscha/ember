@@ -8,7 +8,7 @@ use std::path::Path;
 
 use clap::Args;
 
-use crate::backend::create_storage;
+use crate::backend::{create_storage, Network, NetworkBackend};
 use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 use ember_core::state::vm;
@@ -44,6 +44,13 @@ pub fn run(args: &DeinitArgs, state_dir: &Path) -> anyhow::Result<()> {
             names.len(),
             names.join(", "),
         );
+    }
+
+    // Networking first: it is cheap, and a failure here should not
+    // leave the storage pool destroyed. Best-effort, since a leftover
+    // firewall chain is not worth refusing to tear the install down.
+    if let Err(e) = Network::new(store.clone()).deinit(&config) {
+        eprintln!("Warning: failed to remove firewall rules: {e}");
     }
 
     let storage = create_storage(&config);

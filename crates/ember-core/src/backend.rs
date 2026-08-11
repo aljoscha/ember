@@ -337,10 +337,22 @@ pub trait NetworkBackend {
 
     /// Tear down networking for a VM.
     ///
-    /// Linux: removes iptables rules (matched by per-installation
-    /// comment), deletes TAP device, releases IP.
+    /// Linux: removes the VM's iptables rules, deletes its TAP device,
+    /// releases its IP.
     /// macOS: no-op (vmnet cleans up automatically).
     fn teardown(&self, vm: &VmMetadata, config: &GlobalConfig) -> Result<()>;
+
+    /// Remove host-wide network state owned by this installation.
+    ///
+    /// Called from `ember deinit`, which refuses to run while any VM is
+    /// registered, so no per-VM state is left to consider.
+    ///
+    /// Linux: removes the installation's firewall chains.
+    ///
+    /// Default: no-op, for backends that keep no host-wide state.
+    fn deinit(&self, _config: &GlobalConfig) -> Result<()> {
+        Ok(())
+    }
 
     /// Discover the guest's IP address from its MAC address.
     ///
