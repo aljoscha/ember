@@ -88,6 +88,50 @@ pub fn destroy_pool(pool: &str) {
     let _ = Command::new("zpool").args(["destroy", "-f", pool]).status();
 }
 
+/// Remove the firewall chains an installation created, if any.
+///
+/// An install's chains are host-global and outlive its VMs by design, so
+/// a test that starts a VM and never runs `ember deinit` leaves two
+/// chains plus two jumps behind on the developer's machine, and they
+/// accumulate one pair per run.
+///
+/// Reads the instance id from the install's own config, and does nothing
+/// when it is absent or empty. An install predating instance ids shares
+/// its chain names with every other such install, including the
+/// developer's real one, so there is no safe way to tell whose chains
+/// those are.
+pub fn remove_install_chains(state_dir: &Path) {
+    let Ok(raw) = std::fs::read_to_string(state_dir.join("config.json")) else {
+        return;
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let Some(id) = config["instance_id"].as_str().filter(|s| !s.is_empty()) else {
+        return;
+    };
+
+    for (builtin, chain) in [
+        ("INPUT", format!("ember-{id}-input")),
+        ("FORWARD", format!("ember-{id}-forward")),
+    ] {
+        // The jump can exist more than once if rule insertion raced, and
+        // iptables refuses to delete a chain anything still references.
+        while Command::new("iptables")
+            .args(["-w", "5", "-D", builtin, "-j", &chain])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {}
+        let _ = Command::new("iptables")
+            .args(["-w", "5", "-F", &chain])
+            .status();
+        let _ = Command::new("iptables")
+            .args(["-w", "5", "-X", &chain])
+            .status();
+    }
+}
+
 /// RAII guard: destroys ZFS pool and detaches loop device on drop.
 ///
 /// Use this in tests to ensure cleanup happens even on panic. The
@@ -99,10 +143,17 @@ pub struct PoolCleanup {
     pub pool: String,
     pub dev: String,
     pub backing_file: PathBuf,
+    /// State directory of the install, so its firewall chains can be
+    /// removed on drop.
+    pub state_dir: PathBuf,
 }
 
 impl Drop for PoolCleanup {
     fn drop(&mut self) {
+        // Before the pool, because a `zpool destroy` that blocks would
+        // otherwise strand the chains too.
+        remove_install_chains(&self.state_dir);
+
         destroy_pool(&self.pool);
 
         // `zpool destroy -f` can fail (a still-running firecracker
@@ -527,6 +578,7 @@ pub fn setup_pool_and_init(
         pool: pool.clone(),
         dev: loop_dev.clone(),
         backing_file: img,
+        state_dir: state_dir.clone(),
     };
 
     let output = super::ember(&[
@@ -661,6 +713,7 @@ pub fn setup_pool_init_and_build_ubuntu(
         pool: pool.clone(),
         dev: loop_dev.clone(),
         backing_file: img,
+        state_dir: state_dir.clone(),
     };
 
     let output = super::ember(&[

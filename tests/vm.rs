@@ -949,15 +949,20 @@ fn networking_ssh_and_internet() {
         "expected MASQUERADE rule for {guest_ip} in NAT table:\n{nat_rules}"
     );
 
-    // -- Verify FORWARD chain rules --
+    // -- Verify forwarding rules landed in the install's own chain --
+    // They deliberately do not go in the built-in FORWARD chain, which
+    // holds only the jump into this chain. See docs/NETWORK-POLICY-SPEC.md.
+    let firewall_chain = network["firewall_chain"]
+        .as_str()
+        .expect("expected firewall_chain string");
     let iptables_fwd = std::process::Command::new("iptables")
-        .args(["-S", "FORWARD"])
+        .args(["-S", firewall_chain])
         .output()
         .expect("failed to run iptables");
     let fwd_rules = String::from_utf8_lossy(&iptables_fwd.stdout);
     assert!(
         fwd_rules.contains(tap_device),
-        "expected FORWARD rules mentioning {tap_device}:\n{fwd_rules}"
+        "expected rules mentioning {tap_device} in {firewall_chain}:\n{fwd_rules}"
     );
 
     // -- Ping guest from host --
@@ -1063,6 +1068,18 @@ fn networking_ssh_and_internet() {
     assert!(
         !nat_rules_after.contains(&guest_cidr),
         "MASQUERADE rule for {guest_ip} should be gone after stop:\n{nat_rules_after}"
+    );
+
+    // The install's chain outlives its VMs, but the VM's own rules in it
+    // must not.
+    let iptables_fwd_after = std::process::Command::new("iptables")
+        .args(["-S", firewall_chain])
+        .output()
+        .expect("failed to run iptables");
+    let fwd_rules_after = String::from_utf8_lossy(&iptables_fwd_after.stdout);
+    assert!(
+        !fwd_rules_after.contains(tap_device),
+        "rules for {tap_device} should be gone from {firewall_chain} after stop:\n{fwd_rules_after}"
     );
 
     // -- Delete VM --

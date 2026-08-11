@@ -63,23 +63,6 @@ fn chain_exists(chain: &str) -> bool {
     iptables(&["-S", chain]).is_ok()
 }
 
-/// Removes an installation's chains, so a failed assertion cannot leave
-/// rules behind on the developer's host.
-struct ChainCleanup {
-    input: String,
-    forward: String,
-}
-
-impl Drop for ChainCleanup {
-    fn drop(&mut self) {
-        for (builtin, chain) in [("INPUT", &self.input), ("FORWARD", &self.forward)] {
-            while iptables(&["-D", builtin, "-j", chain]).is_ok() {}
-            let _ = iptables(&["-F", chain]);
-            let _ = iptables(&["-X", chain]);
-        }
-    }
-}
-
 /// Stops the test's VMs on the way out, including on a panic.
 ///
 /// Without this, a Firecracker process outlives the test and holds its
@@ -147,10 +130,6 @@ fn policy_chains_are_placed_correctly_and_removed_on_deinit() {
     let input_chain = format!("ember-{id}-input");
     let forward_chain = format!("ember-{id}-forward");
     let taps = format!("em{id}-+");
-    let _chain_cleanup = ChainCleanup {
-        input: input_chain.clone(),
-        forward: forward_chain.clone(),
-    };
     let _vm_cleanup = VmCleanup {
         state: state.clone(),
         names: vec!["polvm"],
@@ -324,11 +303,6 @@ fn vms_reach_each_other_but_not_the_host() {
     let env = common::TestEnv::with_running_ssh_vm("netpolicyconn", "vma");
     let state = env.state().to_string();
 
-    let id = instance_id(&state);
-    let _chain_cleanup = ChainCleanup {
-        input: format!("ember-{id}-input"),
-        forward: format!("ember-{id}-forward"),
-    };
     let _vm_cleanup = VmCleanup {
         state: state.clone(),
         names: vec!["vma", "vmb"],
