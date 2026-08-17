@@ -16,6 +16,13 @@ use ember_core::backend::{InitConfig, StorageBackend};
 use ember_core::config::GlobalConfig;
 use ember_core::error::Result;
 
+/// Construct the active storage backend. macOS has exactly one, so
+/// this cannot fail; the signature matches Linux's, where a config can
+/// name a backend that has no implementation.
+pub fn try_create_storage(config: &GlobalConfig) -> Result<Arc<dyn StorageBackend>> {
+    Ok(Arc::new(MacosStorage::new(config)))
+}
+
 /// Construct the active storage backend.
 pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
     Arc::new(MacosStorage::new(config))

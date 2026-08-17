@@ -18,22 +18,36 @@ Without it we cannot say what a compression layer would buy, nor whether it help
 
 ## The model
 
+This is an **occupancy** model. It answers where space has gone, not what a delete would give back.
+Those are different questions on ZFS, and trying to make one field answer both is what makes the numbers incoherent.
+
 Four numbers per volume, all in bytes.
 
 | Field | Meaning |
 |-------|---------|
 | `provisioned` | Virtual size the guest sees. What we report today. |
-| `exclusive` | Physical bytes only this volume references. What a destroy returns to the pool. |
+| `exclusive` | Physical bytes this volume holds that are not shared with an origin. |
 | `referenced` | Physical bytes reachable from this volume, shared blocks included. |
 | `logical` | Uncompressed size of `referenced`. |
 
-`exclusive` is the number every backend can produce and the one users act on.
+`exclusive` is the number every backend can produce.
 `referenced` and `logical` are optional because not every backend can measure them.
 
-Two useful quantities are derived rather than stored, so they cannot disagree with their inputs:
+The invariant that keeps the table readable is `exclusive <= referenced` whenever `referenced` is known.
+Any definition of `exclusive` that can exceed what the volume references makes the derived shared column meaningless.
+
+Two quantities are derived rather than stored, so they cannot disagree with their inputs:
 
 * Shared bytes: `referenced - exclusive`.
 * Compression ratio: `logical / referenced`.
+
+### What `exclusive` is not
+
+It is not what a destroy frees. On ZFS a volume is additionally charged for its refreservation and for blocks held only by its own snapshots, and neither is in `exclusive`.
+Nor does it capture the origin side of a clone relationship: ZFS charges blocks shared between an origin and its clones to the origin, so an image whose clones all still exist reports occupancy for blocks that no single delete can reclaim.
+dm-thin refcounts symmetrically and has neither problem.
+
+We accept the asymmetry rather than paper over it. Reclaim accounting on ZFS depends on the whole clone graph, and the pool line already tells a user how much room is left.
 
 ### Types
 
@@ -41,12 +55,10 @@ In `ember-core/src/backend.rs`, next to `VolumeHandle`:
 
 ```rust
 /// Space accounting for a single volume, in bytes.
-///
-/// Backends fill in what they can measure. `exclusive` is the one
-/// field every backend produces, and the one a user acts on: it is
-/// what destroying the volume actually returns to the pool.
 pub struct VolumeUsage {
     pub provisioned: u64,
+    /// Physical bytes this volume holds that are not shared with an
+    /// origin. Always within `referenced` when that is known.
     pub exclusive: u64,
     /// `None` when the backend cannot separate shared blocks from
     /// exclusive ones.
@@ -60,6 +72,12 @@ pub struct VolumeUsage {
 pub struct PoolUsage {
     pub capacity: u64,
     pub allocated: u64,
+    /// Part of `allocated` that is reserved but holds no data, so it
+    /// compresses to nothing and stays out of the ratio. Zero for
+    /// backends without reservations.
+    pub reserved: u64,
+    /// Uncompressed size of the data within `allocated`. `None` when
+    /// the backend does not compress.
     pub logical: Option<u64>,
     /// Backends with a separate metadata device report it here.
     pub metadata: Option<MetadataUsage>,
@@ -111,20 +129,25 @@ Everything comes from two commands against `<pool>/<dataset>`.
 Volumes, one call covering both the `images/` and `vms/` subtrees:
 
 ```
-zfs list -Hp -r -t volume -o name,volsize,usedbydataset,usedbysnapshots,referenced,logicalreferenced <base>
+zfs list -Hp -r -t volume -o name,volsize,usedbydataset,usedbyrefreservation,referenced,logicalreferenced <base>
 ```
 
 | Field | ZFS property |
 |-------|--------------|
 | `provisioned` | `volsize` |
-| `exclusive` | `usedbydataset + usedbysnapshots` |
+| `exclusive` | `usedbydataset` |
 | `referenced` | `referenced` |
 | `logical` | `logicalreferenced` |
 
-Deliberately not the `used` property, which is the obvious choice and the wrong one.
-A zvol created by `zfs create -V` carries a refreservation for its full virtual size, and `used` counts that reservation as consumed space.
-Image volumes on a live pool therefore report a `used` of 8.4 GiB against a `referenced` of 1.9 GiB, which would put exclusive above referenced and make the shared column meaningless.
-Clones carry no reservation, so the two definitions agree for VMs and diverge only for images.
+Two neighbouring properties look like better fits for `exclusive` and both break the invariant.
+
+`used` is the obvious choice, and it is what a destroy frees, but a zvol from `zfs create -V` carries a refreservation for its full virtual size and `used` counts that reservation as consumed.
+Image volumes on a live pool report a `used` of 8.4 GiB against a `referenced` of 1.9 GiB.
+
+Adding `usedbysnapshots` fails for a subtler reason: that property is by definition space the live volume no longer references, so folding it in pushes occupancy outside `referenced`.
+On a pool whose fork snapshots hold a single kilobyte, that is enough to make both image rows report `exclusive` above `referenced`.
+
+`usedbydataset` is a subset of `referenced` by ZFS's own definition, so the invariant holds by construction.
 
 Rows are matched to records by dataset name, which for ZFS is what `VmMetadata::disk_path` and `ImageEntry::disk_path` already hold.
 
@@ -139,12 +162,20 @@ zfs get -Hp -o value used,available,logicalused <base>
 `capacity` is `used + available` and `allocated` is `used`.
 This deliberately describes the dataset tree ember owns rather than the raw vdev, so quotas and sibling datasets on a shared pool are accounted for and the free figure means what a user expects.
 
-Note that pool `allocated` does include refreservations while per-volume `exclusive` does not, so the volume rows do not sum exactly to the pool line.
-That gap is space genuinely charged to the tree, not a rounding artifact.
+`reserved` is the sum of `usedbyrefreservation` over the volume rows.
+ZFS exposes no aggregate property for it, which is why it comes from the same listing rather than a third call.
+It matters because `used` includes reservations and `logicalused` does not, so dividing one by the other counts empty reservation as perfectly compressed data.
+On a live pool that understates compression by about 5%, 2.01x against a true 2.11x, and this report is meant to be the instrument we judge a compression layer by.
+
+The reservation is also why the volume rows do not sum to the pool line, so the CLI prints it as its own row rather than leaving a silent gap.
 
 `metadata` is `None`.
 
 ### dm-thin
+
+Unlike every other method on the backend, `usage` does not activate the pool.
+Measuring is a query, and `ember vm list` has no business loading a pool table, attaching loop devices, and running a full `thin_check` as a side effect of listing VMs.
+An inactive pool produces an error saying so, which the best-effort callers render as `-`.
 
 Pool numbers are already parsed.
 `pool::status` returns `PoolStatus` in blocks, so this is arithmetic on values we fetch today only to gate on health:
@@ -152,7 +183,10 @@ Pool numbers are already parsed.
 * `capacity` = `total_data_blocks` × pool block size
 * `allocated` = `used_data_blocks` × pool block size
 * `metadata` = `total_metadata_blocks` and `used_metadata_blocks`, each × 4096, the fixed thin-pool metadata block size
+* `reserved` = 0, since a thin volume is never charged for space it has not written
 * `logical` = `None`
+
+Note the two different multipliers. Data is counted in pool blocks (64 KiB by default) and metadata in the kernel's fixed 4 KiB blocks, so using one scale for both misreports metadata by 16x.
 
 Per-volume numbers need a metadata snapshot, because the live metadata device is owned by the kernel and cannot be read directly:
 
@@ -168,23 +202,28 @@ Per-volume numbers need a metadata snapshot, because the live metadata device is
 | `logical` | `None` |
 
 Rows are matched to records by thin id.
-Volumes with no `thin_id` recorded are omitted from the map rather than reported as zero.
+A record with no `thin_id`, and a `thin_id` the pool no longer knows about, are both omitted from the map rather than reported as zero.
+Ids the pool holds that no record claims (a staging volume leaked by a failed image pull, another install) are ignored, so they show up in the pool figure without inventing a row.
 
 This path works for volumes that are not currently activated, which matters because dm-thin activates lazily and a stopped VM usually has no `/dev/mapper` entry. Reading `dmsetup status` on the thin device instead would only cover active volumes and would give mapped sectors without an exclusive count.
 
-Three hazards to handle:
+Four hazards to handle:
 
 * **The snapshot is a single slot per pool.** `reserve_metadata_snap` fails with `EBUSY` when one is already held. Report that as a distinct error naming `dmsetup message <pool> 0 release_metadata_snap` as the remedy, because the usual cause is a stale reservation from a killed process, and a stale reservation also pins metadata blocks that the pool would otherwise reuse.
 * **Release must happen on every path.** The release is done by a guard type whose `Drop` fires on early return and on panic, not by a trailing statement.
+* **A signal still leaks it.** `Drop` does not run on SIGINT, so Ctrl-C during a `thin_ls` scan strands a reservation and the next reader sees the EBUSY above. We accept that and make the error tell the operator how to clear it, rather than installing a signal handler for one command.
 * **We never force-release.** A reservation we did not take may belong to another process. We fail with the message above instead of stealing it.
+
+When the reservation or the scan fails, the whole call fails, even though the pool figures were already in hand. `ember storage usage` exists to measure, so a partial answer that looks complete is worse than an error.
 
 ### APFS
 
 * `provisioned` is the disk image file length.
-* `exclusive` is `st_blocks` × 512, which on APFS counts only blocks not shared with a clone. This is the same measurement `debug storage-efficiency` uses today.
-* `referenced` and `logical` are `None`.
+* `exclusive` is `st_blocks` × 512, which on APFS counts only blocks not shared with a clone.
+* `referenced` and `logical` are `None`, so `SHARED` and `COMPRESSION` are blank on macOS.
 
-Pool numbers mirror the ZFS treatment so the two read the same way: `allocated` is the sum of volume `exclusive` values, and `capacity` is that sum plus the containing filesystem's available space.
+Pool numbers mirror the ZFS treatment so the two read the same way: `allocated` is what ember occupies and `capacity` is that plus the containing filesystem's available space.
+It is computed by walking the `vms/` and `images/` directories, not by summing the volumes passed in, because the pool figure is installation-wide while a caller such as `vm inspect` hands the backend a single record.
 
 ## CLI surface
 
@@ -192,25 +231,31 @@ Pool numbers mirror the ZFS treatment so the two read the same way: `allocated` 
 
 New subcommand next to `ember storage grow`.
 
+Captured from a live ZFS pool:
+
 ```
 $ ember storage usage
 
-Pool          481.4 GiB capacity, 298.6 GiB used (62%), 182.8 GiB free
-Compression   599.4 GiB logical -> 298.6 GiB on disk (2.01x)
+Pool          481.4 GiB capacity, 297.5 GiB used (62%), 183.9 GiB free
+Compression   599.3 GiB logical -> 284.3 GiB on disk (2.11x)
+Reserved      13.2 GiB charged to the pool but holding no data
 
-NAME                  PROVISIONED   REFERENCED   EXCLUSIVE   SHARED   RATIO
-aj-dev                    200 GiB     98.5 GiB    97.2 GiB  1.3 GiB   1.97x
-mz-dev                    200 GiB     10.1 GiB     8.2 GiB  1.9 GiB   2.08x
-mz-dev-auto-scaling       200 GiB     93.6 GiB    90.8 GiB  2.8 GiB   2.11x
-mz-dev-bugs               200 GiB     88.6 GiB    85.3 GiB  3.4 GiB   2.23x
+VMS
+NAME                PROVISIONED REFERENCED EXCLUSIVE  SHARED COMPRESSION
+aj-dev                  200 GiB   98.5 GiB  97.2 GiB 1.3 GiB       1.97x
+mz-dev                  200 GiB   10.1 GiB   8.2 GiB 1.9 GiB       2.08x
+mz-dev-auto-scaling     200 GiB   92.5 GiB  89.7 GiB 2.8 GiB       2.13x
+mz-dev-bugs             200 GiB   88.7 GiB  85.3 GiB 3.4 GiB       2.22x
 
 IMAGES
-ubuntu-dev                  8 GiB      1.9 GiB     1.9 GiB      0 B   2.25x
-ubuntu-dev-new              8 GiB      2.0 GiB     2.0 GiB      0 B   2.27x
+NAME           PROVISIONED REFERENCED EXCLUSIVE SHARED COMPRESSION
+ubuntu-dev         6.3 GiB    1.9 GiB   1.9 GiB    0 B       2.24x
+ubuntu-dev-new     6.7 GiB      2 GiB     2 GiB    0 B       2.26x
 ```
 
 Columns whose backing field is `None` render `-`.
-On dm-thin that means the `RATIO` column is `-` throughout and the `Compression` line is omitted, and a `Metadata` line appears instead showing metadata device usage.
+On dm-thin that means the `COMPRESSION` column is `-` throughout and the `Compression` line is omitted, and a `Metadata` line appears instead showing metadata device usage.
+The `Reserved` line appears only when a backend has reservations, so only on ZFS.
 
 `--format json` emits `StorageUsage` directly, matching the `OutputFormat` enum the other commands use.
 
@@ -224,32 +269,45 @@ Usage here is best-effort. If `usage()` fails, every row renders `-` and the lis
 
 ### `ember vm inspect`
 
-Gains `Used`, `Referenced`, `Shared`, and `Ratio` rows, omitting the ones whose field is `None`. Best-effort, same rule as `vm list`.
+Gains `Used`, `Referenced`, `Shared`, and `Compression` rows, omitting the ones whose field is `None`. Best-effort, same rule as `vm list`.
 
 ### `ember info`
 
-Gains a pool capacity line, and a compression line when `PoolUsage::logical` is present. Best-effort.
+Gains a `Capacity` line, and a compression line when the backend compresses. Best-effort.
+Not labelled `Pool`, because `info_extra` already prints `ZFS pool <name>` and two unrelated rows called pool read as a contradiction.
 
 ### Removed
 
 `ember debug storage-efficiency` is deleted, and with it the `debug` subcommand tree, which has no other members. Its useful half is `ember storage usage` and its APFS-specific half is now `MacosStorage::usage`.
 
+References in `README.md`, `MACOS-SPEC.md`, `MACOS-TODO.md`, `BTRFS-SPEC.md`, `DM-THIN-SPEC.md`, and `TEST-SPEC.md` are updated to the new command, and `tests/macos_storage.rs` is retargeted at it.
+
+### Where the best-effort helper lives
+
+`try_usage` sits in `src/backend.rs`, alongside `create_storage`, not in the `storage` subcommand module.
+It is not a `storage` subcommand concern, it is how non-storage commands ask for usage, and putting it under `cli::storage` would make `cli::vm` and `cli::storage` import each other.
+
+It builds the backend through `try_create_storage`, the fallible sibling of `create_storage`. The infallible form panics on a config naming an unimplemented backend, and a panic is not best-effort: `vm list` and `info` are exactly the commands someone runs to diagnose a bad config.
+
 ## Testing
 
 Unit tests, no root required:
 
-* `thin_ls` output parsing, including the empty-pool case, unparseable rows, and ids present in the pool that no record claims.
-* `zfs list -Hp` row parsing, including volumes not in the state store.
-* Metadata block accounting from a `PoolStatus`.
-* Derived shared bytes and ratio, including the divide-by-zero guard when `referenced` is 0.
+* `thin_ls` output parsing: the empty pool, a header row that `--no-headers` failed to suppress, and short rows.
+* `zfs list -Hp` row parsing, including the `-` ZFS prints for inapplicable properties.
+* Occupancy never exceeding `referenced`, checked against the four rows a live pool actually produces rather than a hand-written fixture. An earlier cut passed its own guard test because the fixture zeroed the one field that broke the invariant.
+* Metadata block accounting from a `PoolStatus`, pinning that data and metadata use different multipliers.
+* The thin-id join: a record matched to its row, a record with no id, a record with a stale id, and a row no record claims.
+* Derived shared bytes and compression ratio, including the divide-by-zero guards and the saturating subtraction.
 * Rendering of `-` for every `None` field.
 
-Integration tests in `tests/storage_usage.rs`, using the existing `TestEnv`:
+Integration tests in `tests/storage_usage.rs`, using the existing `TestEnv`. All of them are `#[ignore]`d, matching every other file in `tests/`, because `TestEnv` builds a real backend and needs root on Linux. `run-integration-tests.sh` passes `--ignored`, so a test left un-ignored would be skipped by the project runner and would break a bare `cargo test`.
 
-* After `ember vm create`, `ember storage usage` lists the VM with `exclusive > 0` and `referenced >= exclusive`.
-* After a fork, the fork's `referenced` exceeds its `exclusive`, which is the sharing the CoW backends are supposed to deliver.
-* `ember vm list` still succeeds and renders `-` when the backend cannot report.
-* The dm-thin variant runs behind the existing `--ignored` root gate, and asserts that the metadata snapshot is released by reserving one again afterwards.
+* After `ember vm create`, `ember storage usage` lists the VM with `exclusive > 0` and `exclusive <= referenced`.
+* The image row satisfies the same invariant, which is where the refreservation trap bites.
+* After a fork, the fork's `referenced` exceeds its `exclusive`, which is the sharing the CoW backends are supposed to deliver. Forks are created with `--no-start`, since `TestEnv` installs a kernel that cannot boot.
+* `ember vm list` still succeeds and its row ends in `-` when the backend cannot report. Linux-only: the break is a `config.json` naming a nonexistent pool, and the APFS backend reads neither `pool` nor `storage_path`.
+* The dm-thin variant creates an image and a VM so the thin-id join is actually exercised, then calls the command a third time to prove the metadata snapshot was released.
 
 ## Out of scope
 

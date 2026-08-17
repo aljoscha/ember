@@ -23,23 +23,31 @@ use ember_core::backend::{InitConfig, StorageBackend};
 use ember_core::config::{GlobalConfig, StorageKind};
 use ember_core::error::{Error, Result};
 
-/// Construct the active storage backend.
+/// Construct the active storage backend, or explain why we cannot.
 ///
-/// Returns the implementation indicated by [`GlobalConfig::storage_backend`].
-/// btrfs is not yet implemented; rather than silently routing through
-/// the ZFS path with garbage inputs, the call panics so a hand-edited
-/// `config.json` fails loudly. `init_storage` returns the same shape
-/// of error from the init side.
-pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
+/// btrfs is not yet implemented. Rather than silently routing through
+/// the ZFS path with garbage inputs, a hand-edited `config.json` naming
+/// it gets a real error. `init_storage` returns the same shape of error
+/// from the init side.
+pub fn try_create_storage(config: &GlobalConfig) -> Result<Arc<dyn StorageBackend>> {
     match config.storage_backend {
-        StorageKind::Zfs => Arc::new(LinuxStorage::new(config)),
-        StorageKind::DmThin => Arc::new(DmThinStorage::new(config)),
-        StorageKind::Btrfs => panic!(
-            "btrfs storage backend is not yet implemented; \
-             config.json has storage_backend = btrfs but no \
-             implementation exists yet"
-        ),
+        StorageKind::Zfs => Ok(Arc::new(LinuxStorage::new(config))),
+        StorageKind::DmThin => Ok(Arc::new(DmThinStorage::new(config))),
+        StorageKind::Btrfs => Err(Error::Config(
+            "config.json has storage_backend = btrfs, but the btrfs \
+             storage backend is not implemented"
+                .to_string(),
+        )),
     }
+}
+
+/// [`try_create_storage`] for callers that are about to operate on
+/// storage anyway, where an unusable backend is fatal regardless.
+///
+/// Read-only paths that must survive a broken config use the fallible
+/// form instead.
+pub fn create_storage(config: &GlobalConfig) -> Arc<dyn StorageBackend> {
+    try_create_storage(config).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Initialize storage during `ember init`.

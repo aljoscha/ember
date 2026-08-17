@@ -1449,7 +1449,7 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
             let usage = store
                 .read::<GlobalConfig>(&store.config_path())
                 .ok()
-                .and_then(|config| super::storage::try_usage(&config, &vms, &[]));
+                .and_then(|config| crate::backend::try_usage(&config, &vms, &[]));
 
             let rows: Vec<Vec<String>> = vms
                 .iter()
@@ -1516,7 +1516,7 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 .read::<GlobalConfig>(&store.config_path())
                 .ok()
                 .and_then(|config| {
-                    super::storage::try_usage(&config, std::slice::from_ref(&metadata), &[])
+                    crate::backend::try_usage(&config, std::slice::from_ref(&metadata), &[])
                 })
                 .and_then(|u| u.vms.get(&metadata.name).copied());
             if let Some(usage) = usage {
@@ -1527,8 +1527,8 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 if let Some(shared) = usage.shared() {
                     println!("Shared:      {}", format_bytes_binary(shared));
                 }
-                if let Some(ratio) = usage.ratio() {
-                    println!("Ratio:       {}", format_ratio(Some(ratio)));
+                if let Some(ratio) = usage.compression_ratio() {
+                    println!("Compression: {}", format_ratio(Some(ratio)));
                 }
             }
             println!("Kernel:      {}", metadata.kernel_path.display());

@@ -1,5 +1,5 @@
 //! Wrappers around the `thin-provisioning-tools` package: `thin_check`,
-//! `thin_repair`, `thin_metadata_size`, `thin_dump`.
+//! `thin_repair`, `thin_metadata_size`, `thin_dump`, `thin_ls`.
 //!
 //! These are recommended (and in some cases required) for safe pool
 //! activation and capacity planning. They live in their own module so

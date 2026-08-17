@@ -1,10 +1,10 @@
 //! Integration tests for `ember storage usage` and the best-effort
 //! usage columns on `vm list`.
 //!
-//! The cross-platform tests run against whatever backend `TestEnv`
-//! sets up (ZFS on Linux, APFS on macOS). The dm-thin variants are
-//! gated behind `#[ignore]` like the rest of `tests/dm_thin.rs`, since
-//! they need root and the `dm-thin-pool` kernel module:
+//! Every test here is `#[ignore]`d, matching the rest of `tests/`:
+//! `TestEnv` builds a real backend (a loopback ZFS pool on Linux, an
+//! APFS temp dir on macOS) and needs root on Linux. `run-integration-tests.sh`
+//! passes `--ignored`, so these run there and stay out of `cargo test`.
 //!
 //! ```text
 //! sudo cargo test --test storage_usage -- --ignored --test-threads=1
@@ -40,9 +40,10 @@ fn as_u64(value: &serde_json::Value) -> u64 {
         .unwrap_or_else(|| panic!("not a u64: {value}"))
 }
 
-/// A freshly created VM occupies real space, and whatever it
-/// references is at least what it exclusively owns.
+/// A freshly created VM occupies real space, and never reports holding
+/// more than it references.
 #[test]
+#[ignore = "requires root + a real storage backend"]
 fn usage_reports_vm_occupancy() {
     let env = TestEnv::with_vm("usage_vm", "usage-vm");
     let usage = usage_json(env.state());
@@ -51,14 +52,14 @@ fn usage_reports_vm_occupancy() {
     assert!(!vm.is_null(), "VM missing from usage report: {usage:#}");
 
     let exclusive = as_u64(&vm["exclusive"]);
-    let provisioned = as_u64(&vm["provisioned"]);
-    assert!(provisioned > 0, "provisioned size should be known");
+    assert!(exclusive > 0, "a created VM occupies blocks: {vm:#}");
+    assert!(as_u64(&vm["provisioned"]) > 0, "no virtual size: {vm:#}");
 
     // `referenced` is optional: dm-thin and ZFS report it, APFS does not.
     if let Some(referenced) = vm["referenced"].as_u64() {
         assert!(
-            referenced >= exclusive,
-            "referenced ({referenced}) must include exclusive ({exclusive})"
+            exclusive <= referenced,
+            "exclusive ({exclusive}) must stay within referenced ({referenced})"
         );
     }
 
@@ -70,8 +71,10 @@ fn usage_reports_vm_occupancy() {
     );
 }
 
-/// Images are reported alongside VMs.
+/// Images are reported alongside VMs, and hold no more than they
+/// reference despite carrying a refreservation on ZFS.
 #[test]
+#[ignore = "requires root + a real storage backend"]
 fn usage_reports_images() {
     let env = TestEnv::with_vm("usage_images", "usage-img-vm");
     let usage = usage_json(env.state());
@@ -80,17 +83,27 @@ fn usage_reports_images() {
         .as_object()
         .unwrap_or_else(|| panic!("images is not an object: {usage:#}"));
     assert_eq!(images.len(), 1, "expected the one pulled image: {usage:#}");
+
     let image = images.values().next().unwrap();
     assert!(as_u64(&image["provisioned"]) > 0);
+    if let Some(referenced) = image["referenced"].as_u64() {
+        assert!(
+            as_u64(&image["exclusive"]) <= referenced,
+            "image exclusive exceeds referenced: {image:#}"
+        );
+    }
 }
 
 /// A fork shares blocks with its origin, which is the whole point of
 /// the CoW backends. Backends that cannot measure sharing report
 /// `referenced` as null and are skipped.
 #[test]
+#[ignore = "requires root + a real storage backend"]
 fn fork_shares_blocks_with_origin() {
     let env = TestEnv::with_vm("usage_fork", "usage-src");
 
+    // `--no-start` because `TestEnv::with_vm` installs a dummy kernel
+    // that cannot boot, and fork starts the copy by default.
     let output = ember(&[
         "--state-dir",
         env.state(),
@@ -98,6 +111,7 @@ fn fork_shares_blocks_with_origin() {
         "fork",
         "usage-src",
         "usage-fork",
+        "--no-start",
     ]);
     assert!(
         output.status.success(),
@@ -122,6 +136,7 @@ fn fork_shares_blocks_with_origin() {
 
 /// `vm list` gains a USED column and keeps working regardless.
 #[test]
+#[ignore = "requires root + a real storage backend"]
 fn vm_list_shows_used_column() {
     let env = TestEnv::with_vm("usage_list", "usage-list-vm");
 
@@ -133,21 +148,23 @@ fn vm_list_shows_used_column() {
 }
 
 /// Listing VMs must survive a backend that cannot answer, because one
-/// common reason to list them is that storage is broken. We simulate
-/// that by pointing the config at a pool that does not exist.
+/// common reason to list them is that storage is broken.
+///
+/// Linux-only: the break is a `config.json` pointing at a pool that
+/// does not exist, and `MacosStorage` reads neither `pool` nor
+/// `storage_path` (it derives every path from `state_dir`), so the same
+/// edit leaves the APFS backend perfectly able to measure.
+#[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires root + a real storage backend"]
 fn vm_list_survives_unmeasurable_storage() {
     let env = TestEnv::with_vm("usage_broken", "usage-broken-vm");
 
     let config_path = env.state_dir.join("config.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    if let Some(pool) = config.get_mut("pool") {
-        *pool = serde_json::Value::String("ember-no-such-pool".to_string());
-    }
-    if let Some(path) = config.get_mut("storage_path") {
-        *path = serde_json::Value::String("/nonexistent/ember-usage-test".to_string());
-    }
+    config["pool"] = serde_json::Value::String("ember-no-such-pool".to_string());
+    config["storage_path"] = serde_json::Value::String("/nonexistent/ember-usage".to_string());
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let output = ember(&["--state-dir", env.state(), "vm", "list"]);
@@ -157,10 +174,15 @@ fn vm_list_survives_unmeasurable_storage() {
         "vm list must not fail when usage is unavailable: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("usage-broken-vm"), "VM missing:\n{stdout}");
+
+    // USED is the last column, so the VM's row ends in the dash.
+    let row = stdout
+        .lines()
+        .find(|l| l.starts_with("usage-broken-vm"))
+        .unwrap_or_else(|| panic!("VM missing from listing:\n{stdout}"));
     assert!(
-        stdout.contains(" -"),
-        "expected a dash for the unmeasurable USED column:\n{stdout}"
+        row.ends_with(" -"),
+        "expected an unmeasurable USED column, got: {row:?}"
     );
 }
 
@@ -168,14 +190,14 @@ fn vm_list_survives_unmeasurable_storage() {
 // dm-thin
 // ---------------------------------------------------------------------------
 
-/// The metadata snapshot taken to measure per-volume usage must be
-/// released again, otherwise the next reader gets EBUSY and the pool
-/// keeps pinning metadata blocks. Running the command twice is the
-/// cheapest way to prove the guard fired.
+/// The dm-thin per-volume path: thin ids on the records have to join
+/// against `thin_ls` rows read through a metadata snapshot, and that
+/// snapshot has to be released again. A leaked one would make the
+/// second call fail with EBUSY and would pin metadata blocks.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires root + dm-thin kernel module"]
-fn dm_thin_usage_releases_metadata_snapshot() {
+fn dm_thin_usage_measures_volumes_and_releases_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
     let storage_path = tmp.path().join("dm-thin");
     let state_dir = tmp.path().join("state");
@@ -194,7 +216,7 @@ fn dm_thin_usage_releases_metadata_snapshot() {
         "--storage-path",
         storage_path.to_str().unwrap(),
         "--size",
-        "500M",
+        "2G",
         "--instance-id",
         "beef",
     ]);
@@ -204,20 +226,61 @@ fn dm_thin_usage_releases_metadata_snapshot() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Twice: the second call can only succeed if the first released.
-    for attempt in 1..=2 {
-        let output = ember(&["--state-dir", &state, "storage", "usage"]);
-        assert!(
-            output.status.success(),
-            "storage usage attempt {attempt} failed, \
-             metadata snapshot likely leaked: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    // An empty pool still reports capacity and metadata.
+    let usage = usage_json(&state);
+    assert!(as_u64(&usage["pool"]["capacity"]) > 0);
+    assert!(as_u64(&usage["pool"]["metadata"]["capacity"]) > 0);
+    assert!(
+        usage["pool"]["logical"].is_null(),
+        "dm-thin does not compress"
+    );
 
-    // The pool line is always present, even with no volumes yet.
-    let output = ember(&["--state-dir", &state, "storage", "usage"]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Pool"), "no pool line:\n{stdout}");
-    assert!(stdout.contains("Metadata"), "no metadata line:\n{stdout}");
+    // Now give it something to measure. Without a VM the maps stay
+    // empty and the thin-id join is never exercised.
+    common::require_docker();
+    let output = ember(&["--state-dir", &state, "image", "pull", "alpine:latest"]);
+    assert!(
+        output.status.success(),
+        "image pull failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let kernel = tmp.path().join("vmlinux-dummy");
+    std::fs::write(&kernel, b"not a real kernel").unwrap();
+    let output = ember(&[
+        "--state-dir",
+        &state,
+        "vm",
+        "create",
+        "thinvm",
+        "--image",
+        "alpine:latest",
+        "--kernel",
+        kernel.to_str().unwrap(),
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "vm create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let usage = usage_json(&state);
+    let vm = &usage["vms"]["thinvm"];
+    assert!(!vm.is_null(), "thin id join produced nothing: {usage:#}");
+    let exclusive = as_u64(&vm["exclusive"]);
+    let referenced = as_u64(&vm["referenced"]);
+    assert!(
+        exclusive <= referenced,
+        "exclusive ({exclusive}) exceeds referenced ({referenced})"
+    );
+    // A fresh clone shares nearly everything with the image base.
+    assert!(referenced > 0, "clone references no blocks: {vm:#}");
+    assert!(
+        !usage["images"].as_object().unwrap().is_empty(),
+        "image missing from usage report: {usage:#}"
+    );
+
+    // A third call can only succeed if the previous two released their
+    // metadata snapshots.
+    let _ = usage_json(&state);
 }

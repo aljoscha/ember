@@ -594,11 +594,11 @@ it offers ZFS-like block-level CoW with no kernel module, at the cost of a more 
 
 ## Storage efficiency diagnostics
 
-`ember debug storage-efficiency` for dm-thin reports both per-volume and pool-level metrics:
+`ember storage usage` for dm-thin reports both per-volume and pool-level metrics. See `STORAGE-USAGE-SPEC.md` for the model and the metadata-snapshot hazards.
 
-* Per-volume virtual size: from the activated device's table.
-* Per-volume exclusive blocks: from `thin_ls --metadata-snap=- /dev/loopMETA`. Computing this requires a metadata snapshot — taken under suspend or via `dmsetup message ember-pool 0 "reserve_metadata_snap"` — which has measurable overhead. The command surfaces it on demand only.
-* Pool capacity, allocated, and free: from `dmsetup status ember-pool`. Output format: `<used_data>/<total_data> <used_metadata>/<total_metadata>`.
+* Per-volume virtual size: from the record's `disk_size_gib` / `size_mib`.
+* Per-volume mapped and exclusive blocks: from `thin_ls -m` against the metadata loop device, under a reservation taken with `dmsetup message <pool> 0 "reserve_metadata_snap"`. Reading through metadata rather than `dmsetup status` also covers volumes that are not currently activated.
+* Pool capacity, allocated, and free: from `dmsetup status <pool>`. Output format: `<used_data>/<total_data> <used_metadata>/<total_metadata>`.
 
 The macOS `st_blocks` approach used by the btrfs and APFS backends does not apply — dm-thin volumes are block devices, not files, and `stat` on `/dev/mapper/...` reports no allocation.
 

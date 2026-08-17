@@ -216,13 +216,16 @@ ember cp ./local-file.txt myvm:/tmp/
 ember cp myvm:/var/log/syslog ./syslog.txt
 ```
 
-## Storage efficiency
+## Storage usage
 
-Both platforms use copy-on-write storage, so VMs and forks share disk blocks with their parent image. Check actual disk usage:
+Both platforms use copy-on-write storage, so VMs and forks share disk blocks with their parent image, and every backend that compresses shrinks them further. `ember storage usage` reports what each VM and image actually occupies against what it was provisioned:
 
 ```bash
-ember debug storage-efficiency
+ember storage usage
+ember storage usage --format json
 ```
+
+`EXCLUSIVE` is what a volume holds on its own, `SHARED` is what it still has in common with the image or fork it came from. `ember vm list` carries the same exclusive figure in its `USED` column.
 
 ## Building a custom kernel
 
