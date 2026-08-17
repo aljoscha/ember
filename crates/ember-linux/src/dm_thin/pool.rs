@@ -39,6 +39,11 @@ pub const DEFAULT_BLOCK_SIZE_SECTORS: u32 = 128;
 /// raises a `dmeventd` notification.
 pub const DEFAULT_LOW_WATER_BLOCKS: u64 = 32_768;
 
+/// Size of one metadata block, in bytes. Fixed by the kernel and
+/// independent of the pool's data block size. Needed to turn the
+/// metadata block counts in [`PoolStatus`] into bytes.
+pub const METADATA_BLOCK_SIZE: u64 = 4096;
+
 /// Operating mode reported by `dmsetup status`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolMode {
@@ -209,6 +214,50 @@ pub fn message(name: &str, msg: &str) -> Result<()> {
         })?;
     Error::check_command("dmsetup message", output)?;
     Ok(())
+}
+
+/// A reserved pool metadata snapshot, released when dropped.
+///
+/// Reading thin-volume mappings needs a snapshot, because the live
+/// metadata device belongs to the kernel and cannot be walked
+/// underneath it. A pool holds at most one snapshot at a time, which is
+/// why this is a guard rather than a pair of calls: the release has to
+/// happen on every path out, including an early `?` return and a panic.
+/// A leaked reservation blocks the next reader and pins metadata blocks
+/// that the pool would otherwise be free to reuse.
+pub struct MetadataSnap {
+    pool: String,
+}
+
+impl MetadataSnap {
+    /// Reserve the pool's metadata snapshot.
+    ///
+    /// Fails if one is already held. That is usually a reservation
+    /// stranded by a killed process rather than a live reader, so the
+    /// error spells out the manual release.
+    pub fn reserve(pool_name: &str) -> Result<Self> {
+        match message(pool_name, "reserve_metadata_snap") {
+            Ok(()) => Ok(Self {
+                pool: pool_name.to_string(),
+            }),
+            Err(e) if super::is_busy(&e) => Err(Error::Pool(format!(
+                "dm-thin pool '{pool_name}' already holds a metadata snapshot. \
+                 If nothing else is reading the pool, an earlier run left it behind: \
+                 release it with `dmsetup message {pool_name} 0 release_metadata_snap`"
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl Drop for MetadataSnap {
+    fn drop(&mut self) {
+        // We never force-release a snapshot we did not take, and by the
+        // same token there is nothing useful to do if releasing our own
+        // fails. Swallowing it here at least keeps the failure from
+        // masking whatever error is already unwinding.
+        let _ = message(&self.pool, "release_metadata_snap");
+    }
 }
 
 /// Reload the pool table with new parameters (typically a larger

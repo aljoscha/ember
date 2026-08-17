@@ -7,7 +7,10 @@
 //! The active implementation is selected at compile time in the binary crate
 //! and re-exported as type aliases (`Vm`, `Storage`, `Network`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
 
 use crate::config::size::ByteSize;
 use crate::config::{DmThinMode, GlobalConfig};
@@ -50,6 +53,93 @@ impl VolumeHandle {
             thin_id: None,
         }
     }
+}
+
+/// Space accounting for a single volume, in bytes.
+///
+/// Backends fill in what they can measure. `exclusive` is the field
+/// every backend can produce, and the one users act on: it is what
+/// destroying the volume actually returns to the pool.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct VolumeUsage {
+    /// Virtual size presented to the guest.
+    pub provisioned: u64,
+    /// Physical bytes only this volume references.
+    pub exclusive: u64,
+    /// Physical bytes reachable from this volume, including blocks
+    /// shared with an origin. `None` when the backend cannot tell
+    /// shared and exclusive blocks apart.
+    pub referenced: Option<u64>,
+    /// Uncompressed size of `referenced`. `None` when the backend does
+    /// not compress.
+    pub logical: Option<u64>,
+}
+
+impl VolumeUsage {
+    /// Bytes shared with an origin volume, when the backend can tell.
+    pub fn shared(&self) -> Option<u64> {
+        self.referenced.map(|r| r.saturating_sub(self.exclusive))
+    }
+
+    /// Compression ratio over the referenced blocks, when the backend
+    /// compresses. `None` for an empty volume, where the ratio would be
+    /// a division by zero rather than a meaningful 1.0.
+    pub fn ratio(&self) -> Option<f64> {
+        ratio(self.logical, self.referenced)
+    }
+}
+
+/// Usage of a backend's dedicated metadata device, in bytes.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct MetadataUsage {
+    pub capacity: u64,
+    pub used: u64,
+}
+
+/// Pool-wide capacity, in bytes.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct PoolUsage {
+    pub capacity: u64,
+    pub allocated: u64,
+    /// Uncompressed size of `allocated`. `None` when the backend does
+    /// not compress.
+    pub logical: Option<u64>,
+    /// Present only for backends that keep a separate metadata device.
+    pub metadata: Option<MetadataUsage>,
+}
+
+impl PoolUsage {
+    pub fn free(&self) -> u64 {
+        self.capacity.saturating_sub(self.allocated)
+    }
+
+    /// Compression ratio over allocated space, when the backend
+    /// compresses.
+    pub fn ratio(&self) -> Option<f64> {
+        ratio(self.logical, Some(self.allocated))
+    }
+}
+
+/// Shared by [`VolumeUsage::ratio`] and [`PoolUsage::ratio`]. A zero
+/// denominator yields `None` rather than an infinity that would render
+/// as `inf` in the CLI.
+fn ratio(logical: Option<u64>, physical: Option<u64>) -> Option<f64> {
+    match (logical, physical) {
+        (Some(logical), Some(physical)) if physical > 0 => Some(logical as f64 / physical as f64),
+        _ => None,
+    }
+}
+
+/// Space accounting for a whole installation, produced in one pass.
+#[derive(Clone, Debug, Serialize)]
+pub struct StorageUsage {
+    pub pool: PoolUsage,
+    /// Keyed by [`VmMetadata::name`]. A missing key means the backend
+    /// could not account for that VM, which the CLI renders as `-`
+    /// rather than as zero.
+    pub vms: BTreeMap<String, VolumeUsage>,
+    /// Keyed by [`ImageEntry::local_name`], same missing-key rule.
+    pub images: BTreeMap<String, VolumeUsage>,
 }
 
 /// Configuration for storage backend initialization during `ember init`.
@@ -255,6 +345,18 @@ pub trait StorageBackend {
     /// VMs whose storage depends on `vm` and would break if `vm` were
     /// destroyed. Empty for backends whose forks are independent.
     fn storage_dependents(&self, vm: &VmMetadata) -> Result<Vec<String>>;
+
+    /// Measure actual space usage across the installation.
+    ///
+    /// Takes the state records rather than discovering volumes itself,
+    /// because the name-to-volume mapping lives in state and not in the
+    /// backend. Returns the whole set in one value so that backends
+    /// which have to walk pool-wide metadata do that walk once instead
+    /// of once per volume.
+    ///
+    /// Volumes the backend cannot account for are left out of the maps
+    /// instead of being reported as zero.
+    fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage>;
 
     /// Mount a disk image and return the mount point path.
     ///

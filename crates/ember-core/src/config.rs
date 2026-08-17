@@ -152,6 +152,13 @@ pub fn fnv1a_32(bytes: &[u8]) -> u32 {
 }
 
 impl GlobalConfig {
+    /// Root of the ZFS dataset tree ember owns (e.g. `ember/ember`),
+    /// the common parent of [`images_dataset`](Self::images_dataset)
+    /// and [`vms_dataset`](Self::vms_dataset).
+    pub fn base_dataset(&self) -> String {
+        format!("{}/{}", self.pool, self.dataset)
+    }
+
     /// Full ZFS dataset path for images (e.g. `ember/ember/images`).
     pub fn images_dataset(&self) -> String {
         format!("{}/{}/images", self.pool, self.dataset)

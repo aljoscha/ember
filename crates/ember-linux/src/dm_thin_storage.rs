@@ -8,11 +8,14 @@
 //!
 //! See `docs/DM-THIN-SPEC.md` for the design.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
+use ember_core::backend::{
+    InitConfig, MetadataUsage, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
+};
 use ember_core::config::size::ByteSize;
 use ember_core::config::{DmThinMode, GlobalConfig};
 use ember_core::error::{Error, Result};
@@ -585,6 +588,75 @@ impl StorageBackend for DmThinStorage {
 
     fn storage_dependents(&self, _vm: &VmMetadata) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// Pool figures come from the status line we already parse for
+    /// health checks. Per-volume figures need a metadata snapshot, so
+    /// the whole installation is measured under one reservation.
+    fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
+        self.ensure_pool_active()?;
+        let status = pool::status(&self.pool_name)?;
+        let block_bytes = (self.block_size_sectors as u64) * SECTOR_SIZE;
+
+        let pool_usage = PoolUsage {
+            capacity: status.total_data_blocks * block_bytes,
+            allocated: status.used_data_blocks * block_bytes,
+            // dm-thin stores blocks verbatim, so allocated space is
+            // also the logical space. Reporting `None` keeps the CLI
+            // from printing a meaningless 1.00x ratio.
+            logical: None,
+            metadata: Some(MetadataUsage {
+                capacity: status.total_metadata_blocks * pool::METADATA_BLOCK_SIZE,
+                used: status.used_metadata_blocks * pool::METADATA_BLOCK_SIZE,
+            }),
+        };
+
+        let by_id = {
+            let metadata_loop = loop_device::find_for(&self.metadata_file())?.ok_or_else(|| {
+                Error::Config(format!(
+                    "metadata device {} is not attached to a loop device",
+                    self.metadata_file().display()
+                ))
+            })?;
+            let _snap = pool::MetadataSnap::reserve(&self.pool_name)?;
+            let rows = tools::list_thins(&metadata_loop)?;
+            rows.into_iter()
+                .map(|r| (r.dev_id, r))
+                .collect::<HashMap<u64, tools::ThinRow>>()
+        };
+
+        // A record with no thin id, or an id the pool no longer knows
+        // about, is skipped rather than reported as an empty volume.
+        let volume_usage = |thin_id: Option<u64>, provisioned: u64| -> Option<VolumeUsage> {
+            let row = by_id.get(&thin_id?)?;
+            Some(VolumeUsage {
+                provisioned,
+                exclusive: row.exclusive_bytes,
+                referenced: Some(row.mapped_bytes),
+                logical: None,
+            })
+        };
+
+        Ok(StorageUsage {
+            pool: pool_usage,
+            vms: vms
+                .iter()
+                .filter_map(|vm| {
+                    let provisioned = Self::vm_size_sectors(vm) * SECTOR_SIZE;
+                    Some((vm.name.clone(), volume_usage(vm.thin_id, provisioned)?))
+                })
+                .collect(),
+            images: images
+                .iter()
+                .filter_map(|img| {
+                    let provisioned = img.size_mib * 1024 * 1024;
+                    Some((
+                        img.local_name.clone(),
+                        volume_usage(img.thin_id, provisioned)?,
+                    ))
+                })
+                .collect(),
+        })
     }
 
     fn deinit(&self, purge: bool) -> Result<()> {

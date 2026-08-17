@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use uuid::Uuid;
 
-use super::fmt::{format_bytes_binary, print_table, Align, GIB, MIB};
+use super::fmt::{
+    format_bytes_binary, format_bytes_opt, format_ratio, print_table, Align, GIB, MIB,
+};
 use crate::backend::{
     create_storage, CurrentPlatform, Network, NetworkBackend, Platform, Storage, Vm, VmBackend,
     VolumeHandle,
@@ -1441,9 +1443,21 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                 return Ok(());
             }
 
+            // Usage is a nicety here, not the point of the command, so
+            // a backend that cannot answer leaves the column blank
+            // rather than failing the listing.
+            let usage = store
+                .read::<GlobalConfig>(&store.config_path())
+                .ok()
+                .and_then(|config| super::storage::try_usage(&config, &vms, &[]));
+
             let rows: Vec<Vec<String>> = vms
                 .iter()
                 .map(|vm| {
+                    let used = usage
+                        .as_ref()
+                        .and_then(|u| u.vms.get(&vm.name))
+                        .map(|u| u.exclusive);
                     vec![
                         vm.name.clone(),
                         vm.status.to_string(),
@@ -1451,15 +1465,17 @@ fn list(args: &ListArgs, state_dir: &Path) -> anyhow::Result<()> {
                         vm.cpus.to_string(),
                         format_bytes_binary(vm.memory_mib as u64 * MIB),
                         format_bytes_binary(vm.disk_size_gib as u64 * GIB),
+                        format_bytes_opt(used),
                     ]
                 })
                 .collect();
             print_table(
-                &["NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK"],
+                &["NAME", "STATUS", "IMAGE", "CPUS", "MEM", "DISK", "USED"],
                 &[
                     Align::Left,
                     Align::Left,
                     Align::Left,
+                    Align::Right,
                     Align::Right,
                     Align::Right,
                     Align::Right,
@@ -1495,6 +1511,26 @@ fn inspect(args: &InspectArgs, state_dir: &Path) -> anyhow::Result<()> {
                 "Disk:        {}",
                 format_bytes_binary(metadata.disk_size_gib as u64 * GIB)
             );
+            // Best-effort, same rule as `vm list`.
+            let usage = store
+                .read::<GlobalConfig>(&store.config_path())
+                .ok()
+                .and_then(|config| {
+                    super::storage::try_usage(&config, std::slice::from_ref(&metadata), &[])
+                })
+                .and_then(|u| u.vms.get(&metadata.name).copied());
+            if let Some(usage) = usage {
+                println!("Used:        {}", format_bytes_binary(usage.exclusive));
+                if let Some(referenced) = usage.referenced {
+                    println!("Referenced:  {}", format_bytes_binary(referenced));
+                }
+                if let Some(shared) = usage.shared() {
+                    println!("Shared:      {}", format_bytes_binary(shared));
+                }
+                if let Some(ratio) = usage.ratio() {
+                    println!("Ratio:       {}", format_ratio(Some(ratio)));
+                }
+            }
             println!("Kernel:      {}", metadata.kernel_path.display());
             for (label, value) in CurrentPlatform::inspect_vm_extra(&metadata) {
                 println!("{:<13}{}", label, value);

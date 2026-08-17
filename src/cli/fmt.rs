@@ -70,9 +70,54 @@ pub fn format_bytes_binary(bytes: u64) -> String {
     }
 }
 
+/// Placeholder for a figure the storage backend could not measure.
+///
+/// Distinct from a measured zero, which renders as `0 B`.
+pub const UNKNOWN: &str = "-";
+
+/// [`format_bytes_binary`] for a value the backend may not know.
+pub fn format_bytes_opt(bytes: Option<u64>) -> String {
+    bytes.map_or_else(|| UNKNOWN.to_string(), format_bytes_binary)
+}
+
+/// Format a compression ratio as `2.01x`.
+pub fn format_ratio(ratio: Option<f64>) -> String {
+    ratio.map_or_else(|| UNKNOWN.to_string(), |r| format!("{r:.2}x"))
+}
+
+/// Format a fill level as a whole percentage. A zero-capacity pool
+/// reads as 0% rather than dividing by zero.
+pub fn format_percent(used: u64, capacity: u64) -> String {
+    if capacity == 0 {
+        return "0%".to_string();
+    }
+    format!("{:.0}%", (used as f64 / capacity as f64) * 100.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_values_render_as_dash() {
+        assert_eq!(format_bytes_opt(None), "-");
+        assert_eq!(format_ratio(None), "-");
+        // A measured zero must stay distinguishable from unknown.
+        assert_eq!(format_bytes_opt(Some(0)), "0 B");
+    }
+
+    #[test]
+    fn ratios_keep_two_decimals() {
+        assert_eq!(format_ratio(Some(2.0)), "2.00x");
+        assert_eq!(format_ratio(Some(1.9666)), "1.97x");
+    }
+
+    #[test]
+    fn percentages_round_and_guard_zero_capacity() {
+        assert_eq!(format_percent(0, 0), "0%");
+        assert_eq!(format_percent(1, 4), "25%");
+        assert_eq!(format_percent(2, 3), "67%");
+    }
 
     #[test]
     fn whole_values_have_no_decimal() {
