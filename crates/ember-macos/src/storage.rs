@@ -11,13 +11,19 @@
 //!     └── rootfs.img                    # APFS clone of base image
 //! ```
 
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
+use nix::sys::statvfs::statvfs;
+
+use ember_core::backend::{
+    InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
+};
 use ember_core::config::size::ByteSize;
 use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
@@ -352,6 +358,49 @@ impl StorageBackend for MacosStorage {
     /// Always returns empty on macOS — APFS clones are independent.
     fn storage_dependents(&self, _vm: &VmMetadata) -> Result<Vec<String>> {
         Ok(vec![])
+    }
+
+    /// APFS accounting comes from `st_blocks`, which counts only the
+    /// blocks a file does not share with a clone. That gives us the
+    /// exclusive figure directly, but there is no cheap way to learn
+    /// how much a clone shares with its origin, so `referenced` stays
+    /// unknown.
+    fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
+        let vm_usage: BTreeMap<String, VolumeUsage> = vms
+            .iter()
+            .filter_map(|vm| Some((vm.name.clone(), file_usage(&self.vm_rootfs(&vm.name))?)))
+            .collect();
+        let image_usage: BTreeMap<String, VolumeUsage> = images
+            .iter()
+            .filter_map(|img| {
+                Some((
+                    img.local_name.clone(),
+                    file_usage(&self.image_path(&img.local_name))?,
+                ))
+            })
+            .collect();
+
+        // There is no pool, so "allocated" is what ember occupies and
+        // capacity is that plus whatever the containing filesystem will
+        // still give us. Mirrors how the ZFS backend reports its
+        // dataset tree rather than the raw vdev.
+        let allocated: u64 = vm_usage
+            .values()
+            .chain(image_usage.values())
+            .map(|u| u.exclusive)
+            .sum();
+        let available = available_bytes(&self.state_dir)?;
+
+        Ok(StorageUsage {
+            pool: PoolUsage {
+                capacity: allocated.saturating_add(available),
+                allocated,
+                logical: None,
+                metadata: None,
+            },
+            vms: vm_usage,
+            images: image_usage,
+        })
     }
 
     fn deinit(&self, purge: bool) -> Result<()> {
@@ -698,6 +747,31 @@ pub(crate) fn find_e2fsprogs_tool(name: &str) -> String {
     }
     // Fall back to PATH lookup.
     name.to_string()
+}
+
+/// Accounting for one disk image file, or `None` if it is missing.
+///
+/// `st_blocks` counts 512-byte blocks actually allocated. On APFS a
+/// clone reports only the blocks it does not share with its origin,
+/// which is exactly the exclusive figure we want.
+fn file_usage(path: &Path) -> Option<VolumeUsage> {
+    let meta = fs::metadata(path).ok()?;
+    Some(VolumeUsage {
+        provisioned: meta.len(),
+        exclusive: meta.blocks() * 512,
+        referenced: None,
+        logical: None,
+    })
+}
+
+/// Bytes still available to an unprivileged writer on the filesystem
+/// holding `path`.
+fn available_bytes(path: &Path) -> Result<u64> {
+    let stat = statvfs(path).map_err(|e| Error::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::from(e),
+    })?;
+    Ok(stat.blocks_available() as u64 * stat.fragment_size() as u64)
 }
 
 /// Check whether the given path resides on an APFS volume.

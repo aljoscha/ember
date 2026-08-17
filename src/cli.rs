@@ -1,5 +1,4 @@
 pub mod cp;
-pub mod debug;
 pub mod deinit;
 pub mod exec;
 pub(crate) mod fmt;
@@ -69,10 +68,6 @@ pub enum Command {
 
     /// Show ember configuration and status overview
     Info,
-
-    /// Debugging and diagnostics
-    #[command(subcommand)]
-    Debug(debug::DebugCommand),
 
     /// Reconcile internal state with actual VM process state
     Reconcile,

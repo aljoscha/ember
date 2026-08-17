@@ -1,6 +1,7 @@
 pub mod dataset;
 pub mod pool;
 pub mod snapshot;
+pub mod usage;
 pub mod volume;
 
 use std::process::Command;

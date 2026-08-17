@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::backend::{CurrentPlatform, Platform};
+use crate::cli::fmt::{format_bytes_binary, format_percent, format_ratio};
 use ember_core::config::GlobalConfig;
 use ember_core::image::registry::ImageRegistry;
 use ember_core::state::store::StateStore;
@@ -41,6 +42,27 @@ pub fn run(state_dir: &Path) -> anyhow::Result<()> {
 
     println!("Images:      {}", images.len());
     println!("VMs:         {} ({} running)", vms.len(), running);
+
+    // Best-effort: `ember info` is the command you reach for when
+    // something is wrong, so it must not fail just because the pool
+    // cannot be measured. `ember storage usage` is the strict version.
+    if let Some(usage) = crate::cli::storage::try_usage(&config, &vms, &images.images) {
+        let pool = &usage.pool;
+        println!(
+            "Pool:        {} of {} used ({}), {} free",
+            format_bytes_binary(pool.allocated),
+            format_bytes_binary(pool.capacity),
+            format_percent(pool.allocated, pool.capacity),
+            format_bytes_binary(pool.free()),
+        );
+        if let (Some(logical), Some(ratio)) = (pool.logical, pool.ratio()) {
+            println!(
+                "Compression: {} logical ({})",
+                format_bytes_binary(logical),
+                format_ratio(Some(ratio)),
+            );
+        }
+    }
 
     Ok(())
 }

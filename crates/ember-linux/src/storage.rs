@@ -7,11 +7,14 @@
 //! The struct holds the ZFS dataset paths (derived from [`GlobalConfig`]) so
 //! trait methods can construct full zvol paths from short names.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::zfs;
-use ember_core::backend::{InitConfig, StorageBackend, VolumeHandle};
+use ember_core::backend::{
+    InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
+};
 use ember_core::config::size::ByteSize;
 use ember_core::config::GlobalConfig;
 use ember_core::error::{Error, Result};
@@ -24,6 +27,8 @@ pub struct LinuxStorage {
     /// ZFS pool name (e.g., "tank"). Cached so `deinit` can call
     /// `zpool destroy` without re-reading the config.
     pool: String,
+    /// Root of ember's dataset tree (e.g., "tank/ember").
+    base_dataset: String,
     /// ZFS images dataset path (e.g., "tank/ember/images").
     images_dataset: String,
     /// ZFS VMs dataset path (e.g., "tank/ember/vms").
@@ -37,6 +42,7 @@ impl LinuxStorage {
     pub fn new(config: &GlobalConfig) -> Self {
         Self {
             pool: config.pool.clone(),
+            base_dataset: config.base_dataset(),
             images_dataset: config.images_dataset(),
             vms_dataset: config.vms_dataset(),
         }
@@ -275,6 +281,45 @@ impl StorageBackend for LinuxStorage {
             .into_iter()
             .filter_map(|s| s.short_name.strip_prefix("fork-").map(String::from))
             .collect())
+    }
+
+    /// ZFS answers every part of the accounting model directly, so this
+    /// is two `zfs` calls plus a join against the state records.
+    fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
+        let totals = zfs::usage::totals(&self.base_dataset)?;
+        let rows = zfs::usage::volumes(&self.base_dataset)?;
+        let by_name: HashMap<&str, &zfs::usage::VolumeRow> =
+            rows.iter().map(|r| (r.name.as_str(), r)).collect();
+
+        // `disk_path` holds the dataset name on the ZFS backend, but a
+        // record written by a different backend (or a half-created VM)
+        // may not resolve. Those are dropped rather than zeroed.
+        let volume_usage = |dataset: &str| -> Option<VolumeUsage> {
+            let row = by_name.get(dataset)?;
+            Some(VolumeUsage {
+                provisioned: row.volsize,
+                exclusive: row.exclusive(),
+                referenced: Some(row.referenced),
+                logical: Some(row.logical_referenced),
+            })
+        };
+
+        Ok(StorageUsage {
+            pool: PoolUsage {
+                capacity: totals.used.saturating_add(totals.available),
+                allocated: totals.used,
+                logical: Some(totals.logical_used),
+                metadata: None,
+            },
+            vms: vms
+                .iter()
+                .filter_map(|vm| Some((vm.name.clone(), volume_usage(&vm.disk_path)?)))
+                .collect(),
+            images: images
+                .iter()
+                .filter_map(|img| Some((img.local_name.clone(), volume_usage(&img.disk_path)?)))
+                .collect(),
+        })
     }
 
     /// Mount a block device (zvol) at a temporary directory.

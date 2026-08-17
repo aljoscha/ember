@@ -4,6 +4,7 @@ pub mod image;
 
 use clap::Parser;
 use cli::kernel::KernelCommand;
+use cli::storage::StorageCommand;
 use cli::vm::VmCommand;
 use cli::{Cli, Command};
 
@@ -31,11 +32,11 @@ fn needs_root(command: &Command) -> bool {
         command,
         Command::Version
             | Command::Info
-            | Command::Debug(_)
             | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
             | Command::Vm(VmCommand::List(_) | VmCommand::Inspect(_))
+            | Command::Storage(StorageCommand::Usage(_))
             | Command::Kernel(KernelCommand::List)
     )
 }
@@ -50,12 +51,12 @@ fn needs_reconcile(command: &Command) -> bool {
         Command::Version
             | Command::Info
             | Command::Init(_)
-            | Command::Debug(_)
             | Command::Reconcile
             | Command::Ssh(_)
             | Command::Exec(_)
             | Command::Cp(_)
             | Command::Vm(VmCommand::List(_) | VmCommand::Inspect(_))
+            | Command::Storage(StorageCommand::Usage(_))
             | Command::Kernel(_)
     )
 }
@@ -82,7 +83,6 @@ fn main() -> anyhow::Result<()> {
         Command::Exec(args) => cli::exec::run(args, &cli.state_dir),
         Command::Cp(args) => cli::cp::run(args, &cli.state_dir),
         Command::Info => cli::info::run(&cli.state_dir),
-        Command::Debug(cmd) => cli::debug::run(cmd, &cli.state_dir),
         Command::Reconcile => {
             CurrentPlatform::reconcile(&cli.state_dir);
             Ok(())
