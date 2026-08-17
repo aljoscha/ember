@@ -8,7 +8,7 @@
 //!
 //! See `docs/DM-THIN-SPEC.md` for the design.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -593,23 +593,21 @@ impl StorageBackend for DmThinStorage {
     /// Pool figures come from the status line we already parse for
     /// health checks. Per-volume figures need a metadata snapshot, so
     /// the whole installation is measured under one reservation.
+    ///
+    /// Unlike the rest of the backend this does not activate the pool.
+    /// Measuring is a query, and callers include `ember vm list`, which
+    /// has no business loading a pool table, running `thin_check`, and
+    /// attaching loop devices as a side effect of listing VMs.
     fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
-        self.ensure_pool_active()?;
+        if !dm_device_exists(&self.pool_name)? {
+            return Err(Error::Pool(format!(
+                "dm-thin pool '{}' is not active, so its usage cannot be measured. \
+                 Any command that touches storage will activate it.",
+                self.pool_name
+            )));
+        }
         let status = pool::status(&self.pool_name)?;
         let block_bytes = (self.block_size_sectors as u64) * SECTOR_SIZE;
-
-        let pool_usage = PoolUsage {
-            capacity: status.total_data_blocks * block_bytes,
-            allocated: status.used_data_blocks * block_bytes,
-            // dm-thin stores blocks verbatim, so allocated space is
-            // also the logical space. Reporting `None` keeps the CLI
-            // from printing a meaningless 1.00x ratio.
-            logical: None,
-            metadata: Some(MetadataUsage {
-                capacity: status.total_metadata_blocks * pool::METADATA_BLOCK_SIZE,
-                used: status.used_metadata_blocks * pool::METADATA_BLOCK_SIZE,
-            }),
-        };
 
         let by_id = {
             let metadata_loop = loop_device::find_for(&self.metadata_file())?.ok_or_else(|| {
@@ -619,43 +617,13 @@ impl StorageBackend for DmThinStorage {
                 ))
             })?;
             let _snap = pool::MetadataSnap::reserve(&self.pool_name)?;
-            let rows = tools::list_thins(&metadata_loop)?;
-            rows.into_iter()
-                .map(|r| (r.dev_id, r))
-                .collect::<HashMap<u64, tools::ThinRow>>()
-        };
-
-        // A record with no thin id, or an id the pool no longer knows
-        // about, is skipped rather than reported as an empty volume.
-        let volume_usage = |thin_id: Option<u64>, provisioned: u64| -> Option<VolumeUsage> {
-            let row = by_id.get(&thin_id?)?;
-            Some(VolumeUsage {
-                provisioned,
-                exclusive: row.exclusive_bytes,
-                referenced: Some(row.mapped_bytes),
-                logical: None,
-            })
+            tools::list_thins(&metadata_loop)?
         };
 
         Ok(StorageUsage {
-            pool: pool_usage,
-            vms: vms
-                .iter()
-                .filter_map(|vm| {
-                    let provisioned = Self::vm_size_sectors(vm) * SECTOR_SIZE;
-                    Some((vm.name.clone(), volume_usage(vm.thin_id, provisioned)?))
-                })
-                .collect(),
-            images: images
-                .iter()
-                .filter_map(|img| {
-                    let provisioned = img.size_mib * 1024 * 1024;
-                    Some((
-                        img.local_name.clone(),
-                        volume_usage(img.thin_id, provisioned)?,
-                    ))
-                })
-                .collect(),
+            pool: pool_usage(&status, block_bytes),
+            vms: join_vms(vms, &by_id),
+            images: join_images(images, &by_id),
         })
     }
 
@@ -788,6 +756,75 @@ impl StorageBackend for DmThinStorage {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Turn a thin-pool status line into pool-level byte figures.
+///
+/// `dmsetup status` counts data in pool blocks and metadata in the
+/// kernel's fixed 4 KiB metadata blocks, so the two need different
+/// multipliers.
+fn pool_usage(status: &pool::PoolStatus, block_bytes: u64) -> PoolUsage {
+    PoolUsage {
+        capacity: status.total_data_blocks * block_bytes,
+        allocated: status.used_data_blocks * block_bytes,
+        // dm-thin never over-allocates against a volume's virtual size,
+        // so nothing is reserved-but-empty the way a zvol is.
+        reserved: 0,
+        // dm-thin stores blocks verbatim. Reporting `None` rather than
+        // a figure equal to `allocated` keeps the CLI from printing a
+        // meaningless 1.00x ratio.
+        logical: None,
+        metadata: Some(MetadataUsage {
+            capacity: status.total_metadata_blocks * pool::METADATA_BLOCK_SIZE,
+            used: status.used_metadata_blocks * pool::METADATA_BLOCK_SIZE,
+        }),
+    }
+}
+
+/// Project a `thin_ls` row onto a record's accounting.
+///
+/// Returns `None` for a record with no thin id, and for an id the pool
+/// no longer knows about. Both are reported as absent rather than as an
+/// empty volume, since zero bytes and "cannot say" are different
+/// answers.
+fn volume_usage(
+    thin_id: Option<u64>,
+    provisioned: u64,
+    rows: &[tools::ThinRow],
+) -> Option<VolumeUsage> {
+    let thin_id = thin_id?;
+    let row = rows.iter().find(|r| r.dev_id == thin_id)?;
+    Some(VolumeUsage {
+        provisioned,
+        exclusive: row.exclusive_bytes,
+        referenced: Some(row.mapped_bytes),
+        logical: None,
+    })
+}
+
+fn join_vms(vms: &[VmMetadata], rows: &[tools::ThinRow]) -> BTreeMap<String, VolumeUsage> {
+    vms.iter()
+        .filter_map(|vm| {
+            let provisioned = DmThinStorage::vm_size_sectors(vm) * SECTOR_SIZE;
+            Some((
+                vm.name.clone(),
+                volume_usage(vm.thin_id, provisioned, rows)?,
+            ))
+        })
+        .collect()
+}
+
+fn join_images(images: &[ImageEntry], rows: &[tools::ThinRow]) -> BTreeMap<String, VolumeUsage> {
+    images
+        .iter()
+        .filter_map(|img| {
+            let provisioned = img.size_mib * 1024 * 1024;
+            Some((
+                img.local_name.clone(),
+                volume_usage(img.thin_id, provisioned, rows)?,
+            ))
+        })
+        .collect()
+}
 
 /// Decide where the metadata + data backing live based on the
 /// caller-resolved [`DmThinMode`].
@@ -979,5 +1016,96 @@ mod tests {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MiB");
         assert_eq!(format_bytes(3u64 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    fn status(
+        used_data: u64,
+        total_data: u64,
+        used_meta: u64,
+        total_meta: u64,
+    ) -> pool::PoolStatus {
+        pool::PoolStatus {
+            used_metadata_blocks: used_meta,
+            total_metadata_blocks: total_meta,
+            used_data_blocks: used_data,
+            total_data_blocks: total_data,
+            mode: pool::PoolMode::ReadWrite,
+        }
+    }
+
+    /// Data blocks scale by the pool's block size, metadata blocks by
+    /// the kernel's fixed 4 KiB. Mixing the two multipliers up would
+    /// misreport metadata by a factor of 16 at the default block size.
+    #[test]
+    fn pool_usage_scales_data_and_metadata_separately() {
+        let block_bytes = pool::DEFAULT_BLOCK_SIZE_SECTORS as u64 * SECTOR_SIZE;
+        assert_eq!(block_bytes, 65536);
+
+        let u = pool_usage(&status(100, 1000, 5, 2048), block_bytes);
+        assert_eq!(u.allocated, 100 * 65536);
+        assert_eq!(u.capacity, 1000 * 65536);
+        assert_eq!(u.free(), 900 * 65536);
+        assert_eq!(u.reserved, 0);
+        assert_eq!(u.logical, None);
+        assert_eq!(u.compression_ratio(), None);
+
+        let meta = u.metadata.expect("dm-thin has a metadata device");
+        assert_eq!(meta.used, 5 * 4096);
+        assert_eq!(meta.capacity, 2048 * 4096);
+    }
+
+    fn row(dev_id: u64, mapped: u64, exclusive: u64) -> tools::ThinRow {
+        tools::ThinRow {
+            dev_id,
+            mapped_bytes: mapped,
+            exclusive_bytes: exclusive,
+        }
+    }
+
+    fn vm_record(name: &str, thin_id: Option<u64>, disk_size_gib: u32) -> VmMetadata {
+        let mut m = VmMetadata::default_for_teardown();
+        m.name = name.to_string();
+        m.thin_id = thin_id;
+        m.disk_size_gib = disk_size_gib;
+        m
+    }
+
+    #[test]
+    fn join_matches_records_to_rows_by_thin_id() {
+        let rows = vec![row(42, 3000, 2000), row(7, 500, 500)];
+        let vms = [vm_record("a", Some(42), 1)];
+
+        let joined = join_vms(&vms, &rows);
+        let a = joined.get("a").expect("matched by thin id");
+        assert_eq!(a.exclusive, 2000);
+        assert_eq!(a.referenced, Some(3000));
+        assert_eq!(a.shared(), Some(1000));
+        assert_eq!(a.provisioned, 1024 * 1024 * 1024);
+    }
+
+    /// A record the pool cannot account for is absent from the map, not
+    /// present with zeroes. The CLI renders absent as `-`.
+    #[test]
+    fn join_omits_unaccountable_records() {
+        let rows = vec![row(42, 3000, 2000)];
+        let vms = [
+            // Never got a thin id (ZFS record, or a half-created VM).
+            vm_record("no-id", None, 1),
+            // Has an id the pool no longer knows about.
+            vm_record("stale", Some(999), 1),
+        ];
+
+        let joined = join_vms(&vms, &rows);
+        assert!(joined.is_empty(), "{joined:?}");
+    }
+
+    /// Thin ids the pool holds but no record claims (leaked staging
+    /// volumes, another install) contribute to the pool figure and must
+    /// not invent rows.
+    #[test]
+    fn join_ignores_rows_no_record_claims() {
+        let rows = vec![row(42, 3000, 2000), row(7, 500, 500)];
+        assert_eq!(join_vms(&[vm_record("a", Some(42), 1)], &rows).len(), 1);
+        assert!(join_images(&[], &rows).is_empty());
     }
 }

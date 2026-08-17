@@ -57,14 +57,21 @@ impl VolumeHandle {
 
 /// Space accounting for a single volume, in bytes.
 ///
-/// Backends fill in what they can measure. `exclusive` is the field
-/// every backend can produce, and the one users act on: it is what
-/// destroying the volume actually returns to the pool.
+/// This is an occupancy model: it answers where space has gone, not
+/// what a delete would give back. Those differ enough on ZFS to be
+/// worth stating. A zvol is also charged for its refreservation and for
+/// blocks held only by its snapshots, and neither appears in
+/// `exclusive`. Backends whose forks are independent (dm-thin, APFS)
+/// have no such gap.
+///
+/// Backends fill in what they can measure. `exclusive` is the only
+/// field all of them produce.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct VolumeUsage {
     /// Virtual size presented to the guest.
     pub provisioned: u64,
-    /// Physical bytes only this volume references.
+    /// Physical bytes this volume holds that are not shared with an
+    /// origin. Always within `referenced` when that is known.
     pub exclusive: u64,
     /// Physical bytes reachable from this volume, including blocks
     /// shared with an origin. `None` when the backend cannot tell
@@ -84,7 +91,7 @@ impl VolumeUsage {
     /// Compression ratio over the referenced blocks, when the backend
     /// compresses. `None` for an empty volume, where the ratio would be
     /// a division by zero rather than a meaningful 1.0.
-    pub fn ratio(&self) -> Option<f64> {
+    pub fn compression_ratio(&self) -> Option<f64> {
         ratio(self.logical, self.referenced)
     }
 }
@@ -101,8 +108,12 @@ pub struct MetadataUsage {
 pub struct PoolUsage {
     pub capacity: u64,
     pub allocated: u64,
-    /// Uncompressed size of `allocated`. `None` when the backend does
-    /// not compress.
+    /// Part of `allocated` that is reserved but holds no data, so it
+    /// compresses to nothing and must be kept out of the ratio. Zero
+    /// for backends without reservations.
+    pub reserved: u64,
+    /// Uncompressed size of the data within `allocated`. `None` when
+    /// the backend does not compress.
     pub logical: Option<u64>,
     /// Present only for backends that keep a separate metadata device.
     pub metadata: Option<MetadataUsage>,
@@ -113,14 +124,23 @@ impl PoolUsage {
         self.capacity.saturating_sub(self.allocated)
     }
 
-    /// Compression ratio over allocated space, when the backend
+    /// Bytes of `allocated` that actually hold data.
+    pub fn occupied(&self) -> u64 {
+        self.allocated.saturating_sub(self.reserved)
+    }
+
+    /// Compression ratio over occupied space, when the backend
     /// compresses.
-    pub fn ratio(&self) -> Option<f64> {
-        ratio(self.logical, Some(self.allocated))
+    ///
+    /// Measured against [`occupied`](Self::occupied) rather than
+    /// `allocated`: empty reservation is charged to the pool but has no
+    /// logical counterpart, so including it would understate the ratio.
+    pub fn compression_ratio(&self) -> Option<f64> {
+        ratio(self.logical, Some(self.occupied()))
     }
 }
 
-/// Shared by [`VolumeUsage::ratio`] and [`PoolUsage::ratio`]. A zero
+/// Shared by the two `compression_ratio` accessors. A zero
 /// denominator yields `None` rather than an infinity that would render
 /// as `inf` in the CLI.
 fn ratio(logical: Option<u64>, physical: Option<u64>) -> Option<f64> {
@@ -140,6 +160,90 @@ pub struct StorageUsage {
     pub vms: BTreeMap<String, VolumeUsage>,
     /// Keyed by [`ImageEntry::local_name`], same missing-key rule.
     pub images: BTreeMap<String, VolumeUsage>,
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    fn volume(exclusive: u64, referenced: Option<u64>, logical: Option<u64>) -> VolumeUsage {
+        VolumeUsage {
+            provisioned: 1024,
+            exclusive,
+            referenced,
+            logical,
+        }
+    }
+
+    #[test]
+    fn shared_is_the_gap_between_referenced_and_exclusive() {
+        assert_eq!(volume(80, Some(100), None).shared(), Some(20));
+        assert_eq!(volume(100, Some(100), None).shared(), Some(0));
+    }
+
+    /// Backends that cannot separate shared from exclusive report
+    /// nothing rather than claiming zero sharing.
+    #[test]
+    fn shared_is_unknown_without_referenced() {
+        assert_eq!(volume(80, None, None).shared(), None);
+    }
+
+    /// `exclusive` is contractually within `referenced`, but the
+    /// saturating subtraction keeps a backend bug from producing a
+    /// wrapped, astronomically large shared figure.
+    #[test]
+    fn shared_saturates_instead_of_wrapping() {
+        assert_eq!(volume(120, Some(100), None).shared(), Some(0));
+    }
+
+    #[test]
+    fn compression_ratio_divides_logical_by_referenced() {
+        let r = volume(80, Some(100), Some(200)).compression_ratio();
+        assert_eq!(r, Some(2.0));
+    }
+
+    /// An untouched volume would divide by zero. `None` renders as `-`
+    /// where an infinity would render as `inf`.
+    #[test]
+    fn compression_ratio_guards_empty_volume() {
+        assert_eq!(volume(0, Some(0), Some(0)).compression_ratio(), None);
+        assert_eq!(volume(0, None, Some(200)).compression_ratio(), None);
+        assert_eq!(volume(0, Some(100), None).compression_ratio(), None);
+    }
+
+    fn pool(allocated: u64, reserved: u64, logical: Option<u64>) -> PoolUsage {
+        PoolUsage {
+            capacity: 1000,
+            allocated,
+            reserved,
+            logical,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn free_is_capacity_minus_allocated() {
+        assert_eq!(pool(400, 0, None).free(), 600);
+        // A pool reporting more allocated than capacity must not wrap.
+        assert_eq!(pool(1200, 0, None).free(), 0);
+    }
+
+    /// Empty reservation is charged to the pool but has no logical
+    /// counterpart, so leaving it in the denominator understates
+    /// compression.
+    #[test]
+    fn pool_ratio_excludes_reservation() {
+        let p = pool(300, 100, Some(400));
+        assert_eq!(p.occupied(), 200);
+        assert_eq!(p.compression_ratio(), Some(2.0));
+    }
+
+    #[test]
+    fn pool_ratio_guards_fully_reserved_pool() {
+        assert_eq!(pool(100, 100, Some(0)).compression_ratio(), None);
+        assert_eq!(pool(0, 0, Some(0)).compression_ratio(), None);
+        assert_eq!(pool(100, 0, None).compression_ratio(), None);
+    }
 }
 
 /// Configuration for storage backend initialization during `ember init`.

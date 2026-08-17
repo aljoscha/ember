@@ -12,9 +12,9 @@ use crate::cli::fmt::{
 use crate::cli::vm::OutputFormat;
 use ember_core::config::size::ByteSize;
 use ember_core::config::GlobalConfig;
-use ember_core::image::registry::{ImageEntry, ImageRegistry};
+use ember_core::image::registry::ImageRegistry;
 use ember_core::state::store::StateStore;
-use ember_core::state::vm::{self, VmMetadata};
+use ember_core::state::vm;
 
 #[derive(Subcommand)]
 pub enum StorageCommand {
@@ -84,12 +84,21 @@ fn print_usage(usage: &StorageUsage) {
         format_percent(pool.allocated, pool.capacity),
         format_bytes_binary(pool.free()),
     );
-    if let (Some(logical), Some(ratio)) = (pool.logical, pool.ratio()) {
+    // Against `occupied`, not `allocated`: the ratio divides by it, and
+    // printing the larger figure here would make the line contradict
+    // its own arithmetic.
+    if let (Some(logical), Some(ratio)) = (pool.logical, pool.compression_ratio()) {
         println!(
             "Compression   {} logical -> {} on disk ({})",
             format_bytes_binary(logical),
-            format_bytes_binary(pool.allocated),
+            format_bytes_binary(pool.occupied()),
             format_ratio(Some(ratio)),
+        );
+    }
+    if pool.reserved > 0 {
+        println!(
+            "Reserved      {} charged to the pool but holding no data",
+            format_bytes_binary(pool.reserved),
         );
     }
     if let Some(meta) = pool.metadata {
@@ -121,7 +130,7 @@ fn print_section(heading: &str, volumes: &BTreeMap<String, VolumeUsage>) {
                 format_bytes_opt(u.referenced),
                 format_bytes_binary(u.exclusive),
                 format_bytes_opt(u.shared()),
-                format_ratio(u.ratio()),
+                format_ratio(u.compression_ratio()),
             ]
         })
         .collect();
@@ -132,7 +141,7 @@ fn print_section(heading: &str, volumes: &BTreeMap<String, VolumeUsage>) {
             "REFERENCED",
             "EXCLUSIVE",
             "SHARED",
-            "RATIO",
+            "COMPRESSION",
         ],
         &[
             Align::Left,
@@ -144,18 +153,4 @@ fn print_section(heading: &str, volumes: &BTreeMap<String, VolumeUsage>) {
         ],
         &rows,
     );
-}
-
-/// Best-effort usage lookup for commands where storage is not the
-/// subject: `vm list`, `vm inspect`, `info`.
-///
-/// Listing VMs must keep working when the pool is unreachable, since
-/// one common reason to list them is that storage is broken. Callers
-/// render a dash for whatever is missing.
-pub fn try_usage(
-    config: &GlobalConfig,
-    vms: &[VmMetadata],
-    images: &[ImageEntry],
-) -> Option<StorageUsage> {
-    create_storage(config).usage(vms, images).ok()
 }

@@ -65,7 +65,7 @@ tests/
   resize.rs          # UNIFIED — grow, shrink-fails, multiple-grows, metadata check
   fork.rs            # UNIFIED — basic, overrides, delete-cleanup, error cases
   ssh.rs             # UNIFIED — exec, cp, exec-on-stopped-fails
-  macos_storage.rs   # macOS-only: APFS clone efficiency, HFS+ fallback, storage-efficiency cmd
+  macos_storage.rs   # macOS-only: APFS clone efficiency, HFS+ fallback, storage usage
   macos_ember_vz.rs  # macOS-only: low-level ember-vz component tests (optional, for debugging)
 ```
 
@@ -213,7 +213,7 @@ Remove `#![cfg(target_os = "linux")]`.
 
 After steps 4-5 extracted snapshot/resize tests, `macos_storage.rs` retains only APFS-specific tests:
 - `apfs_clone_does_not_reduce_free_space`
-- `storage_efficiency_shows_savings`
+- `storage_usage_reports_images_and_vms`
 - `vm_delete_removes_storage`
 - `cp_c_fails_gracefully_on_non_apfs`
 

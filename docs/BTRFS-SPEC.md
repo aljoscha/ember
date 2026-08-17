@@ -506,7 +506,7 @@ The btrfs backend is structurally almost identical to the macOS APFS backend —
 
 ## Storage Efficiency Diagnostics
 
-The existing `ember debug storage-efficiency` command (implemented for macOS/APFS) works unchanged for btrfs. It uses `st_blocks * 512` from `stat` to measure actual disk allocation per `.img` file — reflink clones on btrfs report reduced `st_blocks` just like APFS clones do, so the logical-vs-actual comparison and CoW ratio calculation are portable across both file-based backends.
+`ember storage usage` works for btrfs the same way it does for macOS/APFS. It uses `st_blocks * 512` from `stat` to measure actual disk allocation per `.img` file — reflink clones on btrfs report reduced `st_blocks` just like APFS clones do, so the logical-vs-actual comparison and CoW ratio calculation are portable across both file-based backends.
 
 Additionally, btrfs provides `btrfs filesystem du` which can show shared/exclusive/total space per file, giving more granular insight into CoW savings. This could be surfaced as an optional detail in the storage efficiency report but is not required for the initial implementation.
 

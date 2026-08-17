@@ -34,9 +34,28 @@ pub type Network = ember_macos::MacosNetwork;
 pub type Storage = Arc<dyn StorageBackend>;
 
 #[cfg(target_os = "linux")]
-pub use ember_linux::{create_storage, init_storage};
+pub use ember_linux::{create_storage, init_storage, try_create_storage};
 #[cfg(target_os = "macos")]
-pub use ember_macos::{create_storage, init_storage};
+pub use ember_macos::{create_storage, init_storage, try_create_storage};
+
+/// Best-effort space accounting, for commands where storage is not the
+/// subject: `vm list`, `vm inspect`, `info`.
+///
+/// Those must keep working when storage cannot be measured, since one
+/// common reason to run them is that storage is broken. Callers render
+/// a dash for whatever comes back missing. `ember storage usage` is the
+/// strict counterpart and reports the error instead.
+///
+/// Note that the maps are restricted to the records passed in while the
+/// pool figures are always installation-wide, so a caller asking about
+/// one VM still gets whole-pool capacity.
+pub fn try_usage(
+    config: &ember_core::config::GlobalConfig,
+    vms: &[ember_core::state::vm::VmMetadata],
+    images: &[ember_core::image::registry::ImageEntry],
+) -> Option<StorageUsage> {
+    try_create_storage(config).ok()?.usage(vms, images).ok()
+}
 
 #[cfg(target_os = "linux")]
 pub type CurrentPlatform = ember_linux::LinuxPlatform;

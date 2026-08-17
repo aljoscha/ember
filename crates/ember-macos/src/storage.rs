@@ -384,17 +384,21 @@ impl StorageBackend for MacosStorage {
         // capacity is that plus whatever the containing filesystem will
         // still give us. Mirrors how the ZFS backend reports its
         // dataset tree rather than the raw vdev.
-        let allocated: u64 = vm_usage
-            .values()
-            .chain(image_usage.values())
-            .map(|u| u.exclusive)
-            .sum();
+        //
+        // Walks the directories rather than summing the maps above: the
+        // pool figure is installation-wide, and callers such as `vm
+        // inspect` hand us a single record.
+        let allocated = occupied_bytes(&self.vms_dir()) + occupied_bytes(&self.images_dir());
         let available = available_bytes(&self.state_dir)?;
 
         Ok(StorageUsage {
             pool: PoolUsage {
                 capacity: allocated.saturating_add(available),
                 allocated,
+                // APFS clones share blocks, but `st_blocks` already
+                // excludes shared ones, so nothing is double-counted
+                // and nothing is reserved-but-empty.
+                reserved: 0,
                 logical: None,
                 metadata: None,
             },
@@ -762,6 +766,30 @@ fn file_usage(path: &Path) -> Option<VolumeUsage> {
         referenced: None,
         logical: None,
     })
+}
+
+/// Sum the disk blocks of every `.img` file under `dir`, recursively.
+///
+/// Missing or unreadable entries contribute nothing. This is a report,
+/// and refusing to print a pool line because one VM directory is
+/// unreadable would be worse than under-counting it.
+fn occupied_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                occupied_bytes(&path)
+            } else if path.extension().and_then(|e| e.to_str()) == Some("img") {
+                fs::metadata(&path).map(|m| m.blocks() * 512).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .sum()
 }
 
 /// Bytes still available to an unprivileged writer on the filesystem

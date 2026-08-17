@@ -283,13 +283,17 @@ impl StorageBackend for LinuxStorage {
             .collect())
     }
 
-    /// ZFS answers every part of the accounting model directly, so this
-    /// is two `zfs` calls plus a join against the state records.
     fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
         let totals = zfs::usage::totals(&self.base_dataset)?;
         let rows = zfs::usage::volumes(&self.base_dataset)?;
         let by_name: HashMap<&str, &zfs::usage::VolumeRow> =
             rows.iter().map(|r| (r.name.as_str(), r)).collect();
+
+        // `logicalused` covers data only, while `used` also carries
+        // every zvol's refreservation. Summing the reservations here
+        // lets the pool ratio compare like with like. There is no
+        // aggregate ZFS property for this, so it comes from the rows.
+        let reserved: u64 = rows.iter().map(|r| r.used_by_refreservation).sum();
 
         // `disk_path` holds the dataset name on the ZFS backend, but a
         // record written by a different backend (or a half-created VM)
@@ -298,7 +302,7 @@ impl StorageBackend for LinuxStorage {
             let row = by_name.get(dataset)?;
             Some(VolumeUsage {
                 provisioned: row.volsize,
-                exclusive: row.exclusive(),
+                exclusive: row.used_by_dataset,
                 referenced: Some(row.referenced),
                 logical: Some(row.logical_referenced),
             })
@@ -308,6 +312,7 @@ impl StorageBackend for LinuxStorage {
             pool: PoolUsage {
                 capacity: totals.used.saturating_add(totals.available),
                 allocated: totals.used,
+                reserved,
                 logical: Some(totals.logical_used),
                 metadata: None,
             },

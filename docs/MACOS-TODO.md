@@ -44,7 +44,7 @@
 
 ## Phase 2.5: Storage Efficiency Diagnostics
 
-- [x] Implement `ember debug storage-efficiency` command
+- [x] Implement the storage usage report (now `ember storage usage`)
 - [x] Report logical size (sum of all .img file sizes via stat)
 - [x] Report actual disk usage (df / diskutil apfs list)
 - [x] Report CoW efficiency ratio

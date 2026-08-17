@@ -2,7 +2,7 @@
 //!
 //! These tests verify macOS-specific storage behaviors:
 //! - APFS CoW clone space efficiency (clones don't consume extra space)
-//! - Storage efficiency debug command
+//! - Space accounting via `ember storage usage`
 //! - VM delete removes storage
 //! - Non-APFS (HFS+) detection and warnings
 //!
@@ -59,10 +59,10 @@ fn apfs_clone_does_not_reduce_free_space() {
     );
 }
 
-/// `ember debug storage-efficiency` should report images and VMs.
+/// `ember storage usage` should report images and VMs.
 #[test]
 #[ignore]
-fn storage_efficiency_shows_savings() {
+fn storage_usage_reports_images_and_vms() {
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = common::macos::setup_init(tmp.path());
     let state = state_dir.to_str().unwrap();
@@ -91,23 +91,27 @@ fn storage_efficiency_shows_savings() {
         );
     }
 
-    let output = common::ember(&["--state-dir", state, "debug", "storage-efficiency"]);
+    let output = common::ember(&["--state-dir", state, "storage", "usage"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "storage-efficiency failed.\nstdout: {stdout}\nstderr: {stderr}"
+        "storage usage failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    assert!(
-        stdout.contains("Images:"),
-        "expected 'Images:' in: {stdout}"
-    );
-    assert!(stdout.contains("VMs:"), "expected 'VMs:' in: {stdout}");
-    assert!(
-        stdout.contains("Total logical:"),
-        "expected 'Total logical:' in: {stdout}"
-    );
+    assert!(stdout.contains("Pool"), "expected a pool line in: {stdout}");
+    assert!(stdout.contains("IMAGES"), "expected images in: {stdout}");
+    // The three VMs and their three forks.
+    for i in 0..3 {
+        assert!(
+            stdout.contains(&format!("effvm{i}")),
+            "expected effvm{i} in: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("efffork{i}")),
+            "expected efffork{i} in: {stdout}"
+        );
+    }
 }
 
 /// VM delete should remove all storage (rootfs + VM directory).

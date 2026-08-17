@@ -8,34 +8,35 @@ use std::process::Command;
 use ember_core::error::{Error, Result};
 
 /// Per-volume accounting for one zvol.
+///
+/// The occupancy figure is [`used_by_dataset`](Self::used_by_dataset)
+/// and deliberately not the `used` property, even though `used` is what
+/// a destroy would return to the pool. Two things inflate `used` past
+/// what the volume physically holds:
+///
+/// * A zvol from `zfs create -V` carries a refreservation for its whole
+///   virtual size, which `used` counts as consumed. Our image volumes
+///   report a `used` of 8.4 GiB against a `referenced` of 1.9 GiB.
+/// * `usedbysnapshots` is by definition space the live volume no longer
+///   references, so adding it would push occupancy past `referenced`.
+///
+/// Clones carry no reservation and ember's fork snapshots hold almost
+/// nothing, so in practice the two agree for VMs and diverge for images.
 #[derive(Debug, PartialEq)]
 pub struct VolumeRow {
     /// Full dataset path, e.g. `tank/ember/vms/myvm`.
     pub name: String,
     pub volsize: u64,
-    /// Blocks held by the live volume, excluding anything shared with
-    /// an origin snapshot.
+    /// Blocks referenced by the live volume and by nothing else. A
+    /// subset of `referenced` by ZFS's own definition.
     pub used_by_dataset: u64,
-    /// Blocks held only by this volume's own snapshots.
-    pub used_by_snapshots: u64,
+    /// Reserved but unwritten space, charged to the pool by
+    /// `refreservation`. Zero for clones.
+    pub used_by_refreservation: u64,
     /// Addressable space including blocks shared with an origin.
     pub referenced: u64,
     /// Uncompressed size of `referenced`.
     pub logical_referenced: u64,
-}
-
-impl VolumeRow {
-    /// Blocks that belong to this volume alone.
-    ///
-    /// Deliberately not the `used` property. A zvol created with `zfs
-    /// create -V` carries a refreservation for its whole virtual size,
-    /// and `used` counts that reservation as consumed space. That makes
-    /// an image report more exclusive bytes than it references, which
-    /// is nonsense as an occupancy figure. Clones have no reservation,
-    /// so this only ever differs for image volumes.
-    pub fn exclusive(&self) -> u64 {
-        self.used_by_dataset.saturating_add(self.used_by_snapshots)
-    }
 }
 
 /// Dataset-tree totals, used for pool-level reporting.
@@ -58,7 +59,7 @@ pub fn volumes(base: &str) -> Result<Vec<VolumeRow>> {
             "-t",
             "volume",
             "-o",
-            "name,volsize,usedbydataset,usedbysnapshots,referenced,logicalreferenced",
+            "name,volsize,usedbydataset,usedbyrefreservation,referenced,logicalreferenced",
             base,
         ])
         .output()
@@ -86,7 +87,7 @@ fn parse_volumes(stdout: &str) -> Result<Vec<VolumeRow>> {
                 name: fields[0].to_string(),
                 volsize: super::parse_u64(fields[1], "volsize")?,
                 used_by_dataset: super::parse_u64(fields[2], "usedbydataset")?,
-                used_by_snapshots: super::parse_u64(fields[3], "usedbysnapshots")?,
+                used_by_refreservation: super::parse_u64(fields[3], "usedbyrefreservation")?,
                 referenced: super::parse_u64(fields[4], "referenced")?,
                 logical_referenced: super::parse_u64(fields[5], "logicalreferenced")?,
             })
@@ -142,32 +143,45 @@ fn parse_totals(stdout: &str) -> Result<DatasetTotals> {
 mod tests {
     use super::*;
 
-    /// Captured from a live pool: a clone (no reservation) and an
-    /// image volume (reserved by `zfs create -V`).
+    /// Rows captured verbatim from a live pool: a clone (no
+    /// reservation) and an image volume (reserved by `zfs create -V`).
     #[test]
     fn parses_volume_rows() {
         let out =
             "ember/ember/vms/aj-dev\t214748364800\t104418334720\t0\t105790773760\t208040643072\n\
-             ember/ember/images/ubuntu-dev\t6810501120\t2079834112\t1024\t2079834112\t4660178944\n";
+             ember/ember/images/ubuntu-dev\t6810501120\t2079834112\t6919027712\t2079834112\t4660178944\n";
         let rows = parse_volumes(out).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "ember/ember/vms/aj-dev");
         assert_eq!(rows[0].volsize, 214_748_364_800);
-        assert_eq!(rows[0].exclusive(), 104_418_334_720);
+        assert_eq!(rows[0].used_by_dataset, 104_418_334_720);
+        assert_eq!(rows[0].used_by_refreservation, 0);
         assert_eq!(rows[0].referenced, 105_790_773_760);
         assert_eq!(rows[0].logical_referenced, 208_040_643_072);
-        assert_eq!(rows[1].exclusive(), 2_079_834_112 + 1024);
+        assert_eq!(rows[1].used_by_refreservation, 6_919_027_712);
     }
 
-    /// Regression: an image zvol's `used` includes its refreservation,
-    /// which would put exclusive above referenced. Exclusive has to
-    /// stay within referenced for a volume with no snapshots.
+    /// Regression, on the exact rows the live pool produces. An earlier
+    /// cut summed `usedbydataset + usedbysnapshots` for occupancy, and
+    /// since snapshot-only space is by definition outside `referenced`,
+    /// both image rows shipped with exclusive above referenced.
     #[test]
-    fn reserved_volume_does_not_exceed_referenced() {
-        // volsize, usedbydataset, usedbysnapshots, referenced, logicalreferenced
-        let out = "p/images/x\t6810501120\t2079834112\t0\t2079834112\t4660178944\n";
-        let row = &parse_volumes(out).unwrap()[0];
-        assert!(row.exclusive() <= row.referenced);
+    fn occupancy_never_exceeds_referenced() {
+        let out = "\
+ember/ember/vms/aj-dev\t214748364800\t104418334720\t0\t105790773760\t208040643072
+ember/ember/vms/mz-dev\t214748364800\t8803586560\t0\t10869327872\t22587842560
+ember/ember/images/ubuntu-dev\t6810501120\t2079834112\t6919027712\t2079834112\t4660178944
+ember/ember/images/ubuntu-dev-new\t7147094016\t2158472704\t7260863488\t2158472704\t4885119488
+";
+        for row in parse_volumes(out).unwrap() {
+            assert!(
+                row.used_by_dataset <= row.referenced,
+                "{}: occupancy {} exceeds referenced {}",
+                row.name,
+                row.used_by_dataset,
+                row.referenced
+            );
+        }
     }
 
     /// A pool with no zvols yet is not an error.

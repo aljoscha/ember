@@ -209,22 +209,25 @@ resize2fs vms/<vm-name>/rootfs.img
 
 Unlike ZFS (where `zfs list -o used,refer` clearly shows per-dataset space usage and CoW savings), APFS has no per-file way to measure clone savings. Both `du` and Finder report clones as if they occupy full space. This means a user with 10 VMs cloned from a 2GB image would see `du` report 20GB even though actual disk usage is ~2GB.
 
-### `ember debug storage-efficiency`
+### `ember storage usage`
 
-A built-in diagnostic command that reports CoW savings:
+A built-in diagnostic command that reports CoW savings. See `STORAGE-USAGE-SPEC.md` for the cross-platform model.
 
 ```
-$ ember debug storage-efficiency
+$ ember storage usage
 
-Storage Efficiency Report
-─────────────────────────
-Images:        2 (3.2 GB logical)
-VMs:           8 (25.6 GB logical)
-                  ──────────────────
-Total logical:    28.8 GB
-Actual disk used:  4.1 GB  (via df)
-CoW efficiency:    7.0x space savings
+Pool          460 GiB capacity, 4.1 GiB used (1%), 456 GiB free
+
+VMS
+NAME    PROVISIONED REFERENCED EXCLUSIVE SHARED COMPRESSION
+vm0           8 GiB          -   412 MiB      -           -
+
+IMAGES
+NAME    PROVISIONED REFERENCED EXCLUSIVE SHARED COMPRESSION
+alpine        2 GiB          -   1.6 GiB      -           -
 ```
+
+APFS reports only `st_blocks`, so `REFERENCED`, `SHARED`, and `COMPRESSION` are unavailable and render as `-`.
 
 **How it works:**
 
@@ -263,7 +266,7 @@ As an additional safeguard, `ember vm create` measures the wall-clock time of th
 
 ```
 Warning: disk clone took 3.2s — this may indicate copy-on-write is not working.
-Run `ember debug storage-efficiency` to check.
+Run `ember storage usage` to check.
 ```
 
 ## Networking: vmnet (Shared Mode)
