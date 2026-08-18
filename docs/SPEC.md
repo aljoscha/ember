@@ -16,7 +16,7 @@ A CLI tool for managing Firecracker microVMs with ZFS-backed storage. CLI-only �
 ```
 ember
 ├── init [--pool <name>] [--device <path>] [--dataset <name>] [--kernel <preset|path>]
-│        [--wan-iface <iface>]
+│        [--wan-iface <iface>] [--cpu-weight N]
 │
 ├── vm
 │   ├── create <name> --image <image> [--cpus N] [--memory SIZE] [--disk-size SIZE]
@@ -282,15 +282,16 @@ The `forked_from` field in VM metadata tracks the origin snapshot path (e.g., `<
 2. Create TAP device + allocate IP
 3. Assert the installation's firewall chains, add the VM's iptables rules
 4. Spawn: `firecracker --api-sock <sock-path> --log-path <log-path> --level Info`
-5. Wait for API socket (poll 10ms, timeout 5s)
-6. Configure via API:
+5. Place the process in the installation's CPU cgroup (see "Host CPU Containment")
+6. Wait for API socket (poll 10ms, timeout 5s)
+7. Configure via API:
    - `PUT /machine-config` — vcpu_count, mem_size_mib
    - `PUT /boot-source` — kernel_image_path, boot_args (including `ip=` param)
    - `PUT /drives/rootfs` — path_on_host: `/dev/zvol/...`, is_root_device: true
    - `PUT /network-interfaces/eth0` — host_dev_name: TAP device, guest_mac
-7. `PUT /actions { action_type: "InstanceStart" }`
-8. Update state: Running + PID
-9. Wait for SSH to become available (exponential backoff, ~30s timeout)
+8. `PUT /actions { action_type: "InstanceStart" }`
+9. Update state: Running + PID
+10. Wait for SSH to become available (exponential backoff, ~30s timeout)
 
 ### VM Stop Sequence
 
@@ -299,6 +300,39 @@ The `forked_from` field in VM metadata tracks the origin snapshot path (e.g., `<
 3. SIGKILL if still alive
 4. Cleanup: remove TAP, remove iptables rules, release IP
 5. Update state: Stopped
+
+### Host CPU Containment
+
+VMs are routinely overprovisioned on vCPUs, because they mostly idle. When
+several of them go full tilt at once, the host ends up competing with dozens of
+runnable vcpu threads for its own CPUs and turns sluggish or unresponsive.
+
+Every Firecracker process of one installation is therefore placed in a single
+cgroup v2 group, `ember-<instance-id>`, created at the root of the hierarchy.
+The group carries a `cpu.weight` of 50 by default, against the 100 that
+`user.slice` and `system.slice` hold, so the VMs collectively yield when the
+host wants CPU.
+
+- **Shared, not per VM.** The weight is what stops overprovisioning from
+  winning by sheer thread count: N vcpu threads split one sibling's share
+  between them rather than each queueing against the user's shell on equal
+  terms.
+- **Root-level, not nested.** `cpu.weight` is only meaningful between siblings.
+  Under `system.slice` the group would compete for that slice's share instead of
+  for the machine.
+- **A share, not a cap.** An idle host still lets the VMs use every core. The
+  limit bites only under contention, so nothing is wasted.
+
+`ember init --cpu-weight N` pins a different weight (1-10000, lower means VMs
+yield more). The value is persisted on `GlobalConfig` and re-applied on every VM
+start, so editing `cpu_weight` in `config.json` takes effect on the next start
+without a reinit. `ember deinit` removes the group.
+
+Placement is best-effort. A host without cgroup v2, or without a usable `cpu`
+controller, gets a warning on `vm start` and an unconstrained VM rather than a
+failed boot. Where the root's `cgroup.subtree_control` does not already list
+`cpu` (systemd enables it at boot, so most hosts do), ember enables it, since a
+group created without the controller would carry no `cpu.weight` at all.
 
 ### Pause/Resume
 

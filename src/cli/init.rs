@@ -125,6 +125,22 @@ pub struct InitArgs {
     /// non-overlapping ranges automatically.
     #[arg(long)]
     pub ip_subnet: Option<String>,
+
+    /// Scheduler weight for all VMs combined, relative to the 100 that
+    /// ordinary host processes carry (default 50, range 1-10000).
+    ///
+    /// Keeps overprovisioned VMs from crowding the host out of its own
+    /// CPUs. This is a share under contention, not a cap: idle hosts
+    /// still give the VMs every core. Lower means VMs yield more.
+    #[cfg_attr(
+        target_os = "macos",
+        arg(long, hide = true, value_parser = clap::value_parser!(u32).range(1..=10_000))
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))
+    )]
+    pub cpu_weight: Option<u32>,
 }
 
 /// Resolve the dm-vdo layer's sizes, or `None` when it was not asked
@@ -358,6 +374,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         dm_thin_block_size: resolved_block_size,
         dm_thin_mode: resolved_dm_thin_mode,
         vdo: resolved_vdo,
+        cpu_weight: args.cpu_weight,
     };
     store
         .create(&store.config_path(), &config)
@@ -396,6 +413,7 @@ mod tests {
             dm_thin_block_size: None,
             dm_thin_mode: None,
             vdo: None,
+            cpu_weight: None,
         }
     }
 
@@ -417,6 +435,7 @@ mod tests {
             wan_iface: None,
             instance_id: None,
             ip_subnet: None,
+            cpu_weight: None,
         }
     }
 

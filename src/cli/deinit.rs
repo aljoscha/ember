@@ -8,7 +8,7 @@ use std::path::Path;
 
 use clap::Args;
 
-use crate::backend::{create_storage, Network, NetworkBackend};
+use crate::backend::{create_storage, Network, NetworkBackend, Vm, VmBackend};
 use ember_core::config::GlobalConfig;
 use ember_core::state::store::StateStore;
 use ember_core::state::vm;
@@ -51,6 +51,10 @@ pub fn run(args: &DeinitArgs, state_dir: &Path) -> anyhow::Result<()> {
     // firewall chain is not worth refusing to tear the install down.
     if let Err(e) = Network::new(store.clone()).deinit(&config) {
         eprintln!("Warning: failed to remove firewall rules: {e}");
+    }
+
+    if let Err(e) = Vm::deinit(&config) {
+        eprintln!("Warning: failed to remove the VM CPU group: {e}");
     }
 
     let storage = create_storage(&config);

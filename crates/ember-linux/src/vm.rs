@@ -8,6 +8,10 @@
 //! `vm.network` (set up by [`NetworkBackend::setup`]). Spawns Firecracker,
 //! configures it via the API (CPU, memory, kernel, rootfs, network), and boots.
 //!
+//! Hypervisor processes are placed in a shared cgroup carrying a
+//! `cpu.weight`, so overprovisioned VMs cannot starve the host. See
+//! [`crate::cgroup`].
+//!
 //! **Stop flow**: attempts graceful shutdown via SSH `reboot` command
 //! (which triggers a KVM_EXIT_SHUTDOWN via the `reboot=k` boot arg),
 //! falls back to Firecracker `SendCtrlAltDel` API, then SIGKILL.
@@ -67,6 +71,15 @@ impl VmBackend for LinuxVm {
         let child = firecracker::process::spawn(socket_path, &log_path)
             .map_err(|e| Error::Firecracker(e.to_string()))?;
         let pid = child.id();
+
+        // Put the hypervisor in the installation's CPU group before it
+        // boots. Nothing has spawned vcpu threads yet, and cgroup v2
+        // migrates whole processes, so this one write covers every
+        // thread the VM goes on to create. Best-effort on purpose: a VM
+        // running without a weight beats a VM that refuses to start.
+        if let Err(e) = crate::cgroup::place(pid, config) {
+            eprintln!("Warning: CPU limits not applied to vm '{}': {e}", vm.name);
+        }
 
         // Configure and boot via the Firecracker API.
         // Kill the process on failure to avoid an orphaned Firecracker.
@@ -159,6 +172,11 @@ impl VmBackend for LinuxVm {
     /// Check whether the Firecracker process is alive via `kill(pid, 0)`.
     fn is_running(pid: u32) -> bool {
         firecracker::process::is_alive(pid)
+    }
+
+    /// Remove the installation's CPU group.
+    fn deinit(config: &GlobalConfig) -> Result<()> {
+        crate::cgroup::remove(config)
     }
 }
 

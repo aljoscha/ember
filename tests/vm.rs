@@ -529,6 +529,71 @@ fn vm_start_stop_lifecycle() {
     );
 }
 
+/// A running hypervisor lands in the installation's shared CPU cgroup,
+/// the group carries the configured weight, and `deinit` takes it away.
+///
+/// The weight is what keeps overprovisioned VMs from starving the host,
+/// and it only applies to processes actually inside the group, so both
+/// halves are worth asserting.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn vm_start_places_hypervisor_in_cpu_group() {
+    let env = common::TestEnv::with_running_vm("vmcgroup", "cgroupvm");
+    let state = env.state();
+
+    let group = common::linux::install_cgroup(&env.state_dir)
+        .expect("init should have pinned an instance id");
+
+    let inspect = common::ember(&[
+        "--state-dir",
+        state,
+        "vm",
+        "inspect",
+        "cgroupvm",
+        "--format",
+        "json",
+    ]);
+    assert!(inspect.status.success());
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&inspect.stdout))
+        .expect("failed to parse inspect JSON");
+    let pid = json["pid"]
+        .as_u64()
+        .expect("expected numeric PID in inspect output")
+        .to_string();
+
+    let procs_path = group.join("cgroup.procs");
+    let procs = std::fs::read_to_string(&procs_path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", procs_path.display()));
+    assert!(
+        procs.split_whitespace().any(|p| p == pid),
+        "firecracker pid {pid} is not in {}: {procs:?}",
+        procs_path.display()
+    );
+
+    let weight = std::fs::read_to_string(group.join("cpu.weight")).expect("cpu.weight missing");
+    assert_eq!(
+        weight.trim(),
+        "50",
+        "expected the default cpu.weight on {}",
+        group.display()
+    );
+
+    common::linux::stop_and_delete_vm(&env.state_dir, "cgroupvm");
+
+    let deinit = common::ember(&["--state-dir", state, "deinit"]);
+    assert!(
+        deinit.status.success(),
+        "deinit failed: {}",
+        String::from_utf8_lossy(&deinit.stderr)
+    );
+    assert!(
+        !group.exists(),
+        "deinit left the CPU group behind at {}",
+        group.display()
+    );
+}
+
 /// Delete a running VM requires --force.
 #[test]
 #[ignore]

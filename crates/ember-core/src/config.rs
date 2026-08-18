@@ -133,6 +133,14 @@ pub struct GlobalConfig {
     /// either would mean rewriting every block.
     #[serde(default)]
     pub vdo: Option<VdoConfig>,
+    /// Scheduler weight for the cgroup holding this installation's
+    /// hypervisor processes, so saturated VMs cannot crowd the host out
+    /// of its own CPUs. Relative to the 100 that `user.slice` and
+    /// `system.slice` carry, valid range 1 to 10000. `None` means the
+    /// platform default. Re-applied on every VM start, so editing it
+    /// here takes effect without a reinit. Linux only.
+    #[serde(default)]
+    pub cpu_weight: Option<u32>,
 }
 
 /// Fallback subnet used when a config predates `ip_subnet`. New
@@ -235,6 +243,7 @@ mod tests {
             dm_thin_block_size: None,
             dm_thin_mode: None,
             vdo: None,
+            cpu_weight: None,
         }
     }
 

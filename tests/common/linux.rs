@@ -97,17 +97,44 @@ pub fn destroy_pool(pool: &str) {
 ///
 /// Reads the instance id from the install's own config, and does nothing
 /// when it is absent or empty. An install predating instance ids shares
+/// The instance id an install pinned at `ember init`, or `None` when
+/// there is no config, it is unreadable, or it predates per-install
+/// isolation.
+///
+/// Cleanup helpers key host-global resources off this. An empty id is
+/// reported as `None` on purpose: a legacy install shares its resource
+/// names with every other legacy install on the host, including the
+/// developer's real one, so there is no safe way to tell whose they are.
+pub fn install_instance_id(state_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(state_dir.join("config.json")).ok()?;
+    let config = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    config["instance_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Path of an install's CPU cgroup, whether or not it exists.
+pub fn install_cgroup(state_dir: &Path) -> Option<PathBuf> {
+    install_instance_id(state_dir).map(|id| PathBuf::from(format!("/sys/fs/cgroup/ember-{id}")))
+}
+
+/// Remove an install's CPU cgroup so root-gated tests don't leave a
+/// directory behind in `/sys/fs/cgroup` for every install they create.
+///
+/// Best-effort: the kernel refuses to remove a populated group, and a
+/// test whose firecracker is still dying legitimately hits that.
+pub fn remove_install_cgroup(state_dir: &Path) {
+    if let Some(dir) = install_cgroup(state_dir) {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// its chain names with every other such install, including the
 /// developer's real one, so there is no safe way to tell whose chains
 /// those are.
 pub fn remove_install_chains(state_dir: &Path) {
-    let Ok(raw) = std::fs::read_to_string(state_dir.join("config.json")) else {
-        return;
-    };
-    let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return;
-    };
-    let Some(id) = config["instance_id"].as_str().filter(|s| !s.is_empty()) else {
+    let Some(id) = install_instance_id(state_dir) else {
         return;
     };
 
@@ -146,16 +173,17 @@ pub struct PoolCleanup {
     pub pool: String,
     pub dev: String,
     pub backing_file: PathBuf,
-    /// State directory of the install, so its firewall chains can be
-    /// removed on drop.
+    /// State directory of the install, so its firewall chains and CPU
+    /// cgroup can be removed on drop.
     pub state_dir: PathBuf,
 }
 
 impl Drop for PoolCleanup {
     fn drop(&mut self) {
         // Before the pool, because a `zpool destroy` that blocks would
-        // otherwise strand the chains too.
+        // otherwise strand the host-global leftovers too.
         remove_install_chains(&self.state_dir);
+        remove_install_cgroup(&self.state_dir);
 
         destroy_pool(&self.pool);
 

@@ -1,3 +1,4 @@
+pub mod cgroup;
 pub mod dm;
 pub mod dm_thin;
 pub mod dm_thin_storage;

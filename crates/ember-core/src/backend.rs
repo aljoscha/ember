@@ -315,6 +315,16 @@ pub trait VmBackend {
     ///
     /// Uses `kill(pid, 0)` — works the same on both platforms.
     fn is_running(pid: u32) -> bool;
+
+    /// Release host resources the backend holds for VM processes.
+    ///
+    /// Called from `ember deinit`, which refuses to run while any VM is
+    /// registered, so implementations may assume no hypervisor of this
+    /// installation is alive. Best-effort at the call site: a leftover
+    /// resource is not worth refusing to tear the install down.
+    fn deinit(_config: &GlobalConfig) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Storage backend: manages disk images, clones, and forks.

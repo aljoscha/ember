@@ -125,6 +125,14 @@ impl Platform for LinuxPlatform {
         }
         let chains = crate::network::policy::chains(config.instance_namespace());
         extra.push(("Firewall", format!("{}, {}", chains.input, chains.forward)));
+        extra.push((
+            "CPU group",
+            format!(
+                "{} (weight {})",
+                crate::cgroup::name(config.instance_namespace()),
+                crate::cgroup::weight(config),
+            ),
+        ));
         extra
     }
 
