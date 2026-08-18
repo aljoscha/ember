@@ -115,7 +115,7 @@ fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsag
 ```
 
 The batching is the point.
-A per-volume `vm_usage(&VmMetadata)` would make dm-thin reserve a metadata snapshot and walk the mapping trees once per VM.
+A per-volume `vm_usage(&VmMetadata)` would make dm-thin reserve a metadata snapshot and walk the mapping trees once per VM, and it could not express the APFS answer at all, where a volume's exclusive figure is only defined relative to every other volume that might share its blocks.
 
 No default implementation.
 A new backend must decide what it can measure rather than silently inheriting zeros.
@@ -218,12 +218,37 @@ When the reservation or the scan fails, the whole call fails, even though the po
 
 ### APFS
 
-* `provisioned` is the disk image file length.
-* `exclusive` is `st_blocks` × 512, which on APFS counts only blocks not shared with a clone.
-* `referenced` and `logical` are `None`, so `SHARED` and `COMPRESSION` are blank on macOS.
+Sharing between APFS clones is visible from userspace. `fcntl(F_LOG2PHYS_EXT)` maps a logical offset in a file to the physical byte range backing it, and `SEEK_DATA` skips holes without walking them. Reading a file's extents tells us which physical bytes it maps, and two files that map the same bytes are sharing them.
 
-Pool numbers mirror the ZFS treatment so the two read the same way: `allocated` is what ember occupies and `capacity` is that plus the containing filesystem's available space.
-It is computed by walking the `vms/` and `images/` directories, not by summing the volumes passed in, because the pool figure is installation-wide while a caller such as `vm inspect` hands the backend a single record.
+`st_blocks` cannot answer this and must not be used for it. It counts the blocks a file maps, not the blocks it owns, so a fresh clone reports its origin's full figure while costing nothing. It separates allocated extents from holes, not shared blocks from unshared ones. Summing it over an install of one image and fifteen clones overstates real occupancy by more than 5x, and feeding that sum into `capacity` makes the reported capacity grow every time a free clone is made.
+
+So we scan rather than stat:
+
+1. Walk `vms/` and `images/` for every `.img` file.
+2. Read each one's physical extents.
+3. Sweep all the extents together. A physical byte mapped by exactly one file is exclusive to that file, a byte mapped by several is shared, and the count of distinct bytes mapped is the tree's real occupancy.
+
+| Field | Source |
+|-------|--------|
+| `provisioned` | file length |
+| `exclusive` | bytes in extents no other file in the tree maps |
+| `referenced` | sum of the file's extent lengths, which equals `st_blocks` × 512 |
+| `logical` | `None`, ember does not compress its disk images |
+
+`exclusive <= referenced` holds by construction, since the exclusive bytes are a subset of the file's own extents.
+
+The whole tree is scanned even when the caller passes a single record, and two separate things depend on that. The pool figure is installation-wide while a caller such as `vm inspect` hands the backend one VM. And exclusivity is not a property of a volume on its own: a file's blocks are exclusive only relative to everything else that might map them, so a sweep restricted to the requested records would report every volume as fully exclusive.
+
+That is the second reason the trait batches. The dm-thin argument is about doing one expensive walk instead of many. On APFS, batching is what makes the answer computable at all.
+
+Pool numbers mirror the ZFS treatment so the two read the same way. `allocated` is the union of every extent in the tree, each shared byte counted once, and `capacity` is that plus the containing filesystem's available space. `reserved` is 0 and `metadata` is `None`.
+
+Two limits we state rather than chase:
+
+* Exclusive means "not shared with another volume ember owns". Blocks shared with a file outside the tree, a user's own `cp -c` of a rootfs for instance, are counted as exclusive. This is the same species of gap as the ZFS asymmetry above.
+* As on ZFS, `exclusive` is not what a delete frees. An APFS snapshot can hold the blocks after the file is gone.
+
+The cost is a full extent scan per report. APFS coalesces aggressively, so extent counts track the number of data islands rather than file size: 4 GiB of contiguous data is around 130 extents, while a sparse ext4 rootfs with metadata scattered through it runs a few thousand. A tree of one image, two VMs and three forks scans in about 25 ms. Should that ever become a problem, the cheap path is available without changing the model, since `vm list` and `info` are best-effort and can stat for `referenced` alone and leave the sweep to `ember storage usage`.
 
 ## CLI surface
 
@@ -291,7 +316,7 @@ It builds the backend through `try_create_storage`, the fallible sibling of `cre
 
 ## Testing
 
-Unit tests, no root required:
+Unit tests, no root required. Note that the workspace sets `default-members = ["."]`, so a bare `cargo test` runs only the root package. The backend crates need naming: `cargo test -p ember-core -p ember-macos` on a Mac, and `-p ember-linux` on Linux, where the ext4 helpers those tests shell out to actually exist.
 
 * `thin_ls` output parsing: the empty pool, a header row that `--no-headers` failed to suppress, and short rows.
 * `zfs list -Hp` row parsing, including the `-` ZFS prints for inapplicable properties.
@@ -300,12 +325,14 @@ Unit tests, no root required:
 * The thin-id join: a record matched to its row, a record with no id, a record with a stale id, and a row no record claims.
 * Derived shared bytes and compression ratio, including the divide-by-zero guards and the saturating subtraction.
 * Rendering of `-` for every `None` field.
+* The APFS extent sweep, as pure interval logic over synthetic extents so it needs no APFS to run: pristine clones share everything and hold nothing exclusively, a partly rewritten clone holds exactly what it rewrote, a byte shared three ways is exclusive to none of them, and the union counts each shared byte once.
 
 Integration tests in `tests/storage_usage.rs`, using the existing `TestEnv`. All of them are `#[ignore]`d, matching every other file in `tests/`, because `TestEnv` builds a real backend and needs root on Linux. `run-integration-tests.sh` passes `--ignored`, so a test left un-ignored would be skipped by the project runner and would break a bare `cargo test`.
 
 * After `ember vm create`, `ember storage usage` lists the VM with `exclusive > 0` and `exclusive <= referenced`.
 * The image row satisfies the same invariant, which is where the refreservation trap bites.
-* After a fork, the fork's `referenced` exceeds its `exclusive`, which is the sharing the CoW backends are supposed to deliver. Forks are created with `--no-start`, since `TestEnv` installs a kernel that cannot boot.
+* After a fork, the fork's `referenced` exceeds its `exclusive`, which is the sharing every CoW backend is supposed to deliver, APFS included. Forks are created with `--no-start`, since `TestEnv` installs a kernel that cannot boot.
+* After a fork, the pool's `allocated` is below the sum of the volumes' `referenced`. This is the property that fails when a backend counts a shared block once per clone, and it is checked against a real fork rather than a fixture, because the assumption that broke here was one no fixture would have questioned. macOS-only for now: the same should hold on ZFS, but `allocated` there also carries refreservation and snapshot charges, so the honest assertion is a different one and belongs with someone who can run it against a pool.
 * `ember vm list` still succeeds and its row ends in `-` when the backend cannot report. Linux-only: the break is a `config.json` naming a nonexistent pool, and the APFS backend reads neither `pool` nor `storage_path`.
 * The dm-thin variant creates an image and a VM so the thin-id join is actually exercised, then calls the command a third time to prove the metadata snapshot was released.
 

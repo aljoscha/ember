@@ -506,9 +506,9 @@ The btrfs backend is structurally almost identical to the macOS APFS backend —
 
 ## Storage Efficiency Diagnostics
 
-`ember storage usage` works for btrfs the same way it does for macOS/APFS. It uses `st_blocks * 512` from `stat` to measure actual disk allocation per `.img` file — reflink clones on btrfs report reduced `st_blocks` just like APFS clones do, so the logical-vs-actual comparison and CoW ratio calculation are portable across both file-based backends.
+`ember storage usage` works for btrfs the same way it does for macOS/APFS, but `st_blocks` is not the way to measure it. On APFS a reflinked clone reports its origin's full `st_blocks` while costing nothing, because the field counts the blocks a file maps rather than the ones it owns. Assume btrfs behaves the same until measured, and measure it before writing the backend rather than after.
 
-Additionally, btrfs provides `btrfs filesystem du` which can show shared/exclusive/total space per file, giving more granular insight into CoW savings. This could be surfaced as an optional detail in the storage efficiency report but is not required for the initial implementation.
+btrfs has the better tool for this anyway: `btrfs filesystem du` reports shared, exclusive and total per file directly, which maps onto `VolumeUsage` without a sweep of our own. That makes it the natural source for `exclusive` and `referenced`, where APFS has to reconstruct the same answer from physical extents.
 
 ## External Dependencies
 
