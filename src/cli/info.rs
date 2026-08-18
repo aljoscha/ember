@@ -62,10 +62,12 @@ pub fn run(state_dir: &Path) -> anyhow::Result<()> {
                 format_ratio(Some(ratio)),
             );
         }
-        // Only when it differs from the physical capacity printed
-        // above, which is exactly when the pool can promise more than
-        // it holds.
-        if let Some(addressable) = pool.addressable.filter(|a| *a != pool.capacity) {
+        // Only when it exceeds the physical capacity printed above,
+        // which is exactly when the pool can promise more than it
+        // holds. A 1:1 pool lands at or just under that capacity,
+        // since the addressable figure is rounded down to a whole pool
+        // block.
+        if let Some(addressable) = pool.addressable.filter(|a| *a > pool.capacity) {
             println!(
                 "Addressable: {} exposed, {} left to hand out",
                 format_bytes_binary(addressable),
