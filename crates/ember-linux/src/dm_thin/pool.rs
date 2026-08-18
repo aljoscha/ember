@@ -76,13 +76,6 @@ pub fn ensure_target_loaded() -> Result<()> {
     dm::ensure_target("dm-thin-pool", "thin-pool", "CONFIG_DM_THIN_PROVISIONING")
 }
 
-/// List active device-mapper device names whose name starts with
-/// `prefix`. Useful for finding all `ember-vm-*` and `ember-img-*`
-/// volumes during teardown.
-pub fn list_with_prefix(prefix: &str) -> Result<Vec<String>> {
-    dm::list_with_prefix(prefix)
-}
-
 /// Build a `thin-pool` table line.
 ///
 /// The format is documented in
@@ -125,15 +118,6 @@ pub fn create(
             low_water_blocks,
         ),
     )
-}
-
-/// Tear down the thin pool. Does not destroy the backing devices or
-/// metadata — those persist for re-activation later.
-///
-/// Returns an error if any thin volume is still active. Callers should
-/// deactivate all thin volumes before tearing down the pool.
-pub fn remove(name: &str) -> Result<()> {
-    dm::remove(name)
 }
 
 /// Send a control message to the thin pool.

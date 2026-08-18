@@ -8,6 +8,7 @@ pub mod network_backend;
 pub mod platform;
 pub mod reconcile;
 pub mod storage;
+pub mod vdo;
 pub mod vm;
 pub mod zfs;
 pub mod zvol;

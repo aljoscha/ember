@@ -106,6 +106,16 @@ impl Platform for LinuxPlatform {
                         },
                     ));
                 }
+                if let Some(vdo) = config.vdo {
+                    rows.push((
+                        "Compression",
+                        format!(
+                            "{} (dm-vdo, deduplication {})",
+                            crate::vdo::name(config.instance_namespace()),
+                            if vdo.deduplication { "on" } else { "off" },
+                        ),
+                    ));
+                }
                 rows
             }
             StorageKind::Btrfs => vec![("btrfs", "(unimplemented)".to_string())],

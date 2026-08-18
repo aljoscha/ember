@@ -13,7 +13,7 @@ use std::process::Command as ProcessCommand;
 
 use crate::zfs;
 use ember_core::backend::{
-    InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
+    GrowRequest, InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
 };
 use ember_core::config::size::ByteSize;
 use ember_core::config::GlobalConfig;
@@ -184,7 +184,7 @@ impl StorageBackend for LinuxStorage {
         Ok(())
     }
 
-    fn grow(&self, _new_size: ByteSize) -> Result<()> {
+    fn grow(&self, _request: GrowRequest) -> Result<()> {
         Err(Error::Zfs(
             "ZFS pools auto-expand by default; use `zpool online -e` if needed".to_string(),
         ))
@@ -314,6 +314,9 @@ impl StorageBackend for LinuxStorage {
                 allocated: totals.used,
                 reserved,
                 logical: Some(totals.logical_used),
+                // ZFS grows datasets against a shared pool rather than
+                // promising space it does not have.
+                addressable: None,
                 metadata: None,
             },
             vms: vms

@@ -4,7 +4,7 @@ use clap::Args;
 
 use crate::backend::{init_storage, CurrentPlatform, InitConfig, Platform};
 use ember_core::config::size::ByteSize;
-use ember_core::config::{derive_instance_id, DmThinMode, GlobalConfig, StorageKind};
+use ember_core::config::{derive_instance_id, DmThinMode, GlobalConfig, StorageKind, VdoConfig};
 use ember_core::state::store::StateStore;
 
 /// dm-thin pool block size (in 512-byte sectors) used when the user does
@@ -82,6 +82,28 @@ pub struct InitArgs {
     #[arg(long)]
     pub block_size: Option<ByteSize>,
 
+    /// Put a dm-vdo compression layer under the dm-thin pool
+    /// (--storage dm-thin only). Permanent at pool creation.
+    #[cfg_attr(target_os = "macos", arg(long, hide = true))]
+    #[cfg_attr(not(target_os = "macos"), arg(long))]
+    pub vdo: bool,
+
+    /// Data capacity a --vdo pool hands out (e.g. `600G`). Defaults to
+    /// --size, so compression shrinks the pool's real disk footprint
+    /// rather than promising space that may not exist. Setting it
+    /// higher over-provisions: if compression underdelivers, the pool
+    /// goes read-only when the disk underneath fills.
+    #[cfg_attr(target_os = "macos", arg(long, hide = true, requires = "vdo"))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, requires = "vdo"))]
+    pub vdo_logical_size: Option<ByteSize>,
+
+    /// Also deduplicate on a --vdo pool. Costs RAM proportional to pool
+    /// size, and folds deduplication into the single savings figure
+    /// `ember storage usage` reports as compression.
+    #[cfg_attr(target_os = "macos", arg(long, hide = true, requires = "vdo"))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, requires = "vdo"))]
+    pub vdo_dedup: bool,
+
     /// Kernel preset or file path [presets: stock]
     #[arg(long)]
     pub kernel: Option<ember_core::kernel::KernelSpec>,
@@ -105,6 +127,61 @@ pub struct InitArgs {
     pub ip_subnet: Option<String>,
 }
 
+/// Resolve the dm-vdo layer's sizes, or `None` when it was not asked
+/// for.
+///
+/// The physical size is whatever the pool's data device will be, which
+/// the dm-thin backend already knows how to work out: `--size` for a
+/// file-backed pool, the device's own size for a raw one. The logical
+/// size defaults to match it, which is the configuration that does not
+/// over-provision.
+#[cfg(target_os = "linux")]
+fn resolve_vdo(
+    args: &InitArgs,
+    storage_path: Option<&Path>,
+    mode: Option<DmThinMode>,
+    state_dir: &Path,
+) -> anyhow::Result<Option<VdoConfig>> {
+    if !args.vdo {
+        return Ok(None);
+    }
+    let (Some(storage_path), Some(mode)) = (storage_path, mode) else {
+        anyhow::bail!("--vdo requires --storage dm-thin");
+    };
+    // Both sizes are rounded to a whole VDO block. `vdoformat` records
+    // the volume's geometry in 4 KiB blocks, and a table built from a
+    // size that is not a whole block claims a sector the volume does
+    // not have, which the kernel rejects with a bare EINVAL.
+    let physical_size = ember_linux::vdo::align_down(
+        ember_linux::dm_thin_storage::pool_size_at_init(storage_path, state_dir, mode, args.size)?,
+    );
+    let logical_size = args
+        .vdo_logical_size
+        .map(|s| ember_linux::vdo::align_down(s.bytes()))
+        .unwrap_or(physical_size);
+    ember_linux::vdo::check_logical_size(logical_size)?;
+    Ok(Some(VdoConfig {
+        physical_size,
+        logical_size,
+        deduplication: args.vdo_dedup,
+    }))
+}
+
+/// dm-vdo is a Linux device-mapper target, so asking for it anywhere
+/// else is an error rather than a silently ignored flag.
+#[cfg(not(target_os = "linux"))]
+fn resolve_vdo(
+    args: &InitArgs,
+    _storage_path: Option<&Path>,
+    _mode: Option<DmThinMode>,
+    _state_dir: &Path,
+) -> anyhow::Result<Option<VdoConfig>> {
+    if args.vdo {
+        anyhow::bail!("--vdo is a Linux dm-thin feature and is not available on this platform");
+    }
+    Ok(None)
+}
+
 /// Validate `--instance-id`: 4 lowercase hex chars (uppercase is folded).
 fn parse_instance_id(s: &str) -> Result<String, String> {
     let lower = s.to_ascii_lowercase();
@@ -117,18 +194,58 @@ fn parse_instance_id(s: &str) -> Result<String, String> {
 }
 
 pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
-    // Refuse to switch backends silently. Existing configs win unless
-    // the user runs `ember deinit` first.
+    // Refuse to touch an installation that already exists. This has to
+    // happen before `init_storage`, which zeroes the thin metadata
+    // superblock and would destroy every VM and image in the pool long
+    // before `store.create` got around to reporting the conflict.
     let store = StateStore::new(state_dir.to_path_buf());
-    if let Ok(Some(existing)) = store.read_optional::<GlobalConfig>(&store.config_path()) {
+    // A config that exists but will not parse is still an existing
+    // installation, and the one thing we must not do is treat it as a
+    // fresh one. A genuinely fresh state dir yields `Ok(None)`.
+    let existing = store
+        .read_optional::<GlobalConfig>(&store.config_path())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{} exists but could not be read: {e}. Refusing to initialize over it, \
+                 because that would destroy any pool it describes. Fix or remove the \
+                 file, or run 'ember deinit'.",
+                store.config_path().display(),
+            )
+        })?;
+    if let Some(existing) = existing {
         if existing.storage_backend != args.storage {
             anyhow::bail!(
-                "ember is already initialized with the {:?} backend; \
-                 run 'ember deinit' first to switch to {:?}",
+                "ember is already initialized with the {:?} backend. \
+                 Run 'ember deinit' first to switch to {:?}.",
                 existing.storage_backend,
                 args.storage,
             );
         }
+        if existing.vdo.is_some() != args.vdo {
+            anyhow::bail!(
+                "ember is already initialized {} a compression layer. It cannot be {} \
+                 an existing pool without rewriting every block, so run \
+                 'ember deinit' first.",
+                if existing.vdo.is_some() {
+                    "with"
+                } else {
+                    "without"
+                },
+                if args.vdo { "added to" } else { "removed from" },
+            );
+        }
+        anyhow::bail!(
+            "ember is already initialized at {} — run 'ember deinit' first to reconfigure",
+            store.config_path().display(),
+        );
+    }
+
+    if args.vdo && args.storage != StorageKind::DmThin {
+        anyhow::bail!(
+            "--vdo puts a compression layer under the dm-thin pool's data device, \
+             so it requires --storage dm-thin (got {:?})",
+            args.storage,
+        );
     }
 
     // Resolve the dm-thin defaults so both InitConfig and GlobalConfig
@@ -168,6 +285,16 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         _ => None,
     };
 
+    // Same reasoning for the VDO layer: its sizes end up in both
+    // structs, and the kernel refuses to activate a volume whose
+    // recorded sizes disagree with how it was formatted.
+    let resolved_vdo = resolve_vdo(
+        args,
+        storage_path.as_deref(),
+        resolved_dm_thin_mode,
+        state_dir,
+    )?;
+
     // Resolve instance_id and ip_subnet up-front so InitConfig and the
     // persisted GlobalConfig agree. dm-thin in particular needs the
     // instance id during init to name the kernel pool.
@@ -195,6 +322,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         dm_thin_metadata_size: args.metadata_size,
         dm_thin_block_size: resolved_block_size,
         dm_thin_mode: resolved_dm_thin_mode,
+        vdo: resolved_vdo,
     };
     init_storage(&init_config)?;
 
@@ -229,6 +357,7 @@ pub fn run(args: &InitArgs, state_dir: &Path) -> anyhow::Result<()> {
         storage_path,
         dm_thin_block_size: resolved_block_size,
         dm_thin_mode: resolved_dm_thin_mode,
+        vdo: resolved_vdo,
     };
     store
         .create(&store.config_path(), &config)
@@ -266,7 +395,101 @@ mod tests {
             storage_path: None,
             dm_thin_block_size: None,
             dm_thin_mode: None,
+            vdo: None,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn vdo_args(vdo: bool, logical: Option<&str>, dedup: bool) -> InitArgs {
+        InitArgs {
+            storage: StorageKind::DmThin,
+            pool: "ember".to_string(),
+            device: None,
+            dataset: "ember".to_string(),
+            storage_path: None,
+            size: Some("64G".parse().unwrap()),
+            metadata_size: None,
+            block_size: None,
+            vdo,
+            vdo_logical_size: logical.map(|s| s.parse().unwrap()),
+            vdo_dedup: dedup,
+            kernel: None,
+            wan_iface: None,
+            instance_id: None,
+            ip_subnet: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resolve(args: &InitArgs) -> anyhow::Result<Option<VdoConfig>> {
+        resolve_vdo(
+            args,
+            Some(Path::new("/var/lib/ember/dm-thin")),
+            Some(DmThinMode::File),
+            Path::new("/var/lib/ember"),
+        )
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn no_vdo_flag_means_no_layer() {
+        assert_eq!(resolve(&vdo_args(false, None, false)).unwrap(), None);
+    }
+
+    /// The default is the configuration that does not over-promise:
+    /// compression buys a smaller footprint, not extra capacity.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn logical_size_defaults_to_the_physical_size() {
+        let cfg = resolve(&vdo_args(true, None, false)).unwrap().unwrap();
+        assert_eq!(cfg.physical_size, 64 << 30);
+        assert_eq!(cfg.logical_size, cfg.physical_size);
+        assert!(!cfg.deduplication);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn logical_size_can_over_provision_explicitly() {
+        let cfg = resolve(&vdo_args(true, Some("128G"), true))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.physical_size, 64 << 30);
+        assert_eq!(cfg.logical_size, 128 << 30);
+        assert!(cfg.deduplication);
+    }
+
+    /// Both sizes must be whole VDO blocks, or the table claims a
+    /// sector the formatted volume does not have.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sizes_are_rounded_to_whole_vdo_blocks() {
+        // Both a hair over a whole number of blocks, and both well
+        // above the minimum so the floor is not what is being tested.
+        let mut args = vdo_args(true, Some("33554433K"), false);
+        args.size = Some("67108865K".parse().unwrap());
+        let cfg = resolve(&args).unwrap().unwrap();
+        assert_eq!(cfg.physical_size, 64 << 30);
+        assert_eq!(cfg.logical_size, 32 << 30);
+    }
+
+    /// A logical size small enough to round down to zero would mean
+    /// "match the physical size" to `vdoformat` and a zero-length
+    /// device in the table.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_logical_size_below_the_floor_is_refused() {
+        assert!(resolve(&vdo_args(true, Some("1M"), false)).is_err());
+        assert!(resolve(&vdo_args(true, Some("1K"), false)).is_err());
+    }
+
+    /// A file-backed pool has no size to discover, so `--vdo` without
+    /// `--size` is an error rather than a guess.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn vdo_without_a_size_on_a_file_pool_is_an_error() {
+        let mut args = vdo_args(true, None, false);
+        args.size = None;
+        assert!(resolve(&args).is_err());
     }
 
     #[test]

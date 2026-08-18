@@ -8,7 +8,8 @@ A lightweight CLI for managing microVMs with copy-on-write storage. CLI-only —
 
 - **Linux**: Firecracker (KVM) + one of:
   - ZFS zvols (default; see `docs/SPEC.md`).
-  - dm-thin (kernel-builtin device-mapper thin provisioning; see `docs/DM-THIN-SPEC.md`).
+  - dm-thin (kernel-builtin device-mapper thin provisioning; see `docs/DM-THIN-SPEC.md`),
+    optionally with a dm-vdo compression layer (`--vdo`; see `docs/VDO-SPEC.md`).
   Backend is selected at `ember init --storage <zfs|dm-thin>` and persisted on `GlobalConfig`.
 - **macOS**: Apple Virtualization Framework + APFS clones. See `docs/MACOS-SPEC.md` for the design.
 
@@ -52,6 +53,13 @@ sudo ./target/debug/ember init \
     --storage dm-thin \
     --storage-path /var/lib/ember/dm-thin \
     --size 50G
+
+# dm-thin with transparent compression (needs Linux 6.9+ and `vdoformat`)
+sudo ./target/debug/ember init \
+    --storage dm-thin \
+    --storage-path /var/lib/ember/dm-thin \
+    --size 50G \
+    --vdo
 sudo ./target/debug/ember image pull alpine:latest
 sudo ./target/debug/ember vm create testvm --image alpine:latest
 
@@ -61,8 +69,15 @@ sudo ./target/debug/ember deinit --purge
 # Grow the dm-thin data device
 sudo ./target/debug/ember storage grow --size 100G
 
-# Integration tests for dm-thin (root + dm-thin module + thin-provisioning-tools)
-sudo cargo test --test dm_thin -- --ignored --test-threads=1
+# Integration tests. `run-integration-tests.sh` is the project runner: it
+# builds as the current user and only runs the test binary under sudo, so
+# `target/` does not end up owned by root. It passes
+# `--ignored --test-threads=1 --nocapture` and takes a suite name, or
+# `suite::test` for a single test.
+./run-integration-tests.sh                  # every suite for this platform
+./run-integration-tests.sh dm_thin          # root + dm-thin + thin-provisioning-tools
+./run-integration-tests.sh vdo              # also needs dm-vdo + vdoformat
+./run-integration-tests.sh vdo::vdo_reports_compression_once_the_pool_holds_data
 ```
 
 ## Coding Style & Conventions

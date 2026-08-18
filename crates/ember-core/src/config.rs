@@ -50,6 +50,26 @@ pub enum DmThinMode {
     RawDevice,
 }
 
+/// dm-vdo layer beneath the dm-thin pool's data device.
+///
+/// Both sizes are persisted rather than derived. The kernel requires
+/// the table to state the volume's current logical and physical size
+/// exactly, and a raw device the operator grew externally would make a
+/// derived physical size disagree with what the volume was formatted
+/// with, failing activation with a bare `EINVAL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VdoConfig {
+    /// Physical bytes VDO manages on the backing device.
+    pub physical_size: u64,
+    /// Logical bytes VDO presents upward, which is the thin pool's data
+    /// capacity. May exceed `physical_size` when the operator bets on
+    /// compression.
+    pub logical_size: u64,
+    /// Whether the deduplication index is consulted. Compression is
+    /// always on, since it is the reason the layer exists.
+    pub deduplication: bool,
+}
+
 /// Global configuration written by `ember init`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -106,6 +126,13 @@ pub struct GlobalConfig {
     /// non-dm-thin backends.
     #[serde(default)]
     pub dm_thin_mode: Option<DmThinMode>,
+    /// dm-vdo compression layer beneath the dm-thin pool's data device.
+    /// `None` for an uncompressed pool and for every non-dm-thin
+    /// backend, which is what every config written before the layer
+    /// existed says. It cannot be added to or removed from a live pool:
+    /// either would mean rewriting every block.
+    #[serde(default)]
+    pub vdo: Option<VdoConfig>,
 }
 
 /// Fallback subnet used when a config predates `ip_subnet`. New
@@ -207,6 +234,7 @@ mod tests {
             storage_path: None,
             dm_thin_block_size: None,
             dm_thin_mode: None,
+            vdo: None,
         }
     }
 

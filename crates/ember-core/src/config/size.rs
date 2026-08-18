@@ -36,6 +36,15 @@ impl ByteSize {
         Self { bytes: gib * GIB }
     }
 
+    /// Construct from a raw byte count. Usable in `const` context.
+    ///
+    /// The parser only accepts whole units, so this is the way to
+    /// express a size that is not one, which is mostly sizes that came
+    /// from a device rather than from a person.
+    pub const fn from_bytes(bytes: u64) -> Self {
+        Self { bytes }
+    }
+
     /// Raw byte count.
     pub fn bytes(self) -> u64 {
         self.bytes

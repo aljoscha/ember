@@ -592,9 +592,13 @@ The authoritative record of which ids are live lives in `ImageEntry`/`VmMetadata
 dm-thin sits between ZFS and btrfs:
 it offers ZFS-like block-level CoW with no kernel module, at the cost of a more involved activation lifecycle (numeric ids, explicit `dmsetup` operations, no auto-import) and weaker data-integrity guarantees (no data checksums, harsher pool-exhaustion failure mode).
 
+The remaining gap against ZFS is compression, which ZFS applies by default and dm-thin does not do at all.
+`ember init --storage dm-thin --vdo` closes it by putting a `dm-vdo` target between the pool's data device and its backing store.
+The layer is opt-in and permanent at pool creation. See `VDO-SPEC.md`.
+
 ## Storage efficiency diagnostics
 
-`ember storage usage` for dm-thin reports both per-volume and pool-level metrics. See `STORAGE-USAGE-SPEC.md` for the model and the metadata-snapshot hazards.
+`ember storage usage` for dm-thin reports both per-volume and pool-level metrics. See `STORAGE-USAGE-SPEC.md` for the model and the metadata-snapshot hazards, and `VDO-SPEC.md` for what changes when a compression layer is present.
 
 * Per-volume virtual size: from the record's `disk_size_gib` / `size_mib`.
 * Per-volume mapped and exclusive blocks: from `thin_ls -m` against the metadata loop device, under a reservation taken with `dmsetup message <pool> 0 "reserve_metadata_snap"`. Reading through metadata rather than `dmsetup status` also covers volumes that are not currently activated.
@@ -615,16 +619,17 @@ The macOS `st_blocks` approach used by the btrfs and APFS backends does not appl
 
 ## External dependencies
 
+* **`vdoformat`**: Only when `--vdo` is used. From the `vdo` package on Debian/Ubuntu/Fedora/RHEL, and the AUR on Arch. Checked at `ember init` time.
 * **`dmsetup`**: From the `lvm2` package on Debian/Ubuntu/RHEL/Fedora/Arch. Installed by default on most server distributions.
 * **`losetup`**: From `util-linux`. Always present.
 * **`thin-provisioning-tools`**: Provides `thin_check`, `thin_repair`, `thin_dump`, `thin_metadata_size`, `thin_ls`. Packaged separately on most distributions. Required by `ember init` and `ember storage info`. Pre-flight check at `ember init` time.
 * **`e2fsprogs`**: `mkfs.ext4`, `e2fsck`, `resize2fs`. Already required by the ZFS backend.
 * **GNU coreutils**: `truncate`, `dd`. Already required.
-* **Kernel config**: `CONFIG_DM_THIN_PROVISIONING=y` or `=m`, `CONFIG_BLK_DEV_LOOP=y` or `=m`. Both are part of every mainstream distribution kernel.
+* **Kernel config**: `CONFIG_DM_THIN_PROVISIONING=y` or `=m`, `CONFIG_BLK_DEV_LOOP=y` or `=m`. Both are part of every mainstream distribution kernel. `--vdo` additionally needs `CONFIG_DM_VDO`, in-tree since Linux 6.9.
 
 ## Open questions
 
 * **Multi-instance support**: The current spec hardcodes the pool name `ember-pool` and the device-mapper prefixes. Running multiple independent ember installations on the same host requires per-instance prefixes. Deferred until a real use case appears.
 * **Metadata on a separate device**: `ember init --metadata-device /dev/sdc1` could place metadata on faster storage (NVMe) while data lives on bulk storage (HDD). Easy to add later — the pool table already supports two distinct devices.
-* **Discard/TRIM**: dm-thin supports passdown of discards from guest to pool, which can return blocks to the pool when guests TRIM. Requires Firecracker virtio-blk to advertise discard support and the guest filesystem to issue it. Worth investigating as a follow-up; not required for correctness.
+* **Discard/TRIM from inside a guest**: blocked upstream, not open. dm-thin enables discard passdown by default and the layers below honour it, so deleting a VM or an image already returns real disk. What does not work is a guest reclaiming space it freed inside its own filesystem: Firecracker's virtio-blk device advertises no `VIRTIO_BLK_F_DISCARD`, so the guest never marks the disk as trimmable and `fstrim` is a no-op. Nothing on our side can fix that. An offline `fstrim` against a stopped VM's device would work today and needs no upstream change.
 * **`dmeventd` integration**: Userspace handler for low-water-mark events would let ember warn proactively. The initial implementation polls `dmsetup status` on demand instead.
