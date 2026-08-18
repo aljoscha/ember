@@ -162,90 +162,6 @@ pub struct StorageUsage {
     pub images: BTreeMap<String, VolumeUsage>,
 }
 
-#[cfg(test)]
-mod usage_tests {
-    use super::*;
-
-    fn volume(exclusive: u64, referenced: Option<u64>, logical: Option<u64>) -> VolumeUsage {
-        VolumeUsage {
-            provisioned: 1024,
-            exclusive,
-            referenced,
-            logical,
-        }
-    }
-
-    #[test]
-    fn shared_is_the_gap_between_referenced_and_exclusive() {
-        assert_eq!(volume(80, Some(100), None).shared(), Some(20));
-        assert_eq!(volume(100, Some(100), None).shared(), Some(0));
-    }
-
-    /// Backends that cannot separate shared from exclusive report
-    /// nothing rather than claiming zero sharing.
-    #[test]
-    fn shared_is_unknown_without_referenced() {
-        assert_eq!(volume(80, None, None).shared(), None);
-    }
-
-    /// `exclusive` is contractually within `referenced`, but the
-    /// saturating subtraction keeps a backend bug from producing a
-    /// wrapped, astronomically large shared figure.
-    #[test]
-    fn shared_saturates_instead_of_wrapping() {
-        assert_eq!(volume(120, Some(100), None).shared(), Some(0));
-    }
-
-    #[test]
-    fn compression_ratio_divides_logical_by_referenced() {
-        let r = volume(80, Some(100), Some(200)).compression_ratio();
-        assert_eq!(r, Some(2.0));
-    }
-
-    /// An untouched volume would divide by zero. `None` renders as `-`
-    /// where an infinity would render as `inf`.
-    #[test]
-    fn compression_ratio_guards_empty_volume() {
-        assert_eq!(volume(0, Some(0), Some(0)).compression_ratio(), None);
-        assert_eq!(volume(0, None, Some(200)).compression_ratio(), None);
-        assert_eq!(volume(0, Some(100), None).compression_ratio(), None);
-    }
-
-    fn pool(allocated: u64, reserved: u64, logical: Option<u64>) -> PoolUsage {
-        PoolUsage {
-            capacity: 1000,
-            allocated,
-            reserved,
-            logical,
-            metadata: None,
-        }
-    }
-
-    #[test]
-    fn free_is_capacity_minus_allocated() {
-        assert_eq!(pool(400, 0, None).free(), 600);
-        // A pool reporting more allocated than capacity must not wrap.
-        assert_eq!(pool(1200, 0, None).free(), 0);
-    }
-
-    /// Empty reservation is charged to the pool but has no logical
-    /// counterpart, so leaving it in the denominator understates
-    /// compression.
-    #[test]
-    fn pool_ratio_excludes_reservation() {
-        let p = pool(300, 100, Some(400));
-        assert_eq!(p.occupied(), 200);
-        assert_eq!(p.compression_ratio(), Some(2.0));
-    }
-
-    #[test]
-    fn pool_ratio_guards_fully_reserved_pool() {
-        assert_eq!(pool(100, 100, Some(0)).compression_ratio(), None);
-        assert_eq!(pool(0, 0, Some(0)).compression_ratio(), None);
-        assert_eq!(pool(100, 0, None).compression_ratio(), None);
-    }
-}
-
 /// Configuration for storage backend initialization during `ember init`.
 ///
 /// Carries the subset of init arguments that the storage backend needs.
@@ -689,4 +605,88 @@ pub trait Platform {
     /// Returns an error if the OS-specific source can't be read or parsed;
     /// callers are expected to soft-fail rather than block on this.
     fn host_ram_mib() -> anyhow::Result<u32>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn volume(exclusive: u64, referenced: Option<u64>, logical: Option<u64>) -> VolumeUsage {
+        VolumeUsage {
+            provisioned: 1024,
+            exclusive,
+            referenced,
+            logical,
+        }
+    }
+
+    #[test]
+    fn shared_is_the_gap_between_referenced_and_exclusive() {
+        assert_eq!(volume(80, Some(100), None).shared(), Some(20));
+        assert_eq!(volume(100, Some(100), None).shared(), Some(0));
+    }
+
+    /// Backends that cannot separate shared from exclusive report
+    /// nothing rather than claiming zero sharing.
+    #[test]
+    fn shared_is_unknown_without_referenced() {
+        assert_eq!(volume(80, None, None).shared(), None);
+    }
+
+    /// `exclusive` is contractually within `referenced`, but the
+    /// saturating subtraction keeps a backend bug from producing a
+    /// wrapped, astronomically large shared figure.
+    #[test]
+    fn shared_saturates_instead_of_wrapping() {
+        assert_eq!(volume(120, Some(100), None).shared(), Some(0));
+    }
+
+    #[test]
+    fn compression_ratio_divides_logical_by_referenced() {
+        let r = volume(80, Some(100), Some(200)).compression_ratio();
+        assert_eq!(r, Some(2.0));
+    }
+
+    /// An untouched volume would divide by zero. `None` renders as `-`
+    /// where an infinity would render as `inf`.
+    #[test]
+    fn compression_ratio_guards_empty_volume() {
+        assert_eq!(volume(0, Some(0), Some(0)).compression_ratio(), None);
+        assert_eq!(volume(0, None, Some(200)).compression_ratio(), None);
+        assert_eq!(volume(0, Some(100), None).compression_ratio(), None);
+    }
+
+    fn pool(allocated: u64, reserved: u64, logical: Option<u64>) -> PoolUsage {
+        PoolUsage {
+            capacity: 1000,
+            allocated,
+            reserved,
+            logical,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn free_is_capacity_minus_allocated() {
+        assert_eq!(pool(400, 0, None).free(), 600);
+        // A pool reporting more allocated than capacity must not wrap.
+        assert_eq!(pool(1200, 0, None).free(), 0);
+    }
+
+    /// Empty reservation is charged to the pool but has no logical
+    /// counterpart, so leaving it in the denominator understates
+    /// compression.
+    #[test]
+    fn pool_ratio_excludes_reservation() {
+        let p = pool(300, 100, Some(400));
+        assert_eq!(p.occupied(), 200);
+        assert_eq!(p.compression_ratio(), Some(2.0));
+    }
+
+    #[test]
+    fn pool_ratio_guards_fully_reserved_pool() {
+        assert_eq!(pool(100, 100, Some(0)).compression_ratio(), None);
+        assert_eq!(pool(0, 0, Some(0)).compression_ratio(), None);
+        assert_eq!(pool(100, 0, None).compression_ratio(), None);
+    }
 }
