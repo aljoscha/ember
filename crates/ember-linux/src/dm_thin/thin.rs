@@ -9,11 +9,12 @@
 //! callers must explicitly [`activate`] them when needed.
 
 use std::path::PathBuf;
-use std::process::Command;
 
-use ember_core::error::{Error, Result};
+use ember_core::error::Result;
 
-use super::{is_already_exists, pool};
+use crate::dm;
+
+use super::pool;
 
 /// Maximum thin device id accepted by the kernel.
 ///
@@ -57,7 +58,7 @@ pub fn allocate(pool_name: &str) -> Result<u64> {
         let id = fresh_thin_id();
         match pool::message(pool_name, &format!("create_thin {id}")) {
             Ok(()) => return Ok(id),
-            Err(e) if is_already_exists(&e) => continue,
+            Err(e) if dm::is_already_exists(&e) => continue,
             Err(e) => return Err(e),
         }
     }
@@ -72,7 +73,7 @@ pub fn allocate_snap(pool_name: &str, src_id: u64) -> Result<u64> {
         let id = fresh_thin_id();
         match pool::message(pool_name, &format!("create_snap {id} {src_id}")) {
             Ok(()) => return Ok(id),
-            Err(e) if is_already_exists(&e) => continue,
+            Err(e) if dm::is_already_exists(&e) => continue,
             Err(e) => return Err(e),
         }
     }
@@ -88,13 +89,13 @@ pub fn delete(pool_name: &str, thin_id: u64) -> Result<()> {
 
 /// Path of a thin volume's device once activated.
 pub fn device_path(name: &str) -> PathBuf {
-    PathBuf::from(format!("/dev/mapper/{name}"))
+    dm::device_path(name)
 }
 
 /// Whether a thin volume is currently activated as a `/dev/mapper`
 /// device.
 pub fn is_active(name: &str) -> Result<bool> {
-    super::dm_device_exists(name)
+    dm::device_exists(name)
 }
 
 /// Activate a thin volume as a `/dev/mapper/<name>` block device.
@@ -102,15 +103,7 @@ pub fn is_active(name: &str) -> Result<bool> {
 /// `size_sectors` is the volume's virtual size; the pool only allocates
 /// blocks as the volume is written to.
 pub fn activate(name: &str, pool_name: &str, thin_id: u64, size_sectors: u64) -> Result<PathBuf> {
-    let table = thin_table(pool_name, thin_id, size_sectors);
-    let output = Command::new("dmsetup")
-        .args(["create", name, "--table", &table])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup create".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup create thin", output)?;
+    dm::create(name, &thin_table(pool_name, thin_id, size_sectors))?;
     Ok(device_path(name))
 }
 
@@ -120,40 +113,24 @@ pub fn activate(name: &str, pool_name: &str, thin_id: u64, size_sectors: u64) ->
 /// device keeps working through the rename. The underlying thin id
 /// is unchanged.
 pub fn rename(old_name: &str, new_name: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["rename", old_name, new_name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup rename".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup rename", output)?;
-    Ok(())
+    dm::rename(old_name, new_name)
 }
 
 /// Tear down a thin volume's `/dev/mapper` device. The underlying thin
 /// id and its blocks remain in the pool until [`delete`] is called.
 pub fn deactivate(name: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["remove", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup remove".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup remove", output)?;
-    Ok(())
+    dm::remove(name)
 }
 
 /// Suspend a thin volume's I/O. Required before snapshotting or
 /// reloading the table.
 pub fn suspend(name: &str) -> Result<()> {
-    pool::suspend(name)
+    dm::suspend(name)
 }
 
 /// Resume a previously suspended thin volume.
 pub fn resume(name: &str) -> Result<()> {
-    pool::resume(name)
+    dm::resume(name)
 }
 
 /// Reload the thin volume's table to expose a new virtual size.
@@ -162,20 +139,7 @@ pub fn resume(name: &str) -> Result<()> {
 /// activation time and only consume blocks as they are written. Caller
 /// is still responsible for filesystem-level resize (e.g. `resize2fs`).
 pub fn reload_size(name: &str, pool_name: &str, thin_id: u64, new_size_sectors: u64) -> Result<()> {
-    let table = thin_table(pool_name, thin_id, new_size_sectors);
-    suspend(name)?;
-    let load = Command::new("dmsetup")
-        .args(["load", name, "--table", &table])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup load".to_string(),
-            source: e,
-        })?;
-    if let Err(e) = Error::check_command("dmsetup load thin", load) {
-        let _ = resume(name);
-        return Err(e);
-    }
-    resume(name)
+    dm::reload(name, &thin_table(pool_name, thin_id, new_size_sectors))
 }
 
 fn thin_table(pool_name: &str, thin_id: u64, size_sectors: u64) -> String {

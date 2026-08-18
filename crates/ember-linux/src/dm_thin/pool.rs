@@ -7,9 +7,10 @@
 //! on the same host don't share a pool.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use ember_core::error::{Error, Result};
+
+use crate::dm;
 
 /// dm-thin pool name for an installation.
 ///
@@ -71,65 +72,15 @@ pub struct PoolStatus {
 }
 
 /// Ensure the kernel has the `thin-pool` device-mapper target available.
-///
-/// On most distributions `dm-thin-pool` is a loadable module that
-/// `dmsetup` does not auto-load. We `modprobe` it best-effort (built-in
-/// kernels report "Module not found" but the target is already
-/// registered) and then verify it appears in `dmsetup targets`. Without
-/// this check, a missing target produces an opaque `Invalid argument`
-/// from `dmsetup create`.
 pub fn ensure_target_loaded() -> Result<()> {
-    let _ = Command::new("modprobe").arg("dm-thin-pool").output();
-
-    let output = Command::new("dmsetup")
-        .arg("targets")
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup targets".to_string(),
-            source: e,
-        })?;
-    let output = Error::check_command("dmsetup targets", output)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let has_thin_pool = stdout
-        .lines()
-        .any(|line| line.split_whitespace().next() == Some("thin-pool"));
-    if has_thin_pool {
-        return Ok(());
-    }
-    Err(Error::Command {
-        command: "dmsetup targets".to_string(),
-        exit_code: 0,
-        stderr: "kernel does not provide the 'thin-pool' device-mapper target. \
-                 Install or enable a kernel with CONFIG_DM_THIN_PROVISIONING and \
-                 load it with 'modprobe dm-thin-pool'."
-            .to_string(),
-    })
+    dm::ensure_target("dm-thin-pool", "thin-pool", "CONFIG_DM_THIN_PROVISIONING")
 }
 
 /// List active device-mapper device names whose name starts with
 /// `prefix`. Useful for finding all `ember-vm-*` and `ember-img-*`
 /// volumes during teardown.
 pub fn list_with_prefix(prefix: &str) -> Result<Vec<String>> {
-    let output = Command::new("dmsetup")
-        .arg("ls")
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup ls".to_string(),
-            source: e,
-        })?;
-    let output = Error::check_command("dmsetup ls", output)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .filter_map(|line| {
-            let name = line.split_whitespace().next()?;
-            if name.starts_with(prefix) {
-                Some(name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect())
+    dm::list_with_prefix(prefix)
 }
 
 /// Build a `thin-pool` table line.
@@ -164,22 +115,16 @@ pub fn create(
     block_size_sectors: u32,
     low_water_blocks: u64,
 ) -> Result<()> {
-    let table = pool_table(
-        metadata_dev,
-        data_dev,
-        data_sectors,
-        block_size_sectors,
-        low_water_blocks,
-    );
-    let output = Command::new("dmsetup")
-        .args(["create", name, "--table", &table])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup create".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup create thin-pool", output)?;
-    Ok(())
+    dm::create(
+        name,
+        &pool_table(
+            metadata_dev,
+            data_dev,
+            data_sectors,
+            block_size_sectors,
+            low_water_blocks,
+        ),
+    )
 }
 
 /// Tear down the thin pool. Does not destroy the backing devices or
@@ -188,15 +133,7 @@ pub fn create(
 /// Returns an error if any thin volume is still active. Callers should
 /// deactivate all thin volumes before tearing down the pool.
 pub fn remove(name: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["remove", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup remove".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup remove", output)?;
-    Ok(())
+    dm::remove(name)
 }
 
 /// Send a control message to the thin pool.
@@ -205,15 +142,7 @@ pub fn remove(name: &str) -> Result<()> {
 /// `set_transaction_id`, …) are delivered this way rather than via
 /// dedicated dmsetup subcommands.
 pub fn message(name: &str, msg: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["message", name, "0", msg])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup message".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup message", output)?;
-    Ok(())
+    dm::message(name, msg)
 }
 
 /// A reserved pool metadata snapshot, released when dropped.
@@ -240,7 +169,7 @@ impl MetadataSnap {
             Ok(()) => Ok(Self {
                 pool: pool_name.to_string(),
             }),
-            Err(e) if super::is_busy(&e) => Err(Error::Pool(format!(
+            Err(e) if dm::is_busy(&e) => Err(Error::Pool(format!(
                 "dm-thin pool '{pool_name}' already holds a metadata snapshot. \
                  If nothing else is reading the pool, an earlier run left it behind: \
                  release it with `dmsetup message {pool_name} 0 release_metadata_snap`"
@@ -273,59 +202,22 @@ pub fn reload(
     block_size_sectors: u32,
     low_water_blocks: u64,
 ) -> Result<()> {
-    let table = pool_table(
-        metadata_dev,
-        data_dev,
-        data_sectors,
-        block_size_sectors,
-        low_water_blocks,
-    );
-    suspend(name)?;
-    let load = Command::new("dmsetup")
-        .args(["load", name, "--table", &table])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup load".to_string(),
-            source: e,
-        })?;
-    if let Err(e) = Error::check_command("dmsetup load thin-pool", load) {
-        // Best-effort resume to leave the pool live before returning.
-        let _ = resume(name);
-        return Err(e);
-    }
-    resume(name)
+    dm::reload(
+        name,
+        &pool_table(
+            metadata_dev,
+            data_dev,
+            data_sectors,
+            block_size_sectors,
+            low_water_blocks,
+        ),
+    )
 }
 
 /// Path to the activated thin-pool device. Useful for building thin
 /// volume tables that reference the pool by `/dev/mapper/...`.
 pub fn device_path(name: &str) -> PathBuf {
-    PathBuf::from(format!("/dev/mapper/{name}"))
-}
-
-/// Suspend a device-mapper device. Required before reloading a table.
-pub fn suspend(name: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["suspend", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup suspend".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup suspend", output)?;
-    Ok(())
-}
-
-/// Resume a previously suspended device-mapper device.
-pub fn resume(name: &str) -> Result<()> {
-    let output = Command::new("dmsetup")
-        .args(["resume", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup resume".to_string(),
-            source: e,
-        })?;
-    Error::check_command("dmsetup resume", output)?;
-    Ok(())
+    dm::device_path(name)
 }
 
 /// Query thin-pool status via `dmsetup status`.
@@ -342,15 +234,7 @@ pub fn resume(name: &str) -> Result<()> {
 ///   <needs_check|-> <metadata_low_watermark>
 /// ```
 pub fn status(name: &str) -> Result<PoolStatus> {
-    let output = Command::new("dmsetup")
-        .args(["status", name])
-        .output()
-        .map_err(|e| Error::CommandExec {
-            command: "dmsetup status".to_string(),
-            source: e,
-        })?;
-    let output = Error::check_command("dmsetup status", output)?;
-    parse_status(&String::from_utf8_lossy(&output.stdout))
+    parse_status(&dm::status(name)?)
 }
 
 fn parse_status(line: &str) -> Result<PoolStatus> {

@@ -22,7 +22,8 @@ use ember_core::error::{Error, Result};
 use ember_core::image::registry::ImageEntry;
 use ember_core::state::vm::VmMetadata;
 
-use crate::dm_thin::{dm_device_exists, loop_device, pool, thin, tools, SECTOR_SIZE};
+use crate::dm::{self, SECTOR_SIZE};
+use crate::dm_thin::{loop_device, pool, thin, tools};
 use crate::zvol;
 
 /// Default file name for the metadata backing file inside the dm-thin
@@ -137,7 +138,7 @@ impl DmThinStorage {
     /// devices and re-runs `dmsetup create` if the kernel state is gone
     /// (e.g., after a reboot).
     fn ensure_pool_active(&self) -> Result<()> {
-        if dm_device_exists(&self.pool_name)? {
+        if dm::device_exists(&self.pool_name)? {
             return Ok(());
         }
 
@@ -181,7 +182,7 @@ impl DmThinStorage {
         thin_id: u64,
         size_sectors: u64,
     ) -> Result<PathBuf> {
-        if dm_device_exists(dm_name)? {
+        if dm::device_exists(dm_name)? {
             return Ok(thin::device_path(dm_name));
         }
         thin::activate(dm_name, &self.pool_name, thin_id, size_sectors)
@@ -378,7 +379,7 @@ impl StorageBackend for DmThinStorage {
         // doesn't trip over `EEXIST`. The matching staging thin id is
         // not persisted anywhere, so it leaks into pool metadata; that
         // is a bounded one-off cost and only `thin_dump` can find it.
-        if let Ok(true) = dm_device_exists(&staging_dm) {
+        if let Ok(true) = dm::device_exists(&staging_dm) {
             let _ = thin::deactivate(&staging_dm);
         }
 
@@ -477,7 +478,7 @@ impl StorageBackend for DmThinStorage {
         // step may already be done by an earlier failure path.
         let _ = self.ensure_pool_active();
         let dm_name = thin::vm_dm_name(&self.vm_prefix, &vm.name);
-        if let Ok(true) = dm_device_exists(&dm_name) {
+        if let Ok(true) = dm::device_exists(&dm_name) {
             let _ = thin::deactivate(&dm_name);
         }
         if let Some(id) = vm.thin_id {
@@ -492,7 +493,7 @@ impl StorageBackend for DmThinStorage {
         // thin ids and stay readable. `force` doesn't change behavior.
         let _ = self.ensure_pool_active();
         let dm_name = thin::image_dm_name(&self.image_prefix, &image.local_name);
-        if let Ok(true) = dm_device_exists(&dm_name) {
+        if let Ok(true) = dm::device_exists(&dm_name) {
             let _ = thin::deactivate(&dm_name);
         }
         if let Some(id) = image.thin_id {
@@ -547,7 +548,7 @@ impl StorageBackend for DmThinStorage {
         self.ensure_pool_active()?;
         let old_dm = thin::vm_dm_name(&self.vm_prefix, &vm.name);
         let new_dm = thin::vm_dm_name(&self.vm_prefix, new_name);
-        if dm_device_exists(&old_dm)? {
+        if dm::device_exists(&old_dm)? {
             thin::rename(&old_dm, &new_dm)?;
         }
         Ok(VolumeHandle {
@@ -570,7 +571,7 @@ impl StorageBackend for DmThinStorage {
         self.ensure_pool_active()?;
         let old_dm = thin::image_dm_name(&self.image_prefix, &image.local_name);
         let new_dm = thin::image_dm_name(&self.image_prefix, new_local_name);
-        if dm_device_exists(&old_dm)? {
+        if dm::device_exists(&old_dm)? {
             thin::rename(&old_dm, &new_dm)?;
         }
         Ok(VolumeHandle {
@@ -599,7 +600,7 @@ impl StorageBackend for DmThinStorage {
     /// has no business loading a pool table, running `thin_check`, and
     /// attaching loop devices as a side effect of listing VMs.
     fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
-        if !dm_device_exists(&self.pool_name)? {
+        if !dm::device_exists(&self.pool_name)? {
             return Err(Error::Pool(format!(
                 "dm-thin pool '{}' is not active, so its usage cannot be measured. \
                  Any command that touches storage will activate it.",
@@ -637,7 +638,7 @@ impl StorageBackend for DmThinStorage {
             }
         }
         // 2. Drop the pool itself (if active).
-        if dm_device_exists(&self.pool_name)? {
+        if dm::device_exists(&self.pool_name)? {
             pool::remove(&self.pool_name)?;
         }
         // 3. Detach the loop devices, if any.
