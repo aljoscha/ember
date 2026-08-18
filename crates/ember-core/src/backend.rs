@@ -114,7 +114,19 @@ pub struct PoolUsage {
     pub reserved: u64,
     /// Uncompressed size of the data within `allocated`. `None` when
     /// the backend does not compress.
+    ///
+    /// This doubles as the space handed out against
+    /// [`addressable`](Self::addressable): the bytes callers have been
+    /// given and the uncompressed bytes stored are the same number.
     pub logical: Option<u64>,
+    /// Addressable space the pool exposes, when a compressing layer
+    /// lets it exceed `capacity`. `None` when the pool can only hand
+    /// out the physical space it actually has, which is every backend
+    /// without such a layer.
+    ///
+    /// Deliberately not named after any one subsystem: it is a property
+    /// of a pool that can promise more than it holds.
+    pub addressable: Option<u64>,
     /// Present only for backends that keep a separate metadata device.
     pub metadata: Option<MetadataUsage>,
 }
@@ -138,14 +150,31 @@ impl PoolUsage {
     pub fn compression_ratio(&self) -> Option<f64> {
         ratio(self.logical, Some(self.occupied()))
     }
+
+    /// Space still available to hand out, which is not the same as free
+    /// physical space once a compressing layer is in play.
+    ///
+    /// `None` when the pool cannot over-promise, since `free` already
+    /// answers the question there.
+    pub fn addressable_free(&self) -> Option<u64> {
+        let addressable = self.addressable?;
+        Some(addressable.saturating_sub(self.logical.unwrap_or(0)))
+    }
 }
 
-/// Shared by the two `compression_ratio` accessors. A zero
-/// denominator yields `None` rather than an infinity that would render
-/// as `inf` in the CLI.
+/// Shared by the two `compression_ratio` accessors.
+///
+/// Either side being zero yields `None`. A zero denominator would
+/// render as `inf`, and a zero numerator is a pool that holds nothing
+/// yet, where `0.00x` reads as catastrophic compression rather than as
+/// the absence of data. A compressing layer's own metadata reserve
+/// makes that state reachable on a pool that has only just been
+/// created.
 fn ratio(logical: Option<u64>, physical: Option<u64>) -> Option<f64> {
     match (logical, physical) {
-        (Some(logical), Some(physical)) if physical > 0 => Some(logical as f64 / physical as f64),
+        (Some(logical), Some(physical)) if logical > 0 && physical > 0 => {
+            Some(logical as f64 / physical as f64)
+        }
         _ => None,
     }
 }
@@ -160,6 +189,42 @@ pub struct StorageUsage {
     pub vms: BTreeMap<String, VolumeUsage>,
     /// Keyed by [`ImageEntry::local_name`], same missing-key rule.
     pub images: BTreeMap<String, VolumeUsage>,
+}
+
+impl StorageUsage {
+    /// Whether the per-volume figures were measured above a compressing
+    /// layer the volumes cannot see into.
+    ///
+    /// True when the pool reports a logical size but no volume does,
+    /// which is exactly the shape of a layer sitting below the pool:
+    /// it has no idea which volume a physical block belongs to, so
+    /// compression cannot be attributed per volume and every per-volume
+    /// figure is pre-compression. A backend that compresses within each
+    /// volume (ZFS) reports both and is not affected.
+    pub fn volumes_above_compression(&self) -> bool {
+        if self.pool.logical.is_none() {
+            return false;
+        }
+        let mut volumes = self.vms.values().chain(self.images.values()).peekable();
+        volumes.peek().is_some() && volumes.all(|v| v.logical.is_none())
+    }
+}
+
+/// What `ember storage grow` was asked to change.
+///
+/// Two sizes, because a pool with a compressing layer beneath it has
+/// two that can move independently: the real disk it sits on, and the
+/// space it is willing to hand out. Backends without such a layer
+/// accept only `physical_size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrowRequest {
+    /// New size for the pool's backing store. `None` leaves the disk
+    /// footprint alone, which only makes sense together with
+    /// `logical_size`.
+    pub physical_size: Option<ByteSize>,
+    /// New addressable size. `None` lets the backend derive one, which
+    /// for a compressing pool means preserving the current ratio.
+    pub logical_size: Option<ByteSize>,
 }
 
 /// Configuration for storage backend initialization during `ember init`.
@@ -203,6 +268,12 @@ pub struct InitConfig {
     /// from `storage_path` so the backend doesn't have to second-guess
     /// what the user supplied.
     pub dm_thin_mode: Option<DmThinMode>,
+    /// dm-vdo compression layer to build beneath the dm-thin pool's
+    /// data device. Sizes are already resolved, same as
+    /// `dm_thin_block_size` and `dm_thin_mode`: the CLI works them out
+    /// once so `InitConfig` and the persisted `GlobalConfig` cannot
+    /// disagree.
+    pub vdo: Option<crate::config::VdoConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -275,10 +346,16 @@ pub trait StorageBackend {
     fn deinit(&self, purge: bool) -> Result<()>;
 
     /// Grow the underlying pool capacity. Currently meaningful only for
-    /// dm-thin file-backed pools; ZFS/btrfs/APFS return an error since
-    /// they manage capacity differently (or the user resizes individual
-    /// VM disks via [`StorageBackend::resize`]).
-    fn grow(&self, new_size: ByteSize) -> Result<()>;
+    /// dm-thin pools; ZFS/btrfs/APFS return an error since they manage
+    /// capacity differently (or the user resizes individual VM disks
+    /// via [`StorageBackend::resize`]).
+    ///
+    /// A backend whose sizes are recorded in `GlobalConfig` is
+    /// responsible for writing them back itself. It is the only layer
+    /// that knows both the resolved values and the point in the
+    /// sequence at which they become true, and getting that ordering
+    /// wrong leaves a pool the next activation cannot open.
+    fn grow(&self, request: GrowRequest) -> Result<()>;
 
     /// Create a base image volume from an ext4 image file.
     ///
@@ -656,12 +733,97 @@ mod tests {
         assert_eq!(volume(0, Some(100), None).compression_ratio(), None);
     }
 
+    fn usage(pool: PoolUsage, volumes: &[VolumeUsage]) -> StorageUsage {
+        StorageUsage {
+            pool,
+            vms: volumes
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (format!("vm{i}"), *v))
+                .collect(),
+            images: BTreeMap::new(),
+        }
+    }
+
+    /// A layer below the pool cannot say which volume a block belongs
+    /// to, so the pool reports a logical size and no volume does. That
+    /// exact shape is what the CLI footnote keys off.
+    #[test]
+    fn volumes_above_compression_detects_a_layer_below_the_pool() {
+        let compressed_pool = pool(400, 0, Some(800));
+        let opaque = volume(1000, Some(400), None);
+        assert!(usage(compressed_pool, &[opaque]).volumes_above_compression());
+    }
+
+    /// A backend that compresses within each volume reports both, and
+    /// its per-volume figures need no disclaimer.
+    #[test]
+    fn volumes_above_compression_is_false_when_volumes_report_their_own() {
+        let compressed_pool = pool(400, 0, Some(800));
+        let transparent = volume(1000, Some(400), Some(800));
+        assert!(!usage(compressed_pool, &[transparent]).volumes_above_compression());
+        // Mixed is not the shape either: one volume knowing is enough.
+        let mixed = [
+            volume(1000, Some(400), Some(800)),
+            volume(1000, Some(1), None),
+        ];
+        assert!(!usage(compressed_pool, &mixed).volumes_above_compression());
+    }
+
+    /// A pool that does not compress at all has nothing to disclaim,
+    /// whatever its volumes report.
+    #[test]
+    fn volumes_above_compression_is_false_without_a_compressing_pool() {
+        let plain = pool(400, 0, None);
+        assert!(!usage(plain, &[volume(1000, Some(400), None)]).volumes_above_compression());
+    }
+
+    /// An install with no VMs and no images has no per-volume figures
+    /// to qualify, so there is nothing to say.
+    #[test]
+    fn volumes_above_compression_is_false_with_no_volumes() {
+        assert!(!usage(pool(400, 0, Some(800)), &[]).volumes_above_compression());
+    }
+
+    #[test]
+    fn addressable_free_is_absent_unless_the_pool_over_promises() {
+        assert_eq!(pool(400, 0, None).addressable_free(), None);
+    }
+
+    /// Headroom at the addressable level is measured against what has
+    /// been handed out, which is the logical figure, not the physical
+    /// bytes those blocks compressed down to.
+    #[test]
+    fn addressable_free_counts_what_is_still_unhanded_out() {
+        let mut p = pool(400, 0, Some(800));
+        p.addressable = Some(2000);
+        assert_eq!(p.addressable_free(), Some(1200));
+        assert_eq!(p.free(), 600);
+
+        // Fully handed out, and not wrapping past it.
+        p.logical = Some(2500);
+        assert_eq!(p.addressable_free(), Some(0));
+    }
+
+    /// A pool that holds nothing has no ratio. Reporting `0.00x` reads
+    /// as catastrophic compression, and a compressing layer's own
+    /// metadata reserve makes that state reachable the moment a pool is
+    /// created.
+    #[test]
+    fn an_empty_compressing_pool_reports_no_ratio() {
+        let mut p = pool(3_500, 0, Some(0));
+        p.addressable = Some(8_000);
+        assert_eq!(p.compression_ratio(), None);
+        assert_eq!(volume(1000, Some(400), Some(0)).compression_ratio(), None);
+    }
+
     fn pool(allocated: u64, reserved: u64, logical: Option<u64>) -> PoolUsage {
         PoolUsage {
             capacity: 1000,
             allocated,
             reserved,
             logical,
+            addressable: None,
             metadata: None,
         }
     }

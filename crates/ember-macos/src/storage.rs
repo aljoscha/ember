@@ -23,7 +23,7 @@ use nix::sys::statvfs::statvfs;
 use crate::extents::{self, Extent};
 
 use ember_core::backend::{
-    InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
+    GrowRequest, InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
 };
 use ember_core::config::size::ByteSize;
 use ember_core::error::{Error, Result};
@@ -454,6 +454,7 @@ impl StorageBackend for MacosStorage {
                 // written, so there is no reserved-but-empty gap.
                 reserved: 0,
                 logical: None,
+                addressable: None,
                 metadata: None,
             },
             vms: vm_usage,
@@ -484,7 +485,7 @@ impl StorageBackend for MacosStorage {
         Ok(())
     }
 
-    fn grow(&self, _new_size: ByteSize) -> Result<()> {
+    fn grow(&self, _request: GrowRequest) -> Result<()> {
         Err(Error::Image(
             "macOS/APFS has no pool concept — resize individual VMs with \
              `ember vm resize` instead"

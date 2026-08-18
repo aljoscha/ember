@@ -5,7 +5,7 @@ use std::path::Path;
 
 use clap::{Args, Subcommand};
 
-use crate::backend::{create_storage, StorageUsage, VolumeUsage};
+use crate::backend::{create_storage, GrowRequest, StorageUsage, VolumeUsage};
 use crate::cli::fmt::{
     format_bytes_binary, format_bytes_opt, format_percent, format_ratio, print_table, Align,
 };
@@ -27,10 +27,20 @@ pub enum StorageCommand {
 
 #[derive(Args)]
 pub struct GrowArgs {
-    /// New total size for the data device, e.g. `100G`. Must be larger
-    /// than the current size.
+    /// New total size for the pool's backing store, e.g. `100G`. Must
+    /// be at least the current size. For a raw block device, grow the
+    /// device externally first: ember picks up the new size but cannot
+    /// resize somebody else's device.
     #[arg(long)]
-    pub size: ByteSize,
+    pub size: Option<ByteSize>,
+
+    /// New data capacity for a pool with a compression layer, e.g.
+    /// `200G`. Defaults to keeping the current ratio to `--size`, so
+    /// doubling the disk doubles the pool whichever bet was made at
+    /// init. Rejected on a pool without a compression layer, which can
+    /// only hand out the space it has.
+    #[arg(long)]
+    pub logical_size: Option<ByteSize>,
 }
 
 #[derive(Args)]
@@ -51,7 +61,10 @@ fn grow(args: &GrowArgs, state_dir: &Path) -> anyhow::Result<()> {
     let store = StateStore::new(state_dir.to_path_buf());
     let config: GlobalConfig = store.read(&store.config_path())?;
     let storage = create_storage(&config);
-    storage.grow(args.size)?;
+    storage.grow(GrowRequest {
+        physical_size: args.size,
+        logical_size: args.logical_size,
+    })?;
     Ok(())
 }
 
@@ -95,6 +108,20 @@ fn print_usage(usage: &StorageUsage) {
             format_ratio(Some(ratio)),
         );
     }
+    // Only worth a line when it differs from the physical capacity,
+    // which it does exactly when the pool was deliberately
+    // over-provisioned against a compressing layer.
+    if let (Some(addressable), Some(logical)) = (pool.addressable, pool.logical) {
+        if addressable != pool.capacity {
+            println!(
+                "Addressable   {} exposed, {} handed out ({}), {} left",
+                format_bytes_binary(addressable),
+                format_bytes_binary(logical),
+                format_percent(logical, addressable),
+                format_bytes_opt(pool.addressable_free()),
+            );
+        }
+    }
     if pool.reserved > 0 {
         println!(
             "Reserved      {} charged to the pool but holding no data",
@@ -112,6 +139,14 @@ fn print_usage(usage: &StorageUsage) {
 
     print_section("VMS", &usage.vms);
     print_section("IMAGES", &usage.images);
+    if usage.volumes_above_compression() {
+        println!();
+        println!(
+            "Per-volume figures are uncompressed. The compression layer sits below the\n\
+             pool and cannot say which volume a physical block belongs to, so only the\n\
+             pool-wide ratio above is measured against real disk."
+        );
+    }
     println!();
 }
 

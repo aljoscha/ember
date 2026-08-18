@@ -14,19 +14,13 @@ use ember_core::error::{Error, Result};
 /// Sectors are always 512 bytes on Linux block devices.
 pub const SECTOR_SIZE: u64 = 512;
 
-/// Convert bytes to sectors, rounding up.
-pub fn bytes_to_sectors(bytes: u64) -> u64 {
-    bytes.div_ceil(SECTOR_SIZE)
-}
-
 /// Path a named device-mapper device is exposed at once activated.
 pub fn device_path(name: &str) -> PathBuf {
     PathBuf::from(format!("/dev/mapper/{name}"))
 }
 
 /// Whether a device-mapper device with the given name is currently
-/// active. Works for any target, so it also serves as the probe for
-/// pools, thin volumes, and staging devices.
+/// active.
 pub fn device_exists(name: &str) -> Result<bool> {
     let output = Command::new("dmsetup")
         .args(["info", "--noheadings", name])
@@ -99,18 +93,41 @@ pub fn resume(name: &str) -> Result<()> {
 /// suspended and wedged.
 pub fn reload(name: &str, table: &str) -> Result<()> {
     suspend(name)?;
-    let load = Command::new("dmsetup")
+    if let Err(e) = load(name, table) {
+        // Best-effort resume so a rejected table leaves the device
+        // running on its old one rather than suspended and wedged.
+        let _ = resume(name);
+        return Err(e);
+    }
+    resume(name)
+}
+
+/// Stage a table in the device's inactive slot and swap it in without
+/// suspending.
+///
+/// `resume` promotes the inactive table whether or not the device was
+/// suspended, so this is a complete swap. Some targets ask for it: the
+/// vdo documentation states a modified table may be loaded into a
+/// running, non-suspended volume, and suspending one with a live target
+/// stacked above it risks blocking on in-flight I/O that the upper
+/// layer is still issuing.
+pub fn swap_table(name: &str, table: &str) -> Result<()> {
+    load(name, table)?;
+    resume(name)
+}
+
+/// Stage a table in the device's inactive slot. Takes effect on the
+/// next [`resume`].
+fn load(name: &str, table: &str) -> Result<()> {
+    let output = Command::new("dmsetup")
         .args(["load", name, "--table", table])
         .output()
         .map_err(|e| Error::CommandExec {
             command: "dmsetup load".to_string(),
             source: e,
         })?;
-    if let Err(e) = Error::check_command(&format!("dmsetup load {name}"), load) {
-        let _ = resume(name);
-        return Err(e);
-    }
-    resume(name)
+    Error::check_command(&format!("dmsetup load {name}"), output)?;
+    Ok(())
 }
 
 /// Rename an active device.
@@ -143,6 +160,22 @@ pub fn message(name: &str, msg: &str) -> Result<()> {
         })?;
     Error::check_command(&format!("dmsetup message {name} {msg}"), output)?;
     Ok(())
+}
+
+/// Send a control message and return what the target wrote back.
+///
+/// Targets that report rather than act put their answer in the message
+/// response buffer, which `dmsetup` prints on stdout.
+pub fn message_response(name: &str, msg: &str) -> Result<String> {
+    let output = Command::new("dmsetup")
+        .args(["message", name, "0", msg])
+        .output()
+        .map_err(|e| Error::CommandExec {
+            command: "dmsetup message".to_string(),
+            source: e,
+        })?;
+    let output = Error::check_command(&format!("dmsetup message {name} {msg}"), output)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Raw `dmsetup status` line for a device. Parsing the target-specific
@@ -232,8 +265,10 @@ fn has_target(listing: &str, target: &str) -> bool {
 }
 
 /// Whether an [`Error`] reports a kernel `EEXIST` from a `dmsetup`
-/// operation. Used by the thin `create_thin` / `create_snap` retry
-/// loops to detect id collisions.
+/// operation.
+///
+/// Callers that allocate an identifier and retry on collision depend on
+/// telling this apart from a real failure.
 ///
 /// `dmsetup` translates the kernel's `-EEXIST` into a stderr line that
 /// embeds the libc `strerror` for `EEXIST` — `"File exists"` on glibc
@@ -254,11 +289,9 @@ pub fn is_already_exists(err: &Error) -> bool {
     matches!(err, Error::Command { stderr, .. } if stderr.contains("File exists"))
 }
 
-/// Whether an [`Error`] reports a kernel `EBUSY`.
+/// Whether an [`Error`] reports a kernel `EBUSY`, meaning the resource
+/// a message asked for is already held.
 ///
-/// The only place we act on this is `reserve_metadata_snap`, where the
-/// kernel returns `-EBUSY` when the pool already holds a snapshot
-/// (`__reserve_metadata_snap` in `drivers/md/dm-thin-metadata.c`).
 /// Same stability argument as [`is_already_exists`]: `dmsetup` embeds
 /// the libc strerror, and `strerror(EBUSY)` is `"Device or resource
 /// busy"` on glibc and musl.
@@ -328,14 +361,6 @@ mod tests {
         };
         assert!(is_busy(&err));
         assert!(!is_already_exists(&err));
-    }
-
-    #[test]
-    fn bytes_to_sectors_rounds_up() {
-        assert_eq!(bytes_to_sectors(0), 0);
-        assert_eq!(bytes_to_sectors(1), 1);
-        assert_eq!(bytes_to_sectors(512), 1);
-        assert_eq!(bytes_to_sectors(513), 2);
     }
 
     /// `thin` is a prefix of `thin-pool`, so a substring match against

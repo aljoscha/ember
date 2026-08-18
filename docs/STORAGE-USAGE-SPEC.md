@@ -77,8 +77,13 @@ pub struct PoolUsage {
     /// backends without reservations.
     pub reserved: u64,
     /// Uncompressed size of the data within `allocated`. `None` when
-    /// the backend does not compress.
+    /// the backend does not compress. Doubles as the space handed out
+    /// against `addressable`, since those are the same number.
     pub logical: Option<u64>,
+    /// Addressable space the pool exposes, when a compressing layer
+    /// lets it exceed `capacity`. `None` when the pool can only hand
+    /// out the space it actually has.
+    pub addressable: Option<u64>,
     /// Backends with a separate metadata device report it here.
     pub metadata: Option<MetadataUsage>,
 }
@@ -336,8 +341,14 @@ Integration tests in `tests/storage_usage.rs`, using the existing `TestEnv`. All
 * `ember vm list` still succeeds and its row ends in `-` when the backend cannot report. Linux-only: the break is a `config.json` naming a nonexistent pool, and the APFS backend reads neither `pool` nor `storage_path`.
 * The dm-thin variant creates an image and a VM so the thin-id join is actually exercised, then calls the command a third time to prove the metadata snapshot was released.
 
+## Compression layers below the pool
+
+`PoolUsage::logical` and `VolumeUsage::logical` carry compression a backend applies within each volume, which is the ZFS case: both are reported and the per-volume ratios mean something.
+
+A layer underneath the pool needed one more field. `PoolUsage::addressable` is the space the pool exposes when that layer lets it promise more than it physically holds, which keeps `free()` meaning real physical headroom and `compression_ratio()` meaning bytes stored over bytes on disk. Per-volume figures stay pre-compression there, because the layer cannot attribute a block to a volume. `VDO-SPEC.md` has the mapping.
+
 ## Out of scope
 
 * Per-snapshot accounting. Snapshots are visible in the ZFS numbers via `used` but get no rows of their own.
 * Historical tracking or deltas over time.
-* Any accounting for a compression layer that does not exist yet. When one is added, its physical-versus-logical figures land in `PoolUsage::logical` and `VolumeUsage::logical`, which are already shaped for it.
+* Per-volume accounting under a compression layer that sits *below* the pool. dm-vdo has no idea which thin volume a physical block belongs to, so its savings can only be reported pool-wide. See `VDO-SPEC.md`; the CLI prints a footnote when it detects that shape, and `StorageUsage::volumes_above_compression` is the predicate.

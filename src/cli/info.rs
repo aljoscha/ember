@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::backend::{CurrentPlatform, Platform};
-use crate::cli::fmt::{format_bytes_binary, format_percent, format_ratio};
+use crate::cli::fmt::{format_bytes_binary, format_bytes_opt, format_percent, format_ratio};
 use ember_core::config::GlobalConfig;
 use ember_core::image::registry::ImageRegistry;
 use ember_core::state::store::StateStore;
@@ -60,6 +60,16 @@ pub fn run(state_dir: &Path) -> anyhow::Result<()> {
                 "Compression: {} logical ({})",
                 format_bytes_binary(logical),
                 format_ratio(Some(ratio)),
+            );
+        }
+        // Only when it differs from the physical capacity printed
+        // above, which is exactly when the pool can promise more than
+        // it holds.
+        if let Some(addressable) = pool.addressable.filter(|a| *a != pool.capacity) {
+            println!(
+                "Addressable: {} exposed, {} left to hand out",
+                format_bytes_binary(addressable),
+                format_bytes_opt(pool.addressable_free()),
             );
         }
     }
