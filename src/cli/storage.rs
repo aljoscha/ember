@@ -108,11 +108,14 @@ fn print_usage(usage: &StorageUsage) {
             format_ratio(Some(ratio)),
         );
     }
-    // Only worth a line when it differs from the physical capacity,
-    // which it does exactly when the pool was deliberately
-    // over-provisioned against a compressing layer.
+    // Only worth a line when the pool exposes more than it physically
+    // holds, which is exactly the deliberate over-provision. Tested as
+    // strictly greater rather than as a difference: the pool rounds its
+    // addressable size down to a whole pool block while the physical
+    // capacity is a whole 4 KiB block, so a 1:1 pool on a device that
+    // is not a multiple of the pool block lands a little under it.
     if let (Some(addressable), Some(logical)) = (pool.addressable, pool.logical) {
-        if addressable != pool.capacity {
+        if addressable > pool.capacity {
             println!(
                 "Addressable   {} exposed, {} handed out ({}), {} left",
                 format_bytes_binary(addressable),
