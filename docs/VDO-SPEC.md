@@ -258,6 +258,9 @@ is still in use until VDO releases it.
 backing file, VDO's physical size, and (when asked) VDO's logical size
 plus the thin-pool table.
 
+Neither size may pass the ceilings `init` applies, which is checked
+before anything is touched for the same reason it is at `init`.
+
 `--size` sets the new physical size and **preserves the logical to
 physical ratio**. A pool created 300G/300G grown to 600G becomes
 600G/600G. A pool deliberately over-provisioned 300G physical to 600G
@@ -482,9 +485,12 @@ read-only independently, with different recovery tools (`thin_repair`
 versus `vdoforcerebuild`). Health errors name which layer is sick.
 
 **Growth granularity.** VDO physical must grow by at least about 128 MiB
-and at least one slab, and never above the size that yields 8192 slabs.
-The first two are checked up front. The last is left to the kernel and
-is not reachable in practice: 8192 slabs at 2 GiB is 16 TiB.
+and at least one slab, and never above the size that yields 8192 slabs
+(16 TiB). All three are checked up front. The ceiling is out of reach for
+any pool ember is used for, but `grow` discovers a raw device's size
+rather than being told it, so a larger device reaches it without anyone
+naming a number, and the kernel's `EINVAL` is indistinguishable from a
+recorded size that disagrees with the format.
 
 **Metadata sizing follows the addressable size.** The thin metadata
 device is sized from what the pool can address, not from the disk under
@@ -511,7 +517,7 @@ Unit tests, no privileges, covering the pure functions:
   to accepted values and the floor
 * logical-to-physical ratio preservation in `grow`, including the
   non-integer ratios and the u128 path that avoids overflow
-* growth-granularity rejection
+* growth-granularity rejection, and the slab ceiling
 * `PoolUsage` mapping and the accessors derived from it
 * the footnote predicate on `StorageUsage`
 

@@ -253,6 +253,16 @@ pub fn check_physical_size(bytes: u64) -> Result<()> {
             format_size(bytes),
         )));
     }
+    check_physical_ceiling(bytes)
+}
+
+/// Reject a physical size beyond the kernel's slab ceiling.
+///
+/// Split out of [`check_physical_size`] so [`check_growth`] can apply
+/// the same ceiling and report it the same way. Without it a growth
+/// past the ceiling reaches `dmsetup`, and the `EINVAL` it answers with
+/// is indistinguishable from a size that disagrees with the format.
+fn check_physical_ceiling(bytes: u64) -> Result<()> {
     if bytes > MAX_PHYSICAL_BYTES {
         return Err(Error::Config(format!(
             "--vdo manages at most {} ({} slabs of {}), and {} was requested.",
@@ -292,9 +302,11 @@ pub fn check_logical_size(bytes: u64) -> Result<()> {
 
 /// Reject a growth the kernel would reject, with an explanation.
 ///
-/// VDO cannot shrink in either dimension, and each physical growth must
-/// add at least [`MIN_GROWTH_BLOCKS`] blocks. Catching that here beats
-/// letting `dmsetup reload` fail with a bare `Invalid argument`.
+/// VDO cannot shrink in either dimension, each physical growth must add
+/// at least [`MIN_GROWTH_BLOCKS`] blocks, and neither size may pass the
+/// kernel's ceiling. Catching all of that here beats letting `dmsetup
+/// reload` fail with a bare `Invalid argument`, which reads like a
+/// recorded size disagreeing with the format however it was caused.
 pub fn check_growth(old: &Params, new: &Params) -> Result<()> {
     if new.physical_size < old.physical_size {
         return Err(Error::Config(format!(
@@ -317,6 +329,7 @@ pub fn check_growth(old: &Params, new: &Params) -> Result<()> {
             format_size(new.logical_size),
         )));
     }
+    check_physical_ceiling(new.physical_size)?;
     let growth = new.physical_size - old.physical_size;
     if growth == 0 {
         return Ok(());
@@ -848,6 +861,17 @@ mod tests {
         }
         assert!(check_growth(&old, &params(300 * GIB, 300 * GIB + SLAB_BYTES)).is_ok());
         assert!(check_growth(&old, &params(300 * GIB, 600 * GIB)).is_ok());
+    }
+
+    /// A raw device larger than the slab ceiling is picked up by
+    /// `grow` without anyone naming a size, so the ceiling has to be
+    /// reported here. Left to the kernel it comes back as an `EINVAL`
+    /// that reads like a recorded size disagreeing with the format.
+    #[test]
+    fn growth_is_capped_at_the_kernel_physical_maximum() {
+        let max = 8192 * SLAB_BYTES;
+        assert!(check_growth(&params(max, max), &params(max, max + SLAB_BYTES)).is_err());
+        assert!(check_growth(&params(32 * GIB, 32 * GIB), &params(32 * GIB, max)).is_ok());
     }
 
     #[test]
