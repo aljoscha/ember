@@ -95,8 +95,10 @@ fn usage_reports_images() {
 }
 
 /// A fork shares blocks with its origin, which is the whole point of
-/// the CoW backends. Backends that cannot measure sharing report
-/// `referenced` as null and are skipped.
+/// the CoW backends. Every backend measures this, so nothing skips
+/// here. It used to: APFS reported `referenced` as null and this test
+/// returned early on macOS, which left the one assertion aimed at
+/// sharing unrun on the backend whose sharing was broken.
 #[test]
 #[ignore = "requires root + a real storage backend"]
 fn fork_shares_blocks_with_origin() {
@@ -131,6 +133,62 @@ fn fork_shares_blocks_with_origin() {
         referenced > exclusive,
         "a fresh fork should share blocks with its origin, \
          but referenced ({referenced}) <= exclusive ({exclusive})"
+    );
+}
+
+/// The pool figure counts a shared block once, no matter how many
+/// volumes map it.
+///
+/// This is the regression test for the APFS backend reporting
+/// `st_blocks` as occupancy. `st_blocks` counts the blocks a file maps
+/// rather than the ones it owns, so summing it charged every shared
+/// block once per clone and the pool figure grew each time a free clone
+/// was made. With one image, two VMs and three forks it overstated real
+/// occupancy by 2.6x.
+///
+/// macOS-only, deliberately. The same property should hold on ZFS and
+/// dm-thin, but `PoolUsage::allocated` on ZFS also carries
+/// refreservation and snapshot charges, so the honest form of this
+/// assertion there is a different one. Writing it here without a pool
+/// to run it against is how the bug it guards got in.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires root + a real storage backend"]
+fn pool_counts_shared_blocks_once() {
+    let env = TestEnv::with_vm("usage_shared", "usage-shared");
+
+    let output = ember(&[
+        "--state-dir",
+        env.state(),
+        "vm",
+        "fork",
+        "usage-shared",
+        "usage-shared-fork",
+        "--no-start",
+    ]);
+    assert!(
+        output.status.success(),
+        "fork failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let usage = usage_json(env.state());
+    let volumes: Vec<&serde_json::Value> = usage["vms"]
+        .as_object()
+        .into_iter()
+        .chain(usage["images"].as_object())
+        .flat_map(|m| m.values())
+        .collect();
+
+    let referenced: u64 = volumes.iter().map(|v| as_u64(&v["referenced"])).sum();
+    let allocated = as_u64(&usage["pool"]["allocated"]);
+
+    // The fork shares nearly all of its origin, so counting each block
+    // once has to come out strictly below counting them per volume.
+    assert!(
+        allocated < referenced,
+        "pool allocated ({allocated}) must count shared blocks once, \
+         but it is not below the sum of referenced ({referenced}): {usage:#}"
     );
 }
 
