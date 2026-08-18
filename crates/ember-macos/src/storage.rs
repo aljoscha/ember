@@ -15,11 +15,12 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nix::sys::statvfs::statvfs;
+
+use crate::extents::{self, Extent};
 
 use ember_core::backend::{
     InitConfig, PoolUsage, StorageBackend, StorageUsage, VolumeHandle, VolumeUsage,
@@ -72,6 +73,35 @@ impl MacosStorage {
     /// Path to a base image file.
     fn image_path(&self, name: &str) -> PathBuf {
         self.images_dir().join(format!("{name}.img"))
+    }
+
+    /// Read the physical extents of every disk image in the
+    /// installation, in a stable order.
+    ///
+    /// Files that vanish between the walk and the scan are dropped
+    /// rather than reported as empty, since a half-created VM is not
+    /// the same thing as one occupying nothing.
+    fn scan_tree(&self) -> Result<Vec<ScannedFile>> {
+        let mut paths = Vec::new();
+        collect_images(&self.vms_dir(), &mut paths);
+        collect_images(&self.images_dir(), &mut paths);
+        paths.sort();
+
+        let mut scanned = Vec::with_capacity(paths.len());
+        for path in paths {
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let Some(extents) = extents::scan(&path)? else {
+                continue;
+            };
+            scanned.push(ScannedFile {
+                path,
+                len: meta.len(),
+                extents,
+            });
+        }
+        Ok(scanned)
     }
 }
 
@@ -360,22 +390,51 @@ impl StorageBackend for MacosStorage {
         Ok(vec![])
     }
 
-    /// APFS accounting comes from `st_blocks`, which counts only the
-    /// blocks a file does not share with a clone. That gives us the
-    /// exclusive figure directly, but there is no cheap way to learn
-    /// how much a clone shares with its origin, so `referenced` stays
-    /// unknown.
+    /// APFS accounting comes from physical extent maps, not from
+    /// `st_blocks`. `st_blocks` counts the blocks a file maps rather
+    /// than the ones it owns, so a fresh clone reports its origin's
+    /// full figure while costing nothing.
+    ///
+    /// We scan every `.img` in the installation even when the caller
+    /// asks about one VM. The pool figure is installation-wide, and
+    /// exclusivity is not a property a volume has on its own: a file's
+    /// blocks are exclusive only relative to everything else that might
+    /// map them, so a narrower scan would report every volume as fully
+    /// exclusive.
     fn usage(&self, vms: &[VmMetadata], images: &[ImageEntry]) -> Result<StorageUsage> {
+        let scanned = self.scan_tree()?;
+
+        let occupancy = extents::occupancy(
+            &scanned
+                .iter()
+                .map(|f| f.extents.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        let usage_of = |path: &Path| -> Option<VolumeUsage> {
+            let index = scanned.iter().position(|f| f.path == path)?;
+            let file = &scanned[index];
+            Some(VolumeUsage {
+                provisioned: file.len,
+                // A subset of this file's own extents, so the
+                // `exclusive <= referenced` invariant holds by
+                // construction rather than by arithmetic.
+                exclusive: occupancy.exclusive[index],
+                referenced: Some(file.referenced()),
+                logical: None,
+            })
+        };
+
         let vm_usage: BTreeMap<String, VolumeUsage> = vms
             .iter()
-            .filter_map(|vm| Some((vm.name.clone(), file_usage(&self.vm_rootfs(&vm.name))?)))
+            .filter_map(|vm| Some((vm.name.clone(), usage_of(&self.vm_rootfs(&vm.name))?)))
             .collect();
         let image_usage: BTreeMap<String, VolumeUsage> = images
             .iter()
             .filter_map(|img| {
                 Some((
                     img.local_name.clone(),
-                    file_usage(&self.image_path(&img.local_name))?,
+                    usage_of(&self.image_path(&img.local_name))?,
                 ))
             })
             .collect();
@@ -384,20 +443,15 @@ impl StorageBackend for MacosStorage {
         // capacity is that plus whatever the containing filesystem will
         // still give us. Mirrors how the ZFS backend reports its
         // dataset tree rather than the raw vdev.
-        //
-        // Walks the directories rather than summing the maps above: the
-        // pool figure is installation-wide, and callers such as `vm
-        // inspect` hand us a single record.
-        let allocated = occupied_bytes(&self.vms_dir()) + occupied_bytes(&self.images_dir());
+        let allocated = occupancy.union;
         let available = available_bytes(&self.state_dir)?;
 
         Ok(StorageUsage {
             pool: PoolUsage {
                 capacity: allocated.saturating_add(available),
                 allocated,
-                // APFS clones share blocks, but `st_blocks` already
-                // excludes shared ones, so nothing is double-counted
-                // and nothing is reserved-but-empty.
+                // Nothing on APFS is charged for space it has not
+                // written, so there is no reserved-but-empty gap.
                 reserved: 0,
                 logical: None,
                 metadata: None,
@@ -753,43 +807,43 @@ pub(crate) fn find_e2fsprogs_tool(name: &str) -> String {
     name.to_string()
 }
 
-/// Accounting for one disk image file, or `None` if it is missing.
-///
-/// `st_blocks` counts 512-byte blocks actually allocated. On APFS a
-/// clone reports only the blocks it does not share with its origin,
-/// which is exactly the exclusive figure we want.
-fn file_usage(path: &Path) -> Option<VolumeUsage> {
-    let meta = fs::metadata(path).ok()?;
-    Some(VolumeUsage {
-        provisioned: meta.len(),
-        exclusive: meta.blocks() * 512,
-        referenced: None,
-        logical: None,
-    })
+/// One disk image file and the physical bytes it maps.
+struct ScannedFile {
+    path: PathBuf,
+    /// Logical length, the size the guest sees.
+    len: u64,
+    extents: Vec<Extent>,
 }
 
-/// Sum the disk blocks of every `.img` file under `dir`, recursively.
+impl ScannedFile {
+    /// Everything this file maps, shared blocks included.
+    fn referenced(&self) -> u64 {
+        self.extents.iter().map(|e| e.len).sum()
+    }
+}
+
+/// Collect every `.img` file under `dir` into `out`, recursively.
 ///
-/// Missing or unreadable entries contribute nothing. This is a report,
-/// and refusing to print a pool line because one VM directory is
-/// unreadable would be worse than under-counting it.
-fn occupied_bytes(dir: &Path) -> u64 {
+/// Missing or unreadable directories contribute nothing. This is a
+/// report, and refusing to print a pool line because one VM directory
+/// is unreadable would be worse than under-counting it. Symlinks are
+/// not followed, so a link pointing back up the tree cannot make the
+/// walk recurse forever or double-count a file against itself.
+fn collect_images(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
+        return;
     };
-    entries
-        .flatten()
-        .map(|entry| {
-            let path = entry.path();
-            if path.is_dir() {
-                occupied_bytes(&path)
-            } else if path.extension().and_then(|e| e.to_str()) == Some("img") {
-                fs::metadata(&path).map(|m| m.blocks() * 512).unwrap_or(0)
-            } else {
-                0
-            }
-        })
-        .sum()
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_images(&path, out);
+        } else if file_type.is_file() && path.extension().and_then(|e| e.to_str()) == Some("img") {
+            out.push(path);
+        }
+    }
 }
 
 /// Bytes still available to an unprivileged writer on the filesystem
