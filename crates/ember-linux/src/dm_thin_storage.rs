@@ -373,18 +373,40 @@ impl StorageBackend for DmThinStorage {
             // device. So a recorded size smaller than the backing
             // device produces a table the kernel reads as a shrink and
             // rejects, on this and every later activation.
-            // What `vdoformat` will actually see, which for a
-            // leftover `data.img` is its real length rather than
-            // whatever `--size` asked for.
+            //
+            // The size that matters is what `vdoformat` will actually
+            // see, which for a leftover `data.img` is its real length
+            // rather than whatever `--size` asked for.
             let backing_size = if data_path.exists() {
                 device_size_bytes(&data_path)?
             } else {
                 pool_size_bytes
             };
             if vdo::align_down(backing_size) != vdo_config.physical_size {
+                // Two very different situations reach this, with two
+                // different fixes. A raw device is whatever size it is,
+                // so `--size` has to match it. A file this run did not
+                // create is a leftover from a `deinit` without
+                // `--purge`, and matching `--size` to it only trades
+                // this error for `vdoformat` refusing to overwrite a
+                // volume it already holds.
+                let fix = if data_path.is_file() {
+                    format!(
+                        "{} is a leftover pool from an earlier install, so delete it \
+                         (or re-run `ember deinit --purge`) before initializing again",
+                        data_path.display(),
+                    )
+                } else {
+                    format!(
+                        "pass --size {} to match {}, or point --storage-path at a \
+                         device of the requested size",
+                        format_bytes(vdo::align_down(backing_size)),
+                        data_path.display(),
+                    )
+                };
                 return Err(Error::Config(format!(
-                    "--vdo uses the whole backing device, so --size must match it. \
-                     {} is {}, but {} was requested.",
+                    "--vdo uses the whole backing device, so the pool's physical size \
+                     must match it: {} is {}, but {} was requested. {fix}.",
                     data_path.display(),
                     format_bytes(backing_size),
                     format_bytes(vdo_config.physical_size),
@@ -1108,7 +1130,8 @@ fn plan_grow(request: &GrowRequest, ctx: &GrowContext) -> Result<GrowPlan> {
     if let (Some(new), Some(old)) = (vdo, ctx.vdo) {
         if new.logical_size < old.logical_size {
             return Err(Error::Config(format!(
-                "the pool already hands out {}, and a compression layer cannot address                  less than it did. `ember storage grow` only grows.",
+                "the pool already hands out {}, and a compression layer cannot \
+                 address less than it did. `ember storage grow` only grows.",
                 format_bytes(old.logical_size),
             )));
         }
@@ -1176,7 +1199,6 @@ pub fn pool_size_at_init(
 /// `--size` when the operator gave one, otherwise the raw device's own
 /// size. A file-backed pool has no size to discover, so omitting
 /// `--size` there is an error rather than a guess.
-///
 fn resolve_pool_size(
     data_path: &Path,
     mode: DmThinMode,
