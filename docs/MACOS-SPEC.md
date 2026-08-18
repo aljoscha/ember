@@ -207,7 +207,9 @@ resize2fs vms/<vm-name>/rootfs.img
 
 ### The Problem
 
-Unlike ZFS (where `zfs list -o used,refer` clearly shows per-dataset space usage and CoW savings), APFS has no per-file way to measure clone savings. Both `du` and Finder report clones as if they occupy full space. This means a user with 10 VMs cloned from a 2GB image would see `du` report 20GB even though actual disk usage is ~2GB.
+ZFS answers this with a property lookup: `zfs list -o used,refer` shows per-dataset usage and CoW savings directly. APFS exposes no equivalent per-file field. Both `du` and Finder report clones as if they occupied full space, so a user with 10 VMs cloned from a 2GB image sees `du` report 20GB against an actual 2GB.
+
+The information is there, just not in `stat`. Physical extent maps show which bytes each file maps, so scanning the tree and comparing extents recovers the per-file answer. See the APFS section of `STORAGE-USAGE-SPEC.md`.
 
 ### `ember storage usage`
 
@@ -216,24 +218,28 @@ A built-in diagnostic command that reports CoW savings. See `STORAGE-USAGE-SPEC.
 ```
 $ ember storage usage
 
-Pool          460 GiB capacity, 4.1 GiB used (1%), 456 GiB free
+Pool          460 GiB capacity, 2 GiB used (0%), 458 GiB free
 
 VMS
-NAME    PROVISIONED REFERENCED EXCLUSIVE SHARED COMPRESSION
-vm0           8 GiB          -   412 MiB      -           -
+NAME PROVISIONED REFERENCED EXCLUSIVE  SHARED COMPRESSION
+vm0        8 GiB      2 GiB   412 MiB 1.6 GiB           -
 
 IMAGES
-NAME    PROVISIONED REFERENCED EXCLUSIVE SHARED COMPRESSION
-alpine        2 GiB          -   1.6 GiB      -           -
+NAME   PROVISIONED REFERENCED EXCLUSIVE  SHARED COMPRESSION
+alpine       2 GiB    1.6 GiB       0 B 1.6 GiB           -
 ```
 
-APFS reports only `st_blocks`, so `REFERENCED`, `SHARED`, and `COMPRESSION` are unavailable and render as `-`.
+`vm0` was cloned from `alpine`, so the 1.6 GiB they both map is charged to neither: the image holds nothing exclusively while the clone exists, and the pool counts those bytes once. The pool figure is 2 GiB, not the 3.6 GiB the two `REFERENCED` values add up to.
+
+APFS does not compress ember's disk images, so `COMPRESSION` renders as `-`. The other columns carry real numbers.
 
 **How it works:**
 
-1. **Logical size**: Sum of all `.img` file sizes via `stat` (apparent file size)
-2. **Actual disk usage**: Sum of `st_blocks * 512` for each `.img` file — this reports actually-allocated 512-byte blocks, which reflects CoW sharing (APFS clones share blocks, so `st_blocks` is lower than the logical size)
-3. **CoW ratio**: Logical size divided by actual disk usage
+1. **Provisioned**: the `.img` file length via `stat`, the size the guest sees.
+2. **Referenced**: the sum of the file's physical extent lengths, read with `fcntl(F_LOG2PHYS_EXT)`, which is everything the file maps whether or not it shares it.
+3. **Exclusive and shared**: every `.img` file under `vms/` and `images/` is scanned and the extents are swept together. A physical byte mapped by exactly one file is exclusive to it, a byte mapped by several is shared.
+
+Note that `st_blocks` looks like a shortcut here and is not one. It counts the blocks a file maps, not the blocks it owns, so a fresh clone reports its origin's full figure while costing nothing. See the APFS section of `STORAGE-USAGE-SPEC.md`.
 
 ### `cp -c` Failure Detection
 
